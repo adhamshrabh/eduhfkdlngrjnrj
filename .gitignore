@@ -22,4 +22,15 @@ _transfer/
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/
+
+# إعدادات VS Code: المحتوى مستبعَد افتراضياً، وملفات تشغيل المشروع مستثناة
+# صراحةً لأنها تخصّ المشروع لا الشخص — بها يعمل زرّ F5 عند أي شخص يستنسخه.
+#
+# لاحظي `.vscode/*` لا `.vscode/` — git لا يدخل مجلداً مستبعَداً أصلاً،
+# فاستثناء ملف داخل مجلد مستبعَد لا يعمل. استبعاد المحتوى يُبقي المجلد
+# مرئياً فتصحّ الاستثناءات.
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/settings.json

@@ -1,0 +1,45 @@
+{
+  // F5 = «المنصّة كاملة»: يشغّل الخادمين ثم يفتح المتصفّح على 5173.
+  // نقاط التوقّف تعمل في بايثون وفي React معاً.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "الباك إند (نقاط توقّف)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/backend/manage.py",
+      // بلا --noreload يعيد Django تحميل نفسه في عملية ابنة، فتفقد
+      // نقاط التوقّف ارتباطها بالمُنقِّح صامتةً.
+      "args": ["runserver", "8000", "--noreload"],
+      "cwd": "${workspaceFolder}/backend",
+      "env": { "PYTHONIOENCODING": "utf-8", "DJANGO_SETTINGS_MODULE": "config.settings.dev" },
+      "django": true,
+      "justMyCode": true,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "المتصفّح على 5173",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend/apps/web",
+      // ينتظر الخادمين حتى يجهزا قبل فتح المتصفّح
+      "preLaunchTask": "▶ تشغيل المنصّة (باك إند + واجهة)"
+    },
+    {
+      "name": "المتصفّح على الاستوديو 5174",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5174",
+      "webRoot": "${workspaceFolder}/frontend/apps/studio",
+      "preLaunchTask": "▶ تشغيل الكل (+ الاستوديو)"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "▶ المنصّة كاملة (باك إند + متصفّح)",
+      "configurations": ["الباك إند (نقاط توقّف)", "المتصفّح على 5173"],
+      "stopAll": true
+    }
+  ]
+}

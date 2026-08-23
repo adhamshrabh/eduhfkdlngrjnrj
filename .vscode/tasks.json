@@ -1,0 +1,104 @@
+{
+  // مهام التطوير. المنصّة تحتاج خادمين معاً:
+  //   Django على 8000  — الواجهة البرمجية والوسائط ومسارات /content القديمة
+  //   Vite   على 5173  — التطبيق، ويُمرِّر /api و /media و /content إلى 8000
+  // تشغيل الواجهة وحدها يعطي صفحة تفتح ثم تفشل كل نداءاتها.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "الباك إند — Django :8000",
+      "type": "shell",
+      "command": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "args": ["manage.py", "runserver", "8000"],
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        // بلا هذا تنهار الطرفية عند أول رسالة عربية — ترميز ويندوز الافتراضي
+        // cp1252 لا يمثّل الحروف العربية، والانهيار يبدو وكأنه عطل في Django.
+        "env": { "PYTHONIOENCODING": "utf-8" }
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "django",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Performing system checks",
+          "endsPattern": "Quit the server with"
+        }
+      },
+      "presentation": { "group": "servers", "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "الواجهة — Vite :5173",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE v",
+          "endsPattern": "ready in"
+        }
+      },
+      "presentation": { "group": "servers", "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "الاستوديو — Vite :5174",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev:studio"],
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE v",
+          "endsPattern": "ready in"
+        }
+      },
+      "presentation": { "group": "servers", "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "▶ تشغيل المنصّة (باك إند + واجهة)",
+      "dependsOn": ["الباك إند — Django :8000", "الواجهة — Vite :5173"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "▶ تشغيل الكل (+ الاستوديو)",
+      "dependsOn": [
+        "الباك إند — Django :8000",
+        "الواجهة — Vite :5173",
+        "الاستوديو — Vite :5174"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "التحقّق الكامل — typecheck + 1071 اختباراً + بناء",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "verify"],
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "اختبارات الباك إند",
+      "type": "shell",
+      "command": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+      "args": ["manage.py", "test", "apps"],
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        "env": { "PYTHONIOENCODING": "utf-8" }
+      },
+      "problemMatcher": []
+    }
+  ]
+}

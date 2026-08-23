@@ -1,0 +1,11 @@
+{
+  // امتدادان فقط مطلوبان للتشغيل والتنقيح:
+  //   ms-python.debugpy  — نقاط التوقّف في Django (نوع "debugpy" في launch.json)
+  //   ms-python.python   — اختيار مفسّر .venv تلقائياً
+  // تنقيح المتصفّح مدمج في VS Code ولا يحتاج امتداداً.
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.debugpy",
+    "dbaeumer.vscode-eslint"
+  ]
+}
