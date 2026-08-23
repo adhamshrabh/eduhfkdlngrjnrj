@@ -1,0 +1,404 @@
+/**
+ * studio/StudioApi.ts
+ *
+ * EduStudio's transport to content storage.
+ *
+ * TWO TIERS, in priority order:
+ *
+ *   1. ContentStore (IndexedDB) — the DURABLE copy. Every save lands here
+ *      first and unconditionally, so authoring works with no server at
+ *      all: a static build, a file:// page, an offline laptop.
+ *   2. `/__editor/*` dev-server routes — a BEST-EFFORT mirror to disk.
+ *      They exist only under `npm run dev` / `npm run preview`. When
+ *      present they keep content/stories/ in step so work is visible to
+ *      git and to other machines; when absent their failure is not an
+ *      error, because tier 1 already holds the content.
+ *
+ * That ordering is what changed the product: previously a save with no
+ * dev server behind it had nowhere to go.
+ *
+ * Reads fall through the same way — ContentStore, then the dev server,
+ * then the plain static file, so shipped stories still open with no
+ * server running.
+ *
+ * This module is the ONLY place in Studio that knows either mechanism.
+ */
+
+import { AssetUrls, ContentStore, LocalOverrides } from "@core/content";
+
+export interface SaveOutcome {
+  ok: boolean;
+  /** False when content/ was written but the public/ mirror the browser
+   *  fetches was not — the save route reports this explicitly. */
+  publicMirrorOk?: boolean;
+  error?: string;
+}
+
+/**
+ * Turns the data URL the upload route expects back into a Blob for
+ * IndexedDB. Returns null rather than throwing on a malformed string —
+ * the caller then falls back to the dev-server tier alone.
+ */
+function base64ToBlob(dataUrl: string): Blob | null {
+  try {
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) return null;
+    const meta = dataUrl.slice(0, comma);
+    const mime = /:(.*?);/.exec(meta)?.[1] ?? "application/octet-stream";
+    const binary = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  } catch {
+    return null;
+  }
+}
+
+export class StudioApi {
+  /**
+   * Every story this browser can open: the disk index plus anything held
+   * in ContentStore. Mirrors StoryLoader.discover() exactly, so Studio
+   * and the Runtime always agree on which stories exist.
+   */
+  static async listStories(): Promise<string[]> {
+    const stored = await ContentStore.listStories();
+
+    let onDisk: string[] = [];
+    try {
+      const res = await fetch(`/content/stories/index.json?t=${Date.now()}`);
+      if (res.ok) {
+        const data = (await res.json()) as { stories?: unknown };
+        onDisk = Array.isArray(data.stories) ? data.stories.map(String) : [];
+      }
+    } catch {
+      // No dev server / no index on disk — stored stories still list.
+    }
+    return [...onDisk, ...stored.filter((id) => !onDisk.includes(id))];
+  }
+
+  /**
+   * Read one story straight from content/ on disk (not through
+   * public/content), which is the same source /__editor/save writes to —
+   * so Studio always opens exactly what it last saved.
+   */
+  static async loadStory(storyId: string): Promise<Record<string, unknown>> {
+    const stored = await ContentStore.getDocument<Record<string, unknown>>(storyId, "story.json");
+    if (stored) return stored;
+
+    const fromDisk = await StudioApi.readFromDisk(storyId, "story.json");
+    if (fromDisk) return fromDisk;
+
+    throw new Error(`تعذّر فتح القصة "${storyId}".`);
+  }
+
+  /**
+   * Reads a content file from disk: through the dev server when it is
+   * running, otherwise straight from the static path the Runtime itself
+   * fetches. Returns null when the file simply isn't there.
+   */
+  private static async readFromDisk(storyId: string, fileName: string): Promise<Record<string, unknown> | null> {
+    try {
+      const res = await fetch(`/__editor/read?storyId=${encodeURIComponent(storyId)}&fileName=${fileName}`);
+      if (res.ok) {
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text) as Record<string, unknown>;
+          if (data.ok !== false) return data;
+        } catch {
+          // Non-JSON means no dev server — fall through to the static file.
+        }
+      }
+    } catch {
+      /* no dev server; try the static path */
+    }
+
+    try {
+      const res = await fetch(`/content/stories/${encodeURIComponent(storyId)}/${fileName}?t=${Date.now()}`);
+      if (!res.ok) return null;
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Scaffold a new story. The documents are written to ContentStore
+   * (durable, server-free); the dev server is then asked to create the
+   * matching folder on disk so the story is also visible to git — but a
+   * missing server is not a failure.
+   *
+   * Refuses an id that already exists in either tier, matching the
+   * dev-server route's own 409.
+   */
+  static async createStory(storyId: string, title: string): Promise<void> {
+    const existing = await StudioApi.listStories();
+    if (existing.includes(storyId)) {
+      throw new Error(`قصة بهذا المعرّف "${storyId}" موجودة بالفعل.`);
+    }
+
+    // Identical to createStoryRoute.ts's scaffold, so a story created
+    // with or without a dev server is byte-equivalent.
+    const storyJson = {
+      id: storyId,
+      title,
+      language: "ar",
+      story: {
+        id: `story-${storyId}`,
+        kind: "story",
+        title,
+        scene: "YaraBedScene",
+        bundle: `${storyId}-bundle`,
+        assets: [],
+        scenes: [
+          { id: "scene01", lines: [{ id: "scene01_l1", speaker: "", text: "" }], activity: null, nextScene: null }
+        ]
+      },
+      schemaVersion: "1.0"
+    };
+    const layoutJson = { design: { width: 1920, height: 1080 }, characters: [], schemaVersion: "1.0" };
+
+    const savedStory = await ContentStore.saveDocument(storyId, "story.json", storyJson);
+    await ContentStore.saveDocument(storyId, "layout.json", layoutJson);
+    if (!savedStory) {
+      throw new Error("تعذّر حفظ القصة في هذا المتصفّح — قد يكون التخزين معطّلًا (وضع التصفّح الخاص).");
+    }
+
+    // Best effort: also put it on disk when a dev server is listening.
+    try {
+      await fetch("/__editor/create-story", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: storyId, title })
+      });
+    } catch {
+      /* no dev server — the store already holds it */
+    }
+  }
+
+  /**
+   * Delete a story: its whole folder on disk plus its entry in
+   * index.json. Irreversible — the caller must confirm with the author
+   * before calling this (StudioApp.deleteStory does).
+   */
+  static async deleteStory(storyId: string): Promise<{ ok: boolean; error?: string }> {
+    // The browser copy is the one that would otherwise resurrect the
+    // story on the next load, so it goes first.
+    await ContentStore.deleteStory(storyId);
+    LocalOverrides.clearAllForStory(storyId);
+
+    // Then the disk copy, when a dev server is there to do it. A missing
+    // server is not an error: nothing in this browser still holds it.
+    try {
+      const res = await fetch("/__editor/delete-story", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: storyId })
+      });
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text) as { ok?: boolean; error?: string };
+        if (res.ok && data.ok === true) return { ok: true };
+        // A story that only ever lived in this browser is not on disk —
+        // a 404 from the route is the expected outcome, not a failure.
+        if (res.status === 404) return { ok: true };
+        return { ok: false, error: String(data.error ?? "تعذّر حذف القصة من القرص.") };
+      } catch {
+        return { ok: true }; // no dev server behind the URL
+      }
+    } catch {
+      return { ok: true };
+    }
+  }
+
+  /**
+   * Deletes one asset file.
+   *
+   * Same two-tier shape as every other write: the browser-held copy is
+   * dropped first (it is what would otherwise resurrect the file on the
+   * next load), then the disk copy when a dev server is there to do it.
+   * A missing server is not a failure — nothing in this browser still
+   * holds the asset either way, and the caller has already removed the
+   * `assets[]` entry that named it.
+   */
+  static async deleteAsset(storyId: string, path: string): Promise<{ ok: boolean; error?: string }> {
+    await ContentStore.deleteAsset(storyId, path);
+    AssetUrls.forget(storyId, path);
+
+    try {
+      const res = await fetch("/__editor/delete-asset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storyId, path })
+      });
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text) as { ok?: boolean; error?: string };
+        if (res.ok && data.ok === true) return { ok: true };
+        return { ok: false, error: String(data.error ?? "تعذّر حذف الملف من القرص.") };
+      } catch {
+        return { ok: true }; // no dev server behind the URL
+      }
+    } catch {
+      return { ok: true };
+    }
+  }
+
+  /** Write story.json for `storyId`. */
+  static async saveStory(storyId: string, storyJson: Record<string, unknown>): Promise<SaveOutcome> {
+    return StudioApi.saveFile(storyId, "story.json", storyJson);
+  }
+
+  /**
+   * Read layout.json for `storyId`. Unlike loadStory(), a missing file is
+   * NOT an error — most stories (and every brand-new one) have no saved
+   * layout yet, which just means every sprite uses its own default
+   * position (same "never throws" convention as LayoutApplier.load() in
+   * the Runtime).
+   */
+  static async loadLayout(storyId: string): Promise<Record<string, unknown> | null> {
+    const stored = await ContentStore.getDocument<Record<string, unknown>>(storyId, "layout.json");
+    if (stored) return stored;
+    return StudioApi.readFromDisk(storyId, "layout.json");
+  }
+
+  /** Write layout.json for `storyId`. */
+  static async saveLayout(storyId: string, layoutJson: Record<string, unknown>): Promise<SaveOutcome> {
+    return StudioApi.saveFile(storyId, "layout.json", layoutJson);
+  }
+
+  /**
+   * Upload one asset file into the story's own assets folder and return
+   * the story-relative path to record in `assets[]` (§4).
+   *
+   * `assetType` decides the sub-folder the dev server writes to
+   * ("image" → assets/images, "audio" → assets/audio), matching what the
+   * route already does for the older embedded editor — Studio reuses that
+   * endpoint rather than introducing a second upload path.
+   *
+   * Note this writes a FILE immediately, while the `assets[]` entry that
+   * names it only reaches disk on the next Save. An import that is never
+   * saved therefore leaves an unreferenced file behind — harmless, but
+   * the reason the UI tells the author to save after importing.
+   */
+  static async uploadAsset(
+    storyId: string,
+    fileName: string,
+    base64: string,
+    assetType: "image" | "audio"
+  ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+    // The path an assets[] entry records. Mirrors the dev-server route's
+    // own folder rule ("audio" → assets/audio, else assets/<type>s) so a
+    // story authored with or without a server references the same path.
+    const folder = assetType === "audio" ? "audio" : `${assetType}s`;
+    const path = `assets/${folder}/${fileName}`;
+
+    // Tier 1 — the durable copy, and the only one that exists when no
+    // dev server is running. Registered with AssetUrls immediately so
+    // the new file is displayable without re-reading IndexedDB.
+    const blob = base64ToBlob(base64);
+    let storedInBrowser = false;
+    if (blob) {
+      storedInBrowser = await ContentStore.saveAsset(storyId, path, blob);
+      if (storedInBrowser) AssetUrls.register(storyId, path, blob);
+    }
+
+    // Tier 2 — best-effort write to disk.
+    let savedToDisk = false;
+    let diskError: string | null = null;
+    try {
+      const res = await fetch("/__editor/upload-base64", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storyId, fileName, base64, assetType })
+      });
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text) as { ok?: boolean; path?: string; error?: string };
+        if (res.ok && data.ok === true && typeof data.path === "string") savedToDisk = true;
+        else diskError = String(data.error ?? `فشل رفع الملف (HTTP ${res.status}).`);
+      } catch {
+        diskError = null; // no dev server behind the URL
+      }
+    } catch {
+      diskError = null;
+    }
+
+    if (!storedInBrowser && !savedToDisk) {
+      return {
+        ok: false,
+        error:
+          diskError ??
+          "تعذّر حفظ الملف: لا يوجد خادم تأليف، والتخزين في هذا المتصفّح غير متاح أو امتلأت المساحة."
+      };
+    }
+    return { ok: true, path };
+  }
+
+  /**
+   * Writes `fileName` to disk, then clears any stale browser-local
+   * override for the same (storyId, fileName) pair.
+   *
+   * Why this second step is required, not optional: StoryLoader/
+   * LayoutLoader (used by the real Runtime, not by Studio) check
+   * LocalOverrides BEFORE ever reading the file this just wrote — that
+   * mechanism exists so the OLD embedded editor's saves survive even
+   * when there's no dev server behind them (see LocalOverrides.ts).  If
+   * this browser ever saved this story through that older path, its
+   * override wins over Studio's fresh disk write forever, silently —
+   * Preview would show stale content with no error anywhere explaining
+   * why, since Studio's own read path (`/__editor/read`, above) never
+   * consults LocalOverrides and so never notices the mismatch. Clearing
+   * it here means a Studio save is unconditionally what Preview shows
+   * next, regardless of this browser's editing history.
+   */
+  private static async saveFile(storyId: string, fileName: string, json: Record<string, unknown>): Promise<SaveOutcome> {
+    // Both tiers are attempted; the save succeeds if EITHER holds the
+    // content. Requiring the browser store would wrongly fail a save on
+    // a browser with IndexedDB disabled but a working dev server behind
+    // it — the content did reach disk in that case.
+    const storedInBrowser = await ContentStore.saveDocument(storyId, fileName, json);
+
+    let savedToDisk = false;
+    let publicMirrorOk = false;
+    let diskError: string | null = null;
+    try {
+      const res = await fetch("/__editor/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storyId, storyJson: json, fileName })
+      });
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text) as { ok?: boolean; publicMirrorOk?: boolean; error?: string };
+        if (res.ok && data.ok === true) {
+          savedToDisk = true;
+          publicMirrorOk = data.publicMirrorOk !== false;
+        } else {
+          diskError = String(data.error ?? `فشل الحفظ (HTTP ${res.status}).`);
+        }
+      } catch {
+        // Non-JSON body = no dev server behind the URL (SPA fallback).
+        diskError = null;
+      }
+    } catch {
+      diskError = null; // offline / no server — expected, not an error
+    }
+
+    if (!storedInBrowser && !savedToDisk) {
+      return {
+        ok: false,
+        error:
+          diskError ??
+          "تعذّر الحفظ: لا يوجد خادم تأليف، والتخزين في هذا المتصفّح غير متاح (وضع التصفّح الخاص أو امتلاء المساحة)."
+      };
+    }
+
+    // A stale legacy override would otherwise keep shadowing what was
+    // just saved — the exact bug LocalOverrides' own header describes.
+    LocalOverrides.clear(storyId, fileName);
+
+    // publicMirrorOk false means "saved, but not on disk" — the UI uses
+    // it to warn that the change is confined to this browser.
+    return { ok: true, publicMirrorOk: savedToDisk ? publicMirrorOk : false };
+  }
+}

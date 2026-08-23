@@ -1,0 +1,8 @@
+أيقونات PWA (icon-192.png / icon-512.png) في public/icons/ — مولَّدة من
+نفس علامة المنصّة (src/components/Logo.tsx: كتاب مفتوح + نجمة، تدرّج
+بنفسجي العلامة) لا صورة عشوائية. لإعادة توليدها بعد أي تعديل على الشعار:
+
+  powershell -File apps/web/scripts/render-icons.ps1
+
+يرسمها عبر System.Drawing مباشرة (بلا مكتبة تحويل SVG إضافية) ويكتبها
+فوق الملفين أعلاه.

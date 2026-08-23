@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+db.sqlite3
+/backend/media/
+/backend/staticfiles/
+/backend/.env
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# نسخ احتياطية ومخرجات محلية
+/backups/
+_transfer/
+
+# محرّرات وأنظمة
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>الاستوديو — منصّة الروضة</title>
+    <!-- نفس خط تطبيق الويب حرفياً — جزء من توحيد الهوية البصرية بين
+         الاستوديو والمنصّة، حتى لا يبدو الانتقال بينهما كموقعين مختلفين. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <!--
+      رابط العودة للمنصّة — خارج #studio عمداً، لا يمسّه StudioApp.ts إطلاقاً.
+      المشكلة التي يحلّها: الاستوديو تطبيق منفصل تماماً بلا أي شريط تنقّل
+      خاص به (تصميم Phase 0 المتعمَّد)، فمن دخل من الشريط السفلي بالجوال
+      بالتطبيق الرئيسي يجد نفسه بلا أي طريقة للرجوع — لا شريط سفلي هنا ولا
+      أي عنصر آخر. رابط ثابت الموضع هو أبسط حلّ لا يحتاج لمس منطق الاستوديو.
+      href الافتراضي (/stories) يعمل صحيحاً بالإنتاج (أصل واحد خلف Django)؛
+      main.ts يستبدله بقيمة VITE_APP_URL في وضع التطوير فقط (منفذ منفصل).
+    -->
+    <a id="s-back-link" href="/stories">
+      <span aria-hidden="true">→</span>
+      العودة للمنصّة
+    </a>
+    <div id="studio"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

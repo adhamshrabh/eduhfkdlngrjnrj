@@ -1,0 +1,1744 @@
+/*
+ * studio/ui/studio.css
+ *
+ * EduStudio's minimal UI foundation (Phase 0, deliberately scoped down by
+ * frozen decision #3): design tokens, layout containers, buttons, panels,
+ * inputs. Nothing else. Tabs / cards / badges / dialogs are intentionally
+ * absent — they get built when a real phase needs them, not before.
+ */
+
+:root {
+  /* Surfaces: a cool, low-chroma stack so the artwork on the stage is the
+     most saturated thing on screen. The Studio must never out-colour the
+     story it is used to build. */
+  --s-bg: #f3f5fa;
+  --s-surface: #ffffff;
+  --s-surface-2: #f7f8fc;
+  --s-surface-3: #eef1f8;
+  --s-border: #e3e7f0;
+  --s-border-strong: #cfd5e4;
+  --s-ink: #16203a;
+  --s-ink-soft: #4b5570;
+  --s-ink-faint: #7a8299;
+
+  /* توحيد مطلوب صراحة مع باقي المنصّة: نفس تدرّج العلامة (--s-brand-a/b)
+     هو اللون الأساسي هنا أيضاً — زر الحفظ، التاب النشط، حلقة التركيز،
+     وزر الشبح. لم يعد برتقالياً منفصلاً بهويّته الخاصة. */
+  --s-accent: var(--s-brand-a);
+  --s-accent-strong: var(--s-brand-b);
+  --s-accent-tint: #eeedfe;
+
+  /* Green is reserved for one thing only — playing the story in the real
+     engine. Giving it to buttons generally would spend the colour that
+     tells an author "this is the moment of truth". */
+  --s-play: #17914f;
+  --s-play-strong: #0f7540;
+  --s-play-tint: #e4f4ea;
+
+  --s-good: #17914f;
+  --s-good-tint: #e4f4ea;
+  --s-bad: #c0392b;
+  --s-bad-tint: #fce9e6;
+  --s-warn: #c1622f;
+  --s-warn-tint: #fbeadf;
+
+  /* Beat accents. Each maps to something the document actually says, so a
+     colour is never decoration alone: speech, a decision, an activity. */
+  --s-say: #3f5bd9;
+  --s-say-tint: #e9edfd;
+  --s-fork: #d4831c;
+  --s-fork-tint: #fdf1de;
+  /* Text on the amber tint needs its own, darker ink: the accent itself
+     lands near 2.9:1 there, which is decoration contrast, not label
+     contrast. */
+  --s-fork-ink: #8a5310;
+  --s-do: #7150c9;
+  --s-do-tint: #efeafb;
+
+  --s-radius: 16px;
+  --s-radius-sm: 10px;
+  --s-pill: 999px;
+  --s-gap: 12px;
+
+  /* هوية بصرية موحّدة مع تطبيق الويب — نفس تدرّج العلامة حرفياً. يُستخدم
+     للخلفية المتحركة، وحدّ البطاقة الزجاجية، وأيضاً كلون --s-accent
+     الأساسي أعلاه (الحفظ، التاب النشط، التركيز). الأخضر يبقى وحده
+     استثناءً — لون معاينة المحرّك الفريد (راجعي التعليق عند .s-btn
+     [title*="المحرّك"]). */
+  --s-brand-a: #7f77dd;
+  --s-brand-b: #534ab7;
+  --s-brand-sky: #7dd3fc;
+  --s-brand-pink: #f9a8d4;
+
+  /* Two elevations, no more. A third would start ranking things the
+     author does not rank. */
+  --s-shadow-1: 0 1px 2px rgba(22, 32, 58, 0.06), 0 1px 3px rgba(22, 32, 58, 0.04);
+  --s-shadow-2: 0 10px 28px rgba(22, 32, 58, 0.10);
+
+  /* Height available to a workspace panel: viewport minus the toolbar,
+     validation strip, dev note and app padding. Panels scroll inside this
+     instead of growing the page (see .s-panel__body). */
+  --s-panel-max: calc(100vh - 190px);
+
+  --s-font: "Cairo", "Dubai", "Segoe UI", Tahoma, "Noto Naskh Arabic", "Noto Sans Arabic", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --s-bg: #10132a;
+    --s-surface: #191d35;
+    --s-surface-2: #212545;
+    --s-surface-3: #272c50;
+    --s-border: #333959;
+    --s-border-strong: #454c72;
+    --s-ink: #f1f2f8;
+    --s-ink-soft: #b9bcd4;
+    --s-ink-faint: #9296ae;
+    --s-accent: #a79cf0;
+    --s-accent-strong: #c4bdf5;
+    --s-accent-tint: #2a2557;
+    --s-play: #4fc588;
+    --s-play-strong: #6fd7a1;
+    --s-play-tint: #16321f;
+    --s-good: #4fc588;
+    --s-good-tint: #16321f;
+    --s-bad: #e2766a;
+    --s-bad-tint: #3a2020;
+    --s-warn: #e0925a;
+    --s-warn-tint: #3a2a1c;
+    --s-say: #8b9dfb;
+    --s-say-tint: #1e2450;
+    --s-fork: #e2a955;
+    --s-fork-tint: #3a2f1c;
+    --s-fork-ink: #f0c079;
+    --s-do: #a58cf0;
+    --s-do-tint: #272045;
+    --s-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --s-shadow-2: 0 10px 28px rgba(0, 0, 0, 0.45);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #f7f7fc;
+  color: var(--s-ink);
+  font-family: var(--s-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- خلفية Aurora موحّدة مع تطبيق الويب ----------
+   ثلاث كتل تدرّج ضبابية بألوان العلامة نفسها، عبر pseudo-elements ثابتة
+   الموضع بدل عنصر DOM — لا حاجة للمسّ StudioApp.ts إطلاقاً. */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  z-index: -1;
+  border-radius: 999px;
+  filter: blur(110px);
+  pointer-events: none;
+}
+
+body::before {
+  top: -25vw;
+  right: -25vw;
+  width: 60vw;
+  height: 60vw;
+  max-width: 720px;
+  max-height: 720px;
+  background: color-mix(in srgb, var(--s-brand-a) 30%, transparent);
+  animation: s-aurora-a 22s ease-in-out infinite;
+}
+
+body::after {
+  top: 30vh;
+  left: -22vw;
+  width: 50vw;
+  height: 50vw;
+  max-width: 620px;
+  max-height: 620px;
+  background: color-mix(in srgb, var(--s-brand-sky) 26%, transparent);
+  animation: s-aurora-b 26s ease-in-out infinite;
+}
+
+@keyframes s-aurora-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(4%, 6%) scale(1.08); }
+  66% { transform: translate(-3%, 3%) scale(.96); }
+}
+
+@keyframes s-aurora-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40% { transform: translate(-5%, -4%) scale(1.05); }
+  70% { transform: translate(3%, -2%) scale(.94); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before, body::after { animation: none; }
+}
+
+/* الوضع الداكن يبقى سطحاً صلباً هادئاً بلا Aurora — التباين مع الألوان
+   الدلالية (البرتقالي/الأخضر) على خلفية زجاجية داكنة غير مضمون بما يكفي
+   لأداة تحرير، والاستوديو أصلاً «يجب ألّا يفوق تشبّع القصة نفسها». */
+@media (prefers-color-scheme: dark) {
+  body::before, body::after { display: none; }
+  html, body { background: var(--s-bg); }
+}
+
+/* ---------- رابط العودة للمنصّة ---------- */
+
+/* أسفل الشاشة لا أعلاها عمداً: أعلى اليمين (بداية RTL) تشغله بطاقة
+   «EduStudio» بالشريط العلوي فعلاً — وضع رابطنا هناك كان يتراكب معها
+   حرفياً (تأكّدت بقياس المستطيلات: نفس المنطقة تماماً). أسفل الشاشة
+   فارغ دائماً بلا استثناء مهما طال المحتوى أو تغيّر عرض الشاشة، وهو
+   نفس المكان الذي اعتادت عليه المعلّمة بالشريط السفلي بتطبيق الويب. */
+#s-back-link {
+  position: fixed;
+  bottom: 16px;
+  inset-inline-start: 16px;
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 8px 18px;
+  border-radius: var(--s-pill);
+  background: color-mix(in srgb, var(--s-surface) 90%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid color-mix(in srgb, white 60%, var(--s-border));
+  box-shadow: var(--s-shadow-2);
+  color: var(--s-accent);
+  font-family: var(--s-font);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform .2s cubic-bezier(.2,.8,.3,1), box-shadow .2s ease;
+}
+
+#s-back-link:hover { transform: translateY(-2px); box-shadow: var(--s-shadow-2), 0 4px 14px color-mix(in srgb, var(--s-accent) 30%, transparent); }
+#s-back-link:active { transform: scale(.96); }
+#s-back-link:focus-visible { outline: 2px solid var(--s-accent); outline-offset: 2px; }
+
+@media (prefers-color-scheme: dark) {
+  #s-back-link { background: var(--s-surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* ---------- layout containers ---------- */
+
+.s-app {
+  direction: rtl;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-gap);
+  padding: 16px;
+}
+
+.s-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-gap);
+  flex-wrap: wrap;
+}
+
+.s-bar__spacer { flex: 1; }
+
+/* Scenes | Stage | Inspector in DOM order. The app is RTL, so this reads
+   right→left on screen: Scenes at the RTL start (right), Stage centre,
+   Inspector at the end (left). An earlier LTR override put Scenes on the
+   left to match a mockup — that split the interface's direction (toolbar
+   RTL, columns LTR) and broke Arabic reading order, so it is gone.
+
+   Side columns clamp rather than sit at fixed px: at 1280 they shrink so
+   the Stage keeps the majority of the screen; on a large display they
+   stop growing so the Stage takes the surplus. */
+.s-workspace {
+  display: grid;
+  grid-template-columns: clamp(196px, 15vw, 272px) minmax(0, 1fr) clamp(292px, 21vw, 376px);
+  gap: var(--s-gap);
+  align-items: start;
+}
+
+@media (max-width: 1180px) {
+  .s-workspace { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The centre column stacks the stage above the asset dock. */
+.s-centre {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-gap);
+  min-width: 0;
+}
+
+/* 16:9 to match the engine's 1920×1080 design space exactly, so the box
+   is always the size of the picture inside it — the old min-height left
+   up to 123px of dead grey below the canvas on a 1280-wide screen. */
+.s-stage-canvas {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--s-surface-2);
+}
+
+/* ---------- tabs (Properties panel: المشهد | العنصر | النشاط | التأثيرات) ---------- */
+
+.s-tabbar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--s-border);
+  margin-bottom: 2px;
+  flex-wrap: wrap;
+}
+
+.s-tab {
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--s-ink-faint);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.s-tab:hover { color: var(--s-ink); }
+
+.s-tab--active {
+  color: var(--s-accent-strong);
+  border-bottom-color: var(--s-accent);
+}
+
+.s-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.s-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* One branch of a choice: its destination, and the button that opens it.
+   The text takes the room and the button stays put, so a long branch
+   label never pushes «تحرير» out of reach. */
+.s-row--tight {
+  gap: 6px;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+}
+
+.s-row--tight > .s-item__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- panel ---------- */
+
+/* Calm surface: a panel is a region of quiet space, not a bordered card.
+   Separation comes from the background step and generous padding — the
+   single biggest change away from the previous "everything in a box" look. */
+/* One hairline at PANEL level only. Removing it entirely left boundaries
+   at 1.14:1 against the app background — below what is reliably visible
+   on a projector or an off-angle laptop. Rows inside stay borderless. */
+.s-panel {
+  background: color-mix(in srgb, var(--s-surface) 78%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid color-mix(in srgb, white 60%, var(--s-border));
+  border-radius: var(--s-radius);
+  box-shadow: var(--s-shadow-1);
+  overflow: hidden;
+}
+
+/* الوضع الداكن: سطح صلب — الشفافية فوق الطبقات الداكنة المتراكبة (لوحة
+   داخل لوحة أحياناً) تُنتج تبايناً غير مضمون، والاستوديو أداة عمل لا
+   واجهة تسويقية. */
+@media (prefers-color-scheme: dark) {
+  .s-panel {
+    background: var(--s-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border-color: var(--s-border);
+  }
+}
+
+.s-panel__head {
+  padding: 18px 20px 10px;
+  border-bottom: none;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.s-panel__body {
+  padding: 4px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Scenes and Inspector scroll within their own bounds so a long scene
+   list or a full property sheet never stretches the page. The Stage is
+   deliberately excluded — it must never scroll away from the author. */
+.s-workspace > .s-panel > .s-panel__body {
+  max-height: var(--s-panel-max);
+  overflow-y: auto;
+}
+
+.s-title {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.s-subtitle {
+  font-size: 12px;
+  color: var(--s-ink-faint);
+  margin: 0;
+}
+
+.s-empty {
+  color: var(--s-ink-faint);
+  font-size: 12.5px;
+  padding: 10px 0;
+}
+
+/* ---------- buttons ---------- */
+
+.s-btn {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 14px;
+  border-radius: var(--s-radius-sm);
+  border: none;
+  background: var(--s-surface-2);
+  color: var(--s-ink);
+  cursor: pointer;
+  transition: background-color .2s ease, opacity .2s ease, transform .2s cubic-bezier(.2,.8,.3,1), box-shadow .2s ease;
+}
+
+.s-btn:hover:not(:disabled) { background: var(--s-border); }
+.s-btn:active:not(:disabled) { transform: scale(.96); }
+
+.s-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.s-btn--primary {
+  background: var(--s-accent);
+  border-color: var(--s-accent);
+  color: #fff;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--s-accent) 35%, transparent);
+}
+
+.s-btn--primary:hover:not(:disabled) {
+  background: var(--s-accent-strong);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--s-accent) 45%, transparent);
+  transform: translateY(-1px);
+}
+
+.s-btn--ghost {
+  background: transparent;
+  color: var(--s-accent-strong);
+  /* `align-self: flex-start` used to live here so a ghost button would
+     sit level with a tall stacked field beside it. As a rule on the
+     VARIANT it applied everywhere, and in the toolbar it left one button
+     15px above its neighbours. Alignment belongs to the container that
+     knows the arrangement, not to a colour scheme. */
+  align-self: auto;
+}
+
+.s-btn--ghost:hover:not(:disabled) { background: var(--s-accent-tint); }
+
+.s-btn--danger {
+  background: transparent;
+  border-color: transparent;
+  color: var(--s-bad);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+/* Single-glyph buttons (scene reorder ↑↓) — the default padding is sized
+   for text labels and looks oversized around one character. */
+.s-btn--icon {
+  padding: 6px 10px;
+  line-height: 1;
+}
+
+/* Every focusable control, including the ones that carry no resting
+   border. The ring is a SHAPE, not a colour change, so it still reads
+   when colour perception differs or the display is poor. */
+.s-btn:focus-visible,
+.s-input:focus-visible,
+.s-select:focus-visible,
+.s-tab:focus-visible,
+.s-asset-card:focus-visible,
+.s-dock__toggle:focus-visible {
+  outline: 2px solid var(--s-accent);
+  outline-offset: 2px;
+}
+
+/* ---------- inputs ---------- */
+
+.s-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.s-field__label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--s-ink-faint);
+}
+
+/* A standalone group heading. Space + one hairline is what separates
+   sections now that they no longer sit in boxes. */
+.s-stack > .s-field__label:not(:first-child),
+.s-panel__body > .s-field__label:not(:first-child) {
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--s-border);
+}
+
+.s-input,
+.s-select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: var(--s-surface-2);
+  color: var(--s-ink);
+  width: 100%;
+  transition: border-color .18s ease;
+}
+
+.s-input:hover,
+.s-select:hover { border-color: var(--s-border); }
+
+.s-input:focus,
+.s-select:focus { border-color: var(--s-accent); }
+
+/* Italic, because a placeholder that merely LOOKS faint is still read as
+   typed text — an author filled in one field, saw "shepherd" sitting in
+   the other, and reasonably concluded both were filled. Slant is a shape
+   difference rather than a contrast one, so it separates the two without
+   pushing the hint below readable contrast. */
+.s-input::placeholder {
+  color: var(--s-ink-faint);
+  font-style: italic;
+  opacity: 0.85;
+}
+
+/* ---------- status (validation gate + save state) ---------- */
+
+.s-status {
+  border-radius: var(--s-radius);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  border: 1px solid transparent;
+}
+
+.s-status--ok   { background: var(--s-good-tint); color: var(--s-good); }
+.s-status--bad  { background: var(--s-bad-tint);  color: var(--s-bad); }
+.s-status--warn { background: var(--s-warn-tint); color: var(--s-warn); }
+.s-status--info { background: var(--s-surface-2); color: var(--s-ink-soft); }
+
+.s-status ul {
+  margin: 6px 0 0;
+  padding-inline-start: 18px;
+}
+
+/* ---------- element list ---------- */
+
+/* A list row is a line of content, not a card. Hover and selection are
+   the only things that draw a surface — everything at rest is flat. */
+.s-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  transition: background-color .18s ease;
+}
+
+.s-item + .s-item { margin-top: 2px; }
+
+.s-item:hover { background: var(--s-surface-2); }
+
+.s-item--selected,
+.s-item--selected:hover {
+  background: var(--s-accent-tint);
+  box-shadow: inset 3px 0 0 var(--s-accent);
+}
+
+.s-item__name {
+  font-size: 12.5px;
+  font-weight: 700;
+  flex: 1;
+  /* A floor, not zero: the row already wraps, so with min-width:0 the
+     name collapsed to "01…" to make room for the start badge beside it.
+     Below this width the badge drops to its own line instead — the
+     scene's name is the thing the author is reading for. */
+  min-width: 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-item__meta {
+  font-size: 11px;
+  color: var(--s-ink-faint);
+}
+
+/* A scene the child can never arrive at: faint is wrong here — this
+   is the one row in the list that needs to be noticed. */
+.s-item__meta--warn {
+  color: var(--s-warn);
+  font-weight: 600;
+}
+
+/* The entry point (v1.0.3 §1). It used to be faint 11px text, which is
+   how an author could chain scenes by hand and never notice the story
+   starts somewhere else. A badge, because this is the single most
+   consequential fact about a row in this list. */
+.s-item__meta--start {
+  color: var(--s-accent-strong);
+  background: var(--s-accent-tint);
+  border: 1px solid var(--s-accent);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ---------- inline field ---------- */
+
+/* Label beside the control instead of above it. For short lists of
+   one-line settings (the activity's four lifecycle moments), stacking
+   label-over-select doubled the height of a section most scenes leave
+   empty. */
+.s-field--inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.s-field--inline > .s-field__label {
+  margin: 0;
+  flex: 0 0 auto;
+  min-width: 122px;
+}
+
+.s-field--inline > select { flex: 1; min-width: 0; }
+
+/* Details belonging to the moment above them, set in from its edge so
+   the four moments still read as a list. */
+.s-field--inline + .s-field,
+.s-field--inline + .s-row {
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--s-accent-tint);
+}
+
+/* A duplicate id is caught the moment it is typed, not only at save —
+   two branches answering the same address is ambiguous everywhere. */
+.s-choice__clash:empty { display: none; }
+
+.s-choice__clash {
+  font-size: 11.5px;
+  color: var(--s-bad);
+  padding: 2px 0 4px;
+}
+
+/* ---------- effect step ---------- */
+
+/* One leg of a chain. Set in from the edge with a rule down the side so
+   several steps read as one movement rather than as unrelated controls —
+   the same grouping the branch editor uses, for the same reason. */
+/* One step of an effect chain. NOT the importer's step indicator, which
+   owns `.s-step` further down — two unrelated components had squatted on
+   one class name, so styling either one silently restyled the other. */
+.s-fx-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--s-accent-tint);
+}
+
+.s-fx-step + .s-fx-step { margin-top: 10px; }
+
+/* ---------- asset chooser (folded picker) ---------- */
+
+/* The current choice, as one row. Reads as a value you can change, not as
+   a control you must operate — which is why the thumbnail leads and the
+   caret is the quietest thing in it. */
+.s-chooser {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--s-border);
+  border-radius: var(--s-radius);
+  background: var(--s-surface);
+  color: var(--s-ink);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+
+.s-chooser:hover { background: var(--s-surface-2); border-color: var(--s-accent); }
+
+.s-chooser__thumb {
+  width: 44px;
+  height: 30px;
+  flex: none;
+  border-radius: 5px;
+  object-fit: cover;
+  background: var(--s-surface-2);
+}
+
+.s-chooser__thumb--none {
+  border: 1px dashed var(--s-border);
+  background: transparent;
+}
+
+.s-chooser__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.s-chooser__caret { color: var(--s-ink-faint); font-size: 11px; }
+
+/* Folded by default — this is the whole point of the component. */
+.s-chooser__panel { display: none; margin-top: 6px; }
+.s-chooser__panel--open { display: block; }
+
+/* ---------- element chips ---------- */
+
+/* A scene's elements as one wrapped row instead of one full-width card
+   each: the stage is where an element is actually inspected, so this list
+   only has to answer "what is in this scene". */
+.s-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.s-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--s-border);
+  border-radius: 999px;
+  background: var(--s-surface);
+  color: var(--s-ink);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+
+.s-chip:hover { background: var(--s-surface-2); }
+
+.s-chip--selected {
+  background: var(--s-accent-tint);
+  border-color: var(--s-accent);
+}
+
+.s-chip__meta { color: var(--s-ink-faint); font-size: 11px; }
+
+.s-chip__remove {
+  border: none;
+  background: none;
+  padding: 0 0 0 2px;
+  color: var(--s-ink-faint);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.s-chip__remove:hover { color: var(--s-bad); }
+
+/* ---------- scenario page ---------- */
+
+/* A full-width page, not a third panel: the script is the one thing that
+   is read top-to-bottom in the order the child lives it, and a 320px
+   column cannot show that. The stage stays visible but small — writing
+   and seeing the result must not be separate acts. */
+.s-scenario { display: flex; flex-direction: column; gap: var(--s-gap); }
+
+.s-scenario__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 4px;
+}
+
+.s-scenario__title { font-size: 15px; font-weight: 700; flex: 1; }
+
+.s-scenario__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(240px, 24vw, 340px);
+  gap: var(--s-gap);
+  align-items: start;
+}
+
+.s-scenario__main > .s-panel__body,
+.s-scenario__side > .s-panel__body {
+  max-height: var(--s-panel-max);
+  overflow-y: auto;
+}
+
+.s-scenario__stage { aspect-ratio: 16 / 9; width: 100%; }
+
+@media (max-width: 900px) {
+  .s-scenario__body { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* One beat of the scene: a dialogue line, the activity, or a choice
+   point. Numbered because order is the whole meaning here. */
+.s-beat { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; }
+.s-beat + .s-beat { border-top: 1px solid var(--s-border); }
+.s-beat__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.s-beat__n {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--s-surface-2);
+  color: var(--s-ink-faint);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.s-beat--fork .s-beat__n { background: var(--s-accent-tint); color: var(--s-accent-strong); }
+
+/* ---------- choice point (branching) ---------- */
+
+/* One branch of a choice point. Grouped by an indent rather than a box:
+   these already sit inside a line row, and a second border there would
+   be the "everything in a card" look the workspace moved away from. The
+   marker is what makes two branches read as a set at a glance. */
+.s-choice {
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--s-accent-tint);
+}
+
+.s-choice + .s-choice { margin-top: 6px; }
+
+/* ---------- asset picker ---------- */
+
+/* Capped, not unbounded: a story with a dozen-plus images would
+   otherwise push every control below it off-screen, turning the picker
+   into the whole panel. Two rows stay visible; the rest scroll. */
+.s-asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 8px;
+  max-height: 216px;
+  overflow-y: auto;
+  padding-inline-end: 4px;
+}
+
+.s-asset-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 2px solid var(--s-border);
+  border-radius: var(--s-radius);
+  background: var(--s-surface-2);
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--s-ink);
+}
+
+.s-asset-card:hover { border-color: var(--s-ink-faint); }
+
+.s-asset-card--selected {
+  border-color: var(--s-accent);
+  background: var(--s-accent-tint);
+}
+
+.s-asset-card__thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--s-surface);
+  display: block;
+}
+
+.s-asset-card__thumb--none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  color: var(--s-ink-faint);
+  text-align: center;
+  padding: 4px;
+}
+
+.s-asset-card__label {
+  font-size: 10.5px;
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- dev-only notice ---------- */
+
+.s-devnote {
+  font-size: 11.5px;
+  color: var(--s-ink-faint);
+  background: var(--s-surface);
+  border: 1px dashed var(--s-border);
+  border-radius: var(--s-radius);
+  padding: 8px 12px;
+}
+
+/* ---------- asset dock (under the stage) ---------- */
+
+/* Assets are story-wide raw material, not a property of the selected
+   scene — so they sit under the stage where they are reached while
+   building, instead of competing for room in the inspector.
+
+   Collapsed by default: left open it grew to 687px — taller than the
+   Stage itself — pushing the thing being edited off-screen. */
+.s-dock__toggle {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--s-ink);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: start;
+}
+
+.s-dock__count {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--s-ink-faint);
+}
+
+/* Rotates to point down when open — a shape change, so the state does
+   not depend on colour alone. */
+.s-dock__chevron {
+  margin-inline-start: auto;
+  transition: transform .18s ease;
+  font-size: 11px;
+  color: var(--s-ink-faint);
+}
+
+.s-dock__toggle[aria-expanded="true"] .s-dock__chevron { transform: rotate(180deg); }
+
+/* Bounded so the Stage above it stays on screen no matter how many
+   assets a story accumulates. */
+.s-dock__body {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.s-dock__grid {
+  max-height: 172px;
+  overflow-y: auto;
+}
+
+.s-dock__audio {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.s-dock__audio .s-item {
+  flex: 1 1 220px;
+  gap: 10px;
+  background: var(--s-surface-2);
+}
+
+.s-dock__audio audio { height: 32px; }
+
+/* ---------- modal (character sheet importer) ---------- */
+
+.s-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.s-modal {
+  direction: rtl;
+  background: var(--s-surface);
+  border: 1px solid var(--s-border);
+  border-radius: 14px;
+  max-width: 900px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.s-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--s-border);
+}
+
+.s-modal__title { font-size: 15px; font-weight: 700; }
+
+.s-modal__body {
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Step indicator — the current step is marked by weight AND a rule, not
+   colour alone, so the position is readable without colour perception. */
+.s-steps { display: flex; gap: 20px; }
+
+.s-step {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--s-ink-faint);
+  padding-bottom: 6px;
+  border-bottom: 2px solid transparent;
+}
+
+.s-step--active { color: var(--s-ink); font-weight: 700; border-bottom-color: var(--s-accent); }
+.s-step--done { color: var(--s-accent-strong); }
+
+/* Selection workspace */
+.s-sheet {
+  position: relative;
+  display: inline-block;
+  align-self: center;
+  max-width: 100%;
+  background: var(--s-surface-2);
+  border-radius: var(--s-radius);
+  overflow: hidden;
+}
+
+.s-sheet__canvas { display: block; max-width: 100%; touch-action: none; cursor: crosshair; }
+
+.s-sheet__marquee {
+  position: absolute;
+  border: 2px dashed var(--s-accent);
+  background: rgba(168, 106, 36, 0.12);
+  pointer-events: none;
+}
+
+/* Before / after */
+.s-compare { display: flex; gap: 16px; flex-wrap: wrap; }
+.s-compare__side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.s-compare__canvas { max-width: 320px; max-height: 320px; border-radius: var(--s-radius); display: block; }
+
+/* Checkerboard makes transparency legible — a plain surface would leave
+   "removed" and "white" looking identical. */
+.s-compare__canvas--checker {
+  background-image:
+    linear-gradient(45deg, var(--s-border) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--s-border) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--s-border) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--s-border) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+/* ---------- choice hardware binding ---------- */
+
+/* Folded by default: a classroom with no hardware must never be asked
+   about hardware. Opens by itself when a code is already set, so an
+   existing binding is never hidden from the author who made it. */
+.s-choice__hw { margin-top: 6px; }
+
+.s-choice__hw-summary {
+  font-size: 11.5px;
+  color: var(--s-ink-faint);
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+}
+
+.s-choice__hw-summary::-webkit-details-marker { display: none; }
+.s-choice__hw-summary::before { content: "⌁ "; }
+.s-choice__hw-summary:hover { color: var(--s-accent); }
+.s-choice__hw[open] .s-choice__hw-summary { color: var(--s-accent); }
+
+/* ---------- tick box ---------- */
+.s-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.s-check__box {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--s-accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.s-check__label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* =====================================================================
+   Visual language pass
+
+   Colour, spacing, weight and shape only. Not one selector below changes
+   what a control does, what it is called, or the order anything happens
+   in — every class name and every DOM node is exactly as the components
+   already build them, which is why the whole suite still passes.
+
+   Two things in the reference mockup are deliberately NOT reproduced:
+     - a seconds ruler and a playhead. A scene is a sequence of beats, not
+       a timeline; a beat lasts as long as its voice clip and the child's
+       attention. Drawing 00:03 / 00:11 against beats that have no clock
+       would misstate the model.
+     - controls with nothing behind them (undo/redo, transitions,
+       per-scene durations). A beautiful button that does nothing costs
+       more trust than a plain one that works.
+   ===================================================================== */
+
+/* ---------- rhythm ---------- */
+
+/* أسفل فقط أكبر — تفسح مكاناً لرابط العودة الثابت (#s-back-link) فلا
+   يتراكب مع آخر عنصر بالصفحة، خصوصاً بعرض الجوال حيث لا مساحة فارغة
+   تحت آخر بطاقة أصلاً. */
+.s-app { padding: 16px; padding-bottom: 76px; }
+.s-workspace { gap: 16px; }
+.s-stack { gap: 14px; }
+
+/* ---------- the top bar ---------- */
+
+.s-bar {
+  background: var(--s-surface);
+  border: 1px solid var(--s-border);
+  border-radius: var(--s-radius);
+  box-shadow: var(--s-shadow-1);
+  padding: 10px 14px;
+}
+
+/* ---------- panels: cards, not boxes ---------- */
+
+.s-panel {
+  border-radius: var(--s-radius);
+  /* حافّة بيضاء رفيعة لا رمادية عادية — تكمل الزجاجية (خلفية+ضبابية)
+     المضبوطة بالتعريف الأول لهذا الصنف؛ بدونها كانت تُلغى هنا صمتاً. */
+  border-color: color-mix(in srgb, white 60%, var(--s-border));
+  box-shadow: var(--s-shadow-1);
+  overflow: hidden;
+}
+
+.s-panel__head {
+  background: var(--s-surface);
+  border-bottom: 1px solid var(--s-border);
+  padding: 12px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--s-ink);
+}
+
+.s-panel__body { padding: 14px; }
+
+/* ---------- buttons: one shape, three jobs ---------- */
+
+.s-btn {
+  border-radius: var(--s-radius-sm);
+  padding: 8px 14px;
+  font-weight: 600;
+  border-color: var(--s-border-strong);
+  transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+}
+
+.s-btn:active:not(:disabled) { transform: translateY(1px); }
+
+.s-btn--primary {
+  border-color: transparent;
+  /* توهّج ملوّن بلون العلامة، لا ظلّ عام محايد — نفس معاملة زر
+     "تشغيل"/"حفظ" بتطبيق الويب. */
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--s-accent) 35%, transparent);
+}
+
+.s-btn--primary:hover:not(:disabled) {
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--s-accent) 45%, transparent);
+  transform: translateY(-1px);
+}
+
+/* The engine preview is the only green control in the Studio. It is the
+   one button that leaves the editor and shows the child's actual story,
+   and it should be findable without reading. Spending green anywhere else
+   would cost exactly that. */
+.s-btn[title*="المحرّك"] {
+  background: var(--s-play);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: var(--s-shadow-1);
+}
+
+.s-btn[title*="المحرّك"]:hover:not(:disabled) { background: var(--s-play-strong); }
+
+.s-btn--icon { border-radius: var(--s-pill); }
+
+/* ---------- tabs: a rail, not a row of links ---------- */
+
+.s-tabbar {
+  background: var(--s-surface-3);
+  border: 1px solid var(--s-border);
+  border-radius: var(--s-pill);
+  padding: 4px;
+  gap: 2px;
+}
+
+.s-tab {
+  border-radius: var(--s-pill);
+  padding: 7px 14px;
+  font-weight: 600;
+  border-bottom: none;
+}
+
+.s-tab--active {
+  background: var(--s-surface);
+  color: var(--s-ink);
+  border-bottom: none;
+  box-shadow: var(--s-shadow-1);
+}
+
+/* ---------- scene rows ---------- */
+
+.s-item {
+  border-radius: var(--s-radius-sm);
+  padding: 10px;
+  border: 1px solid transparent;
+}
+
+.s-item:hover { border-color: var(--s-border); }
+
+.s-item--selected,
+.s-item--selected:hover {
+  background: var(--s-accent-tint);
+  border-color: var(--s-accent);
+  box-shadow: none;
+}
+
+/* ---------- fields ---------- */
+
+.s-field__label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--s-ink-soft);
+}
+
+.s-input,
+.s-select {
+  border-radius: var(--s-radius-sm);
+  padding: 9px 11px;
+  background: var(--s-surface);
+}
+
+.s-input:focus,
+.s-select:focus {
+  border-color: var(--s-accent);
+  box-shadow: 0 0 0 3px var(--s-accent-tint);
+}
+
+/* ---------- status ---------- */
+
+.s-status {
+  border-radius: var(--s-radius-sm);
+  padding: 9px 12px;
+  line-height: 1.55;
+}
+
+/* ---------- chips ---------- */
+
+.s-chip {
+  border-radius: var(--s-pill);
+  padding: 5px 10px;
+  border-color: var(--s-border);
+}
+
+.s-chip--selected {
+  background: var(--s-accent-tint);
+  border-color: var(--s-accent);
+}
+
+/* ---------- the sequence: a spine, not a list ----------------------
+
+   This is the mockup's timeline, translated. What carries over is the
+   vertical thread, the ringed index, and colour-by-kind. What does not is
+   the clock — because the beats genuinely have none, and the spine states
+   the true thing instead: these happen in this order.
+   ------------------------------------------------------------------- */
+
+.s-beat {
+  position: relative;
+  padding: 12px 0;
+  gap: 12px;
+}
+
+/* The thread, drawn from each marker down to the next beat, and hidden on
+   the last one so the sequence ends rather than trailing off. */
+.s-beat::before {
+  content: "";
+  position: absolute;
+  top: 40px;
+  bottom: -12px;
+  inset-inline-start: 13px;
+  width: 2px;
+  background: var(--s-border);
+}
+
+/* The spine ends at the last beat. `:last-child` was wrong: a control
+   follows the beats in the panel, so no beat is ever the last child and
+   the thread trailed past the end of the sequence. */
+.s-beat:not(:has(~ .s-beat))::before { display: none; }
+
+.s-beat__n {
+  position: relative;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--s-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--s-say-tint);
+  color: var(--s-say);
+  box-shadow: 0 0 0 3px var(--s-surface);
+  flex-shrink: 0;
+}
+
+/* A decision looks different from speech because it IS different: the
+   story stops here until the child answers. */
+.s-beat--fork > .s-beat__n {
+  background: var(--s-fork-tint);
+  color: var(--s-fork-ink);
+}
+
+.s-beat--activity > .s-beat__n {
+  background: var(--s-do-tint);
+  color: var(--s-do);
+}
+
+/* The kind labels the beat already prints, given the marker's colour so
+   the eye pairs them without reading. */
+.s-beat--fork .s-item__meta:first-child { color: var(--s-fork-ink); font-weight: 700; }
+.s-beat--activity .s-item__meta:first-child { color: var(--s-do); font-weight: 700; }
+
+/* ---------- branches ---------- */
+
+.s-choice {
+  border-radius: var(--s-radius-sm);
+  border-inline-start: 3px solid var(--s-fork);
+  background: var(--s-surface-2);
+  padding: 10px;
+}
+
+/* ---------- effect steps ---------- */
+
+.s-fx-step {
+  border-radius: var(--s-radius-sm);
+  border-inline-start: 3px solid var(--s-do);
+  background: var(--s-surface-2);
+}
+
+/* ---------- the stage ---------- */
+
+.s-stage-canvas {
+  border-radius: var(--s-radius);
+  box-shadow: var(--s-shadow-1);
+  overflow: hidden;
+}
+
+/* ---------- asset cards ---------- */
+
+.s-asset-card {
+  border-radius: var(--s-radius-sm);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.s-asset-card:hover { box-shadow: var(--s-shadow-1); }
+
+.s-asset-card--selected { box-shadow: 0 0 0 3px var(--s-accent-tint); }
+
+/* ---------- entry-point badge ---------- */
+
+.s-item__meta--start { box-shadow: var(--s-shadow-1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .s-btn, .s-asset-card, .s-input, .s-select { transition: none; }
+  .s-btn:active:not(:disabled) { transform: none; }
+}
+
+/* ---------- story map -----------------------------------------------
+
+   The one view that shows a story as the graph it became at v1.0.6. It
+   flows DOWNWARD rather than sideways: a horizontal graph forces a
+   direction decision in an RTL interface, and either answer is wrong for
+   half the arrows.
+   -------------------------------------------------------------------- */
+
+.s-map__scroll {
+  overflow: auto;
+  max-height: calc(100vh - 300px);
+  padding: 4px;
+}
+
+.s-map {
+  position: relative;
+  margin: 0 auto;
+}
+
+.s-map__edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.s-map__edge {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Colour matches the sequence spine: a decision is amber wherever it
+   appears, so the two views teach one vocabulary rather than two. */
+.s-map__edge--choice { stroke: var(--s-fork); }
+.s-map__edge--explicit { stroke: var(--s-say); }
+.s-map__edge--sequential { stroke: var(--s-border-strong); stroke-dasharray: 5 5; }
+
+.s-map__edge--dangling {
+  stroke: var(--s-bad);
+  stroke-width: 2.5;
+  stroke-dasharray: 3 4;
+}
+
+.s-map__label {
+  fill: var(--s-ink-soft);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: var(--s-surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.s-map__node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px;
+  font-family: inherit;
+  text-align: center;
+  background: var(--s-surface);
+  border: 1.5px solid var(--s-border-strong);
+  border-radius: var(--s-radius-sm);
+  box-shadow: var(--s-shadow-1);
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+}
+
+.s-map__node:hover {
+  border-color: var(--s-accent);
+  box-shadow: var(--s-shadow-2);
+}
+
+.s-map__node:active { transform: translateY(1px); }
+
+.s-map__node--entry { border-color: var(--s-accent); }
+.s-map__node--selected { background: var(--s-accent-tint); border-color: var(--s-accent); }
+
+.s-map__node--ending { border-style: solid; border-color: var(--s-play); }
+
+/* Unreachable: dashed, because the node is real but the path to it is
+   not. Warning colour rather than grey — this is the finding the view
+   exists to surface, not a disabled state. */
+.s-map__node--orphan {
+  border-style: dashed;
+  border-color: var(--s-warn);
+  background: var(--s-warn-tint);
+}
+
+.s-map__name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--s-ink);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-map__tags { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+
+.s-map__tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--s-pill);
+  white-space: nowrap;
+}
+
+.s-map__tag--entry { background: var(--s-accent-tint); color: var(--s-accent-strong); }
+.s-map__tag--end { background: var(--s-play-tint); color: var(--s-play); }
+.s-map__tag--orphan { background: var(--s-surface); color: var(--s-warn); }
+
+.s-map__legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.s-map__legend-item { display: flex; align-items: center; gap: 6px; }
+
+.s-map__swatch {
+  width: 18px;
+  height: 0;
+  border-top: 2px solid var(--s-border-strong);
+  display: inline-block;
+}
+
+.s-map__swatch--choice { border-top-color: var(--s-fork); }
+.s-map__swatch--explicit { border-top-color: var(--s-say); }
+.s-map__swatch--sequential { border-top-style: dashed; }
+
+@media (prefers-reduced-motion: reduce) {
+  .s-map__node { transition: none; }
+  .s-map__node:active { transform: none; }
+}
+
+/* ---------- scene thumbnails ---------- */
+
+/* The checkerboard shows through wherever a scene has no background —
+   which is information, not a defect: it is exactly what the child will
+   see behind the elements. */
+.s-thumb {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background-color: var(--s-surface-2);
+  background-image:
+    linear-gradient(45deg, var(--s-surface-3) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--s-surface-3) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--s-surface-3) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--s-surface-3) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+}
+
+/* A map node is now a picture with a caption, so it stacks from the top
+   rather than centring its contents. */
+.s-map__node {
+  justify-content: flex-start;
+  padding: 9px;
+  gap: 6px;
+}
+
+/* A scene row is picture + name + controls. The picture never shrinks;
+   the controls wrap to a second line before the name gets squeezed,
+   because the name is what the author is scanning for. */
+.s-item > .s-thumb {
+  width: 64px;
+  flex-shrink: 0;
+  border-radius: 5px;
+}
+
+/* ---------- validation, as places ---------- */
+
+.s-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.s-issue {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: start;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--s-surface);
+  color: var(--s-ink-soft);
+}
+
+/* Only the rows that lead somewhere look like they lead somewhere. A
+   story-wide message has no scene to open, so it stays plain text
+   rather than a button that does nothing. */
+button.s-issue { cursor: pointer; }
+button.s-issue:hover { border-color: var(--s-border-strong); box-shadow: var(--s-shadow-1); }
+
+.s-issue--error { border-inline-start: 3px solid var(--s-bad); }
+.s-issue--warn { border-inline-start: 3px solid var(--s-warn); }
+
+.s-issue__where {
+  font-weight: 700;
+  color: var(--s-ink);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.s-issue__what { min-width: 0; }
+
+/* ---------- icons ---------------------------------------------------
+
+   Sized in em so an icon is always the size of the text it sits beside,
+   and nobody has to pick a pixel value twice. `currentColor` in the SVG
+   means it is also the COLOUR of that text — including its hover and
+   disabled states, for free.
+   -------------------------------------------------------------------- */
+
+.s-icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex-shrink: 0;
+  /* Optical centring against Arabic text, whose x-height sits high. */
+  vertical-align: -0.18em;
+}
+
+/* Every control that can hold an icon lays out on one line, so an icon
+   and its label can never break apart — the toolbar stays one row. */
+.s-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+/* Icon-only: square, and sized by the icon rather than by absent text. */
+.s-btn--icon {
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  gap: 0;
+}
+
+.s-btn--icon .s-icon { width: 15px; height: 15px; vertical-align: 0; }
+
+/* Badges and tags: same one-line rule, tighter gap for their smaller type. */
+.s-item__meta--start,
+.s-item__meta--warn,
+.s-item__meta--kind,
+.s-map__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.s-item__meta--kind { font-weight: 700; }
+
+/* A tag's icon is smaller than its label — at 9.5px an em-sized icon
+   turns to mush, so it gets a floor instead. */
+.s-map__tag .s-icon { width: 11px; height: 11px; vertical-align: 0; }
+
+/* ---------- toolbar: one row, or two clean ones ---------------------
+
+   Ungrouped, the bar wrapped wherever it ran out of room — at 1280 that
+   put its five controls on three different baselines. Grouping makes the
+   break happen between the story picker and the actions, which is the
+   only place a break reads as intentional.
+   -------------------------------------------------------------------- */
+
+.s-bar__group,
+.s-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.s-bar__group { min-width: 0; }
+
+/* The story picker is the only thing here that may shrink. */
+.s-bar__group > .s-field { min-width: 0; flex: 0 1 auto; }
+.s-bar__group > .s-btn { flex-shrink: 0; }
+
+/* Every control in the bar is the same height and the same type size,
+   whatever its variant. A destructive action is distinguished by COLOUR,
+   never by being smaller — that only made it look like a different
+   family of control. */
+.s-bar .s-btn {
+  font-size: 13px;
+  min-height: 36px;
+}
+
+.s-bar .s-btn--danger { padding: 8px 12px; font-size: 13px; }
+.s-bar .s-btn--danger:hover:not(:disabled) { background: var(--s-bad-tint); }
+

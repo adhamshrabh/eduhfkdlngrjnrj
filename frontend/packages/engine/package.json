@@ -1,0 +1,25 @@
+{
+  "name": "@edu/engine",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./aliases": "./aliases.ts",
+    "./src/*": "./src/*"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "gsap": "^3.12.5",
+    "pixi.js": "^8.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
+  }
+}

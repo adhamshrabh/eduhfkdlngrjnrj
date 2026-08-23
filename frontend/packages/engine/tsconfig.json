@@ -1,0 +1,48 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+
+    "types": ["node", "vite/client"],
+
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@app": ["src/app/index.ts"],
+      "@app/*": ["src/app/*"],
+      "@core": ["src/core/index.ts"],
+      "@core/*": ["src/core/*"],
+      "@systems": ["src/systems/index.ts"],
+      "@systems/*": ["src/systems/*"],
+      "@game": ["src/game/index.ts"],
+      "@game/*": ["src/game/*"],
+      "@content": ["src/content/index.ts"],
+      "@content/*": ["src/content/*"],
+      "@hardware": ["src/hardware/index.ts"],
+      "@hardware/*": ["src/hardware/*"],
+      "@editor": ["src/editor/index.ts"],
+      "@editor/*": ["src/editor/*"],
+      "@shared": ["src/shared/index.ts"],
+      "@shared/*": ["src/shared/*"]
+    }
+  },
+  "include": ["src", "index.ts", "aliases.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts", "node_modules", "dist"]
+}

@@ -1,0 +1,85 @@
+// أسماء المحرّك المستعارة مُكرّرة هنا لأن TypeScript لا يدمج paths عبر extends.
+// المصدر المرجعي هو packages/engine/aliases.ts — أي تغيير هناك يُنعكس هنا.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "strict": true,
+    "noImplicitAny": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": [
+      "vite/client"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@edu/engine": [
+        "../../packages/engine/index.ts"
+      ],
+      "@edu/engine/aliases": [
+        "../../packages/engine/aliases.ts"
+      ],
+      "@app": [
+        "../../packages/engine/src/app/index.ts"
+      ],
+      "@app/*": [
+        "../../packages/engine/src/app/*"
+      ],
+      "@core": [
+        "../../packages/engine/src/core/index.ts"
+      ],
+      "@core/*": [
+        "../../packages/engine/src/core/*"
+      ],
+      "@systems": [
+        "../../packages/engine/src/systems/index.ts"
+      ],
+      "@systems/*": [
+        "../../packages/engine/src/systems/*"
+      ],
+      "@game": [
+        "../../packages/engine/src/game/index.ts"
+      ],
+      "@game/*": [
+        "../../packages/engine/src/game/*"
+      ],
+      "@content": [
+        "../../packages/engine/src/content/index.ts"
+      ],
+      "@content/*": [
+        "../../packages/engine/src/content/*"
+      ],
+      "@hardware": [
+        "../../packages/engine/src/hardware/index.ts"
+      ],
+      "@hardware/*": [
+        "../../packages/engine/src/hardware/*"
+      ],
+      "@editor": [
+        "../../packages/engine/src/editor/index.ts"
+      ],
+      "@editor/*": [
+        "../../packages/engine/src/editor/*"
+      ],
+      "@shared": [
+        "../../packages/engine/src/shared/index.ts"
+      ],
+      "@shared/*": [
+        "../../packages/engine/src/shared/*"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "vite.config.ts"
+  ]
+}
