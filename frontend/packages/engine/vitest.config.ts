@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-import { engineAliases } from "./aliases";
+import { engineAliases } from "./aliases.ts";
 
 export default defineConfig({
   resolve: { alias: engineAliases },

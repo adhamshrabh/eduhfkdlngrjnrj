@@ -67,6 +67,12 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // بلا هذا يبحث Vite عن أول منفذ حرّ حين يكون 5173 مشغولاً، فتنتهي نسخة
+    // ثانية من تطبيق الويب على 5174 — منفذ الاستوديو. عندها يفتح زرّ
+    // «الاستوديو» تطبيقَ الويب نفسه، ولأن الموجّه لا يعرف /studio/ يرتدّ
+    // فوراً إلى قائمة القصص: يبدو الزرّ كأنه لا يعمل بلا أي رسالة خطأ.
+    // مع strictPort يفشل التشغيل المكرّر بصوت عالٍ بدل أن يسرق منفذ غيره.
+    strictPort: true,
     proxy: {
       "/api": { target: "http://localhost:8000", changeOrigin: true },
       "/media": { target: "http://localhost:8000", changeOrigin: true },

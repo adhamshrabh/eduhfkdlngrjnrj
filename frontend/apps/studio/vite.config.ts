@@ -13,6 +13,9 @@ export default defineConfig({
   resolve: { alias: engineAliases },
   server: {
     port: 5174,
+    // انظر التعليق في apps/web/vite.config.ts — المنفذ هنا جزء من العقد،
+    // لأن VITE_STUDIO_URL في تطبيق الويب يشير إلى 5174 بالاسم.
+    strictPort: true,
     proxy: {
       "/api": { target: "http://localhost:8000", changeOrigin: true },
       "/media": { target: "http://localhost:8000", changeOrigin: true },

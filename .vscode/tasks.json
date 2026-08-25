@@ -65,19 +65,22 @@
       "presentation": { "group": "servers", "panel": "dedicated", "reveal": "always" }
     },
     {
-      "label": "▶ تشغيل المنصّة (باك إند + واجهة)",
-      "dependsOn": ["الباك إند — Django :8000", "الواجهة — Vite :5173"],
-      "dependsOrder": "parallel",
-      "problemMatcher": [],
-      "group": { "kind": "build", "isDefault": true }
-    },
-    {
-      "label": "▶ تشغيل الكل (+ الاستوديو)",
+      // الثلاثة معاً هي الوضع الافتراضي عمداً: زرّ «الاستوديو» داخل تطبيق
+      // الويب يشير إلى المنفذ 5174 بالاسم (VITE_STUDIO_URL)، فتشغيل الواجهة
+      // بلا الاستوديو يترك ذلك الزرّ معطّلاً — وهو عطل ظهر فعلاً.
+      "label": "▶ تشغيل المنصّة (الثلاثة)",
       "dependsOn": [
         "الباك إند — Django :8000",
         "الواجهة — Vite :5173",
         "الاستوديو — Vite :5174"
       ],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "تشغيل بلا الاستوديو (باك إند + واجهة)",
+      "dependsOn": ["الباك إند — Django :8000", "الواجهة — Vite :5173"],
       "dependsOrder": "parallel",
       "problemMatcher": []
     },
