@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { Container, Texture } from "pixi.js";
-import { SpriteRegistry } from "./SpriteRegistry";
+import { SpriteRegistry, spreadX } from "./SpriteRegistry";
 import { LayoutApplier } from "./LayoutApplier";
 import { LayoutLoader } from "@core/content/LayoutLoader";
 
@@ -335,5 +335,37 @@ describe("SpriteRegistry — parenting (v1.0.17 §3)", () => {
     expect(registry.moveToGroup("ghost", "bird")).toBe(false);
     expect(registry.moveToGroup("bird", "ghost")).toBe(false);
     expect(registry.moveToGroup("bird", "bird")).toBe(false);
+  });
+});
+
+describe("spreadX — an unplaced element must land ON the canvas", () => {
+  it("keeps every element inside the design width, however many there are", () => {
+    // The original bug: a fixed 300px step, so from 7 elements up the row
+    // was wider than 1920 and the LAST element — the one just added — fell
+    // off the right edge. "I add an element and it doesn't appear."
+    for (const total of [1, 3, 6, 7, 9, 12, 20]) {
+      for (let i = 0; i < total; i++) {
+        const x = spreadX(i, total);
+        expect(x, `total=${total} index=${i}`).toBeGreaterThanOrEqual(0);
+        expect(x, `total=${total} index=${i}`).toBeLessThanOrEqual(1920);
+      }
+    }
+  });
+
+  it("places a lone element in the middle", () => {
+    expect(spreadX(0, 1)).toBe(960);
+  });
+
+  it("is unchanged for scenes that already fit — 6 or fewer keep the 300px step", () => {
+    expect(spreadX(0, 3)).toBe(660);
+    expect(spreadX(2, 3)).toBe(1260);
+    expect(spreadX(0, 6)).toBe(210);
+    expect(spreadX(5, 6)).toBe(1710);
+  });
+
+  it("stays centred and ordered left-to-right", () => {
+    const xs = [...Array(9)].map((_, i) => spreadX(i, 9));
+    for (let i = 1; i < xs.length; i++) expect(xs[i]!).toBeGreaterThan(xs[i - 1]!);
+    expect((xs[0]! + xs[8]!) / 2).toBeCloseTo(960, 6);
   });
 });

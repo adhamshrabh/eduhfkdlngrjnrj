@@ -21,6 +21,35 @@ import type { AnimationManager } from "@core/animation/AnimationManager";
 import type { LayoutApplier, LayoutDefaults } from "./LayoutApplier";
 
 const DESIGN_HEIGHT = 1080;
+const DESIGN_WIDTH = 1920;
+
+/**
+ * Where an element with NO saved layout entry is placed, spread by index
+ * so several are each separately visible and grabbable.
+ *
+ * The spacing SHRINKS to fit rather than staying fixed. A fixed 300px
+ * step silently walked off the canvas: at 7 elements the row is already
+ * wider than 1920, and the element that falls off first is the LAST one
+ * — which is precisely the one an author just added and is looking for.
+ * The report was "I add an element, save, preview, and it isn't there";
+ * it was there, at x≈2160, past the right edge.
+ *
+ * Scenes of 6 or fewer are unaffected: `usable / (total - 1)` only bites
+ * once it drops below the preferred step, so existing content that fit
+ * before is placed identically, to the pixel.
+ *
+ * Pure and exported for the same reason breathAt is — this arithmetic is
+ * the part worth testing directly.
+ */
+export function spreadX(index: number, total: number): number {
+  const PREFERRED_SPACING = 300;
+  const MARGIN = 160;
+  if (total <= 1) return DESIGN_WIDTH / 2;
+  const usable = DESIGN_WIDTH - MARGIN * 2;
+  const spacing = Math.min(PREFERRED_SPACING, usable / (total - 1));
+  const startX = DESIGN_WIDTH / 2 - ((total - 1) * spacing) / 2;
+  return startX + index * spacing;
+}
 
 export class SpriteRegistry {
   /** Keyed by content id. Typed as Container rather than Sprite since
@@ -217,11 +246,8 @@ export class SpriteRegistry {
    * @param total how many elements the scene has, so they stay centered
    */
   showSceneElement(id: string, alias: string, index: number, total: number): void {
-    const spacing = 300;
-    const centerX = 960;
-    const startX = centerX - ((total - 1) * spacing) / 2;
     this.reveal(id, alias, {
-      x: startX + index * spacing,
+      x: spreadX(index, total),
       y: 780,
       scale: 0.45,
       anchorX: 0.5,

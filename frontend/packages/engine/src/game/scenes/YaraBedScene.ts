@@ -1126,9 +1126,24 @@ export class YaraBedScene extends Scene {
     const kind = resolveElementKind(el.type);
     if (kind === "character") {
       this.spriteRegistry.showCharacter(el.id, el.alias);
-    } else if (kind === "object") {
-      this.spriteRegistry.showObject(el.id, el.alias);
     } else {
+      // "object" comes through here too, NOT through showObject().
+      //
+      // showObject() places at one FIXED point (700, 800) — right for its
+      // real job, a dialogue line revealing an item mid-scene, and wrong
+      // for elements[]. showSceneElement() exists precisely because of
+      // that: its own doc records the bug it was written to fix — every
+      // element with no saved layout entry landing on the same spot,
+      // perfectly stacked, so only the topmost was visible.
+      //
+      // That fix reached "decoration" and untyped elements but never
+      // "object", which is what the Studio's «كائن» writes and therefore
+      // what most authored elements are. Adding an element and finding it
+      // absent from the preview was this: it was drawn, underneath
+      // whatever else had already claimed (700, 800).
+      //
+      // Elements WITH a saved layout entry are untouched — LayoutApplier
+      // applies the saved transform and ignores these defaults entirely.
       this.spriteRegistry.showSceneElement(el.id, el.alias, index, total);
     }
 
