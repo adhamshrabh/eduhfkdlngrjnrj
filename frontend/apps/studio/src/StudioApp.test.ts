@@ -314,6 +314,41 @@ describe("StudioApp — Canvas Editing v1 + Workspace tabs", () => {
     expect(previewBtn.title).toContain("احفظ التغييرات أولًا");
   });
 
+  it("saves the story and the layout SEQUENTIALLY, never in parallel", async () => {
+    // Both are fields on the SAME record and each save bumps its version.
+    // Run in parallel, the two requests read the cached version before
+    // either replies and send the same number: the first succeeds and
+    // bumps it, the second arrives stale and the concurrency check rejects
+    // it with "القصة عُدّلت من مكان آخر" — while nobody edited it but the
+    // author herself, a fraction of a second earlier. Measured: 6 vs 7.
+    let layoutStartedBeforeStoryFinished = false;
+    let storyFinished = false;
+
+    vi.mocked(StudioApi.saveStory).mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      storyFinished = true;
+      return { ok: true, publicMirrorOk: true };
+    });
+    vi.mocked(StudioApi.saveLayout).mockImplementation(async () => {
+      if (!storyFinished) layoutStartedBeforeStoryFinished = true;
+      return { ok: true, publicMirrorOk: true };
+    });
+
+    findButton(host, "حفظ").click();
+    await vi.waitFor(() => expect(StudioApi.saveLayout).toHaveBeenCalled());
+    expect(layoutStartedBeforeStoryFinished).toBe(false);
+  });
+
+  it("does not save the layout when the story save failed", async () => {
+    // A layout for a story whose content was rejected describes elements
+    // that may not exist in what the server actually holds.
+    vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: false, error: "فشل" });
+
+    findButton(host, "حفظ").click();
+    await vi.waitFor(() => expect(StudioApi.saveStory).toHaveBeenCalled());
+    expect(StudioApi.saveLayout).not.toHaveBeenCalled();
+  });
+
   it("a drag updates the draft (not disk) — an explicit Save afterward persists exactly the dragged position", async () => {
     lastCanvasOptions().onSelect(ELEMENT_ID);
     lastCanvasOptions().onElementDragging(ELEMENT_ID, 777, 888);

@@ -488,12 +488,26 @@ export class StudioApp {
         return;
       }
 
-      const [storyOutcome, layoutOutcome] = await Promise.all([
-        StudioApi.saveStory(draft.storyId, draft.toJson()),
-        StudioApi.saveLayout(draft.storyId, layoutDraft.toJson())
-      ]);
-      if (!storyOutcome.ok || !layoutOutcome.ok) {
-        this.notice = { tone: "bad", text: storyOutcome.error ?? layoutOutcome.error ?? "فشل الحفظ." };
+      // بالتتابع لا بـ Promise.all — عمداً.
+      //
+      // القصّة والتخطيط حقلان في **السجلّ نفسه**، وكل حفظ يرفع رقم النسخة.
+      // على التوازي يقرأ الطلبان الرقم المخزّن قبل أن يردّ أيّهما، فيرسلان
+      // النسخة نفسها: الأول ينجح ويرفعها، والثاني يصل حاملاً رقماً قديماً
+      // فيرفضه فحص التزامن برسالة «القصة عُدّلت من مكان آخر» — بينما لا أحد
+      // عدّلها سوى المعلّمة نفسها قبل جزء من الثانية. قِيس فعلياً: نسختك 6،
+      // النسخة الحالية 7.
+      //
+      // التتابع يجعل الحفظ الثاني يقرأ الرقم الذي أعاده الأول. والتوقّف عند
+      // فشل الأول مقصود أيضاً: تخطيط لقصّة لم يُحفظ محتواها يصف عناصر قد لا
+      // تكون موجودة.
+      const storyOutcome = await StudioApi.saveStory(draft.storyId, draft.toJson());
+      if (!storyOutcome.ok) {
+        this.notice = { tone: "bad", text: storyOutcome.error ?? "فشل الحفظ." };
+        return;
+      }
+      const layoutOutcome = await StudioApi.saveLayout(draft.storyId, layoutDraft.toJson());
+      if (!layoutOutcome.ok) {
+        this.notice = { tone: "bad", text: layoutOutcome.error ?? "فشل الحفظ." };
         return;
       }
 
