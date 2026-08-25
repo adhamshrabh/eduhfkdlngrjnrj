@@ -136,13 +136,27 @@ export const api = {
   upload: <T>(path: string, formData: FormData) => request<T>(path, { method: "POST", formData }),
   /** تسجيل الدخول لا يمرّ بالغلاف — SimpleJWT يُرجع الرموز مباشرة. */
   async login(email: string, password: string) {
-    const res = await fetch("/api/auth/login/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("/api/auth/login/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+    } catch {
+      // نفس معالجة `request` أعلاه — الدخول كان الطلب الوحيد بلا هذا الغلاف.
+      throw new ApiError("تعذّر الاتصال بالخادم. تحقّقي من الإنترنت.", 0);
+    }
+
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
+      // التمييز مقصود: كل استجابة فاشلة كانت تُعرَض «البريد أو كلمة المرور
+      // غير صحيحة»، فخادم متوقّف — يعيده وسيط Vite بـ 500، لا كخطأ شبكة —
+      // كان يُتَّهم فيه كلمةُ المرور. أضاع ذلك وقتاً حقيقياً في التشخيص:
+      // الرسالة توجّه إلى الحقل الخطأ بينما السبب أن الباك إند لا يعمل.
+      if (res.status >= 500) {
+        throw new ApiError("الخادم لا يستجيب. تأكّدي أن الباك إند يعمل على المنفذ 8000.", res.status);
+      }
       throw new ApiError(body?.message || "البريد أو كلمة المرور غير صحيحة.", res.status);
     }
     tokens.set(body.access, body.refresh);

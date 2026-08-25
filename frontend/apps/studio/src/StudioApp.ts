@@ -15,7 +15,13 @@
  * never imports from @game / @systems / @editor.
  */
 
-import { AssetUrls, SUPPORTED_ELEMENT_TYPES, isImageAsset, type SchemaValidationResult } from "@core/content";
+import {
+  AssetUrls,
+  IDLE_KINDS,
+  SUPPORTED_ELEMENT_TYPES,
+  isImageAsset,
+  type SchemaValidationResult
+} from "@core/content";
 import {
   DEFAULT_DURATIONS,
   EASE_NAMES,
@@ -92,6 +98,17 @@ const ANIMATION_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
  *  picker. Not a scene id, and never written to content. */
 const NEW_SCENE = "__new_scene__";
 const NEW_GROUP = "__new_group__";
+
+/**
+ * Arabic labels for the contract's idle kinds. The LIST lives in
+ * `@core/content` (one definition); only the wording is the Studio's.
+ * A kind with no label here still appears, under its raw id — visible
+ * and usable, rather than silently missing.
+ */
+const IDLE_LABELS: Record<string, string> = {
+  breathe: "تنفّس",
+  blink: "رمش"
+};
 /** «تنتهي القصة هنا» — v1.0.13's `endsStory`, as a dropdown value. Never
  *  written to the document: setSceneEnds() is what the document sees. */
 const END_STORY = "__end_story__";
@@ -177,8 +194,20 @@ function defaultEffectFor(
   return effect;
 }
 
-/** Where Preview sends the author: the real engine's entry point. */
-const RUNTIME_URL = "/index.html";
+/**
+ * Where Preview sends the author: the web app's player route for THIS story.
+ *
+ * Was `/index.html` — correct when Studio and Runtime were two pages on one
+ * server (EduStudio-Phase-1.md), and wrong ever since the merge. The Runtime
+ * now lives in `apps/web` on its own origin, so `/index.html` resolved against
+ * the Studio's own server (5174), which redirects to `/studio/` — Preview
+ * silently reopened the Studio and never reached the engine at all.
+ *
+ * Same variable as the back link in `main.ts` deliberately: one definition of
+ * "where the web app is", so the two cannot drift. Undefined in production,
+ * where a relative path is right because Django serves both from one origin.
+ */
+const APP_STORIES_URL = (import.meta.env.VITE_APP_URL as string | undefined) ?? "/stories";
 
 export class StudioApp {
   private readonly host: HTMLElement;
@@ -218,6 +247,10 @@ export class StudioApp {
   /** True once the draft has unsaved edits — Preview is blocked until saved,
    *  because the Runtime reads from disk, not from Studio's memory. */
   private dirty = false;
+
+  /** Whether the open story is published. `null` = not determined (no
+   *  session or no server), which hides the control rather than guessing. */
+  private published: boolean | null = null;
 
   private busy = false;
 
@@ -334,6 +367,18 @@ export class StudioApp {
       this.notice = null;
       this.validation = this.draft.validate();
       this.layoutValidation = this.layoutDraft.validate();
+    });
+
+    // Publication state is fetched AFTER the story is open, never as part
+    // of opening it. It is auxiliary information: a slow or unavailable
+    // platform API must not delay — or block — getting to the content.
+    // Until it arrives the control stays hidden, which is the honest state.
+    this.published = null;
+    void StudioApi.isPublished(storyId).then((state) => {
+      // A second story may have been opened while this was in flight.
+      if (this.draft?.storyId !== storyId) return;
+      this.published = state;
+      this.render();
     });
   }
 
@@ -458,6 +503,44 @@ export class StudioApp {
     });
   }
 
+  /**
+   * Publishes the open story, or withdraws it.
+   *
+   * Publishing is gated on the same validation as saving, deliberately:
+   * publishing is the act that puts a story in front of a class, and
+   * putting content the contract rejects there is the one failure this
+   * whole validation gate exists to prevent. Withdrawing is never gated —
+   * taking something down must always be possible.
+   */
+  private async togglePublished(): Promise<void> {
+    if (!this.draft || this.published === null) return;
+    const next = !this.published;
+
+    if (next && (this.dirty || !this.isContentValid())) {
+      this.notice = {
+        tone: "bad",
+        text: this.dirty
+          ? "احفظي التغييرات قبل النشر — الصف سيرى النسخة المحفوظة."
+          : "لا يمكن النشر: المحتوى لا يطابق العقد. صحّحي الأخطاء أدناه."
+      };
+      this.render();
+      return;
+    }
+
+    await this.withBusy(async () => {
+      const outcome = await StudioApi.setPublished(this.draft!.storyId, next);
+      if (!outcome.ok) {
+        this.notice = { tone: "bad", text: outcome.error ?? "تعذّر تغيير حالة النشر." };
+        return;
+      }
+      this.published = next;
+      this.notice = {
+        tone: "ok",
+        text: next ? "نُشرت القصة — صارت متاحة للعرض على الصف." : "سُحبت القصة — لم تعد تظهر لغير مالكتها."
+      };
+    });
+  }
+
   /** Both the story and its layout must be contract-valid — the Runtime
    *  would not run correctly if either alone were broken. */
   private isContentValid(): boolean {
@@ -472,7 +555,12 @@ export class StudioApp {
    */
   private preview(): void {
     if (!this.draft || this.dirty || !this.isContentValid()) return;
-    window.open(RUNTIME_URL, "_blank", "noopener");
+    // Deep link straight to this story. Phase 1 documented "Preview requires
+    // one click in the menu" because the old Runtime had no such route; the
+    // web app's router added `/stories/:slug/play` during the merge, so that
+    // limitation is gone without any engine change.
+    const url = `${APP_STORIES_URL}/${encodeURIComponent(this.draft.storyId)}/play`;
+    window.open(url, "_blank", "noopener");
   }
 
   private markEdited(): void {
@@ -650,11 +738,38 @@ export class StudioApp {
     const mapBtn = button("خريطة القصة", () => this.openStoryMap(), "ghost", "map");
     mapBtn.title = "يعرض كل المشاهد ومسارات الاختيار بينها";
 
+    // ---------- published, or still the author's own? -------------------
+    // Every story starts unpublished (`is_published` defaults to false), so
+    // without a control here the author had to leave the Studio, sign in as
+    // an admin and use a separate panel — for a state that belongs to the
+    // work she is looking at. The API already allowed the owner to set it;
+    // only the control was missing.
+    //
+    // Hidden entirely when the state is unknown (no session, no server):
+    // a button that says "انشري" about a story that is already published
+    // is worse than no button.
+    const publishBtn = button(
+      this.published ? "سحب النشر" : "نشر القصة",
+      () => void this.togglePublished(),
+      this.published ? "ghost" : "primary",
+      // `up`/`down` وليس أيقونة نشر مخصّصة: مجموعة الأيقونات مغلقة عمداً،
+      // وإضافة رسمة لكل فعل جديد هي ما يجعل المجموعات تتضخّم بلا اتّساق.
+      this.published ? "down" : "up"
+    );
+    publishBtn.disabled = !this.draft || this.busy || this.published === null;
+    publishBtn.title =
+      this.published === null
+        ? "حالة النشر غير معروفة"
+        : this.published
+          ? "مسحوبة من الصف: تبقى قابلة للتحرير والمعاينة، ولا تظهر لغير مالكتها"
+          : "تجعلها متاحة للعرض على الصف";
+    if (this.published !== null) publishBtn.classList.add("s-btn--publish");
+
     // Grouped so the bar wraps between the story picker and the actions,
      // never in the middle of the actions themselves. At 1280 the ungrouped
     // row broke onto three baselines.
     const actions = el("div", "s-bar__actions");
-    actions.append(mapBtn, saveBtn, previewBtn);
+    actions.append(mapBtn, publishBtn, saveBtn, previewBtn);
     const storyGroup = el("div", "s-bar__group");
     storyGroup.append(storySelect, newBtn, deleteBtn);
 
@@ -2332,18 +2447,23 @@ export class StudioApp {
       el("div", "s-item__meta", "٠ = يظهر مع بداية المشهد. جرّبه من «معاينة في المحرّك».")
     );
 
-    // ---------- is it alive? (v1.0.15) --------------------------------
+    // ---------- is it alive? (v1.0.15, v1.0.18) ------------------------
     // Amplitude and period are deliberately not offered. They are the
     // whole difference between a scene that feels alive and one that
     // throbs, and a story where every element pulses is the failure mode
     // this layer exists to avoid.
+    //
+    // The options are derived from the contract's own IDLE_KINDS rather
+    // than hand-listed: this dropdown previously carried its own copy,
+    // so a kind added to the engine stayed invisible to authors until
+    // someone remembered this line. Only the Arabic label is local now.
     wrap.appendChild(
       selectField(
         "الحيوية",
         element.idle ?? "",
         [
           { value: "", label: "بدون — ساكن" },
-          { value: "breathe", label: "تنفّس" }
+          ...IDLE_KINDS.map((kind) => ({ value: kind, label: IDLE_LABELS[kind] ?? kind }))
         ],
         (value) => {
           draft.setElementIdle(scene.id, element.id, value || null);

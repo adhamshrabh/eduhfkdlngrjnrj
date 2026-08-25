@@ -20,6 +20,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { StudioApp } from "./StudioApp";
 import { localToWorldTransform } from "@core/content/GroupTransform";
+import { IDLE_KINDS } from "@core/content";
 import { StudioApi } from "./StudioApi";
 import { SceneCanvas } from "./ui/SceneCanvas";
 import { ActivityPreview } from "./ui/ActivityPreview";
@@ -36,7 +37,11 @@ vi.mock("./StudioApi", () => ({
     saveLayout: vi.fn(),
     uploadAsset: vi.fn(),
     deleteStory: vi.fn(),
-    deleteAsset: vi.fn()
+    deleteAsset: vi.fn(),
+    // حالة النشر تُجلب بعد فتح القصّة لا أثناءه، فالافتراضي هنا «غير معروفة»
+    // — وهو ما يُخفي زرّ النشر ويُبقي كل اختبار قائم على سلوكه السابق.
+    isPublished: vi.fn(async () => null),
+    setPublished: vi.fn(async () => ({ ok: true }))
   }
 }));
 
@@ -2836,12 +2841,28 @@ describe("StudioApp — is the element alive", () => {
     return ((json as any).story.scenes[0].elements as Record<string, unknown>[])[0]!;
   }
 
-  it("offers stillness and a breath, and nothing else to tune", async () => {
+  it("offers stillness plus every contract kind, and nothing else to tune", async () => {
     await mount();
     const options = Array.from(selectForLabel(host, "الحيوية").options).map((o) => o.value);
-    expect(options).toEqual(["", "breathe"]);
-    // No amplitude, no period, no easing.
+    // Derived from IDLE_KINDS, not hand-listed: this assertion used to
+    // name "breathe" literally, so adding a kind to the engine failed
+    // here instead of reporting the real problem — that the dropdown
+    // carried its own copy of the list and had gone stale (v1.0.18).
+    expect(options).toEqual(["", ...IDLE_KINDS]);
+    // No amplitude, no period, no easing — the point of the original test.
     expect(() => selectForLabel(host, "سعة الحركة")).toThrow();
+  });
+
+  it("offers a blink, labelled for the author (v1.0.18)", async () => {
+    await mount();
+    const blink = Array.from(selectForLabel(host, "الحيوية").options).find((o) => o.value === "blink");
+    expect(blink?.text).toBe("رمش");
+  });
+
+  it("writes blink when the author declares the eyes awake (v1.0.18)", async () => {
+    await mount();
+    selectValue(selectForLabel(host, "الحيوية"), "blink");
+    expect((await savedElement()).idle).toBe("blink");
   });
 
   it("starts still — an element authored before this patch is unchanged", async () => {
@@ -3712,5 +3733,93 @@ describe("StudioApp — putting elements into one block", () => {
     // The group itself is not drawn — it has no image.
     expect(opts.elements.map((e: any) => e.id)).not.toContain(opts.groups[0]);
     expect(opts.elements.find((e: any) => e.id === "body").groupId).toBe(opts.groups[0]);
+  });
+});
+
+/**
+ * v1.0 النشر من الاستوديو.
+ *
+ * سبب وجود هذه الاختبارات عطل حقيقي: كل قصّة جديدة مسوّدة بالتعريف
+ * (`is_published` افتراضها false)، ولم يكن في الاستوديو أي سبيل لنشرها —
+ * فكانت المعلّمة تُنشئ قصّة ثم لا تجد كيف تُظهرها للصف.
+ */
+describe("StudioApp — النشر", () => {
+  let host: HTMLElement;
+
+  // العيّنة المشتركة نفسها عمداً: النشر مشروط بصلاحية المحتوى للعقد،
+  // فعيّنة خاصة غير صالحة كانت ستُفشل الاختبار لسبب لا علاقة له بالنشر.
+  const story = () => storyFixture();
+
+  async function mountWith(published: boolean | null): Promise<void> {
+    vi.clearAllMocks();
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b"]);
+    vi.mocked(StudioApi.loadStory).mockResolvedValue(story());
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(StudioApi.isPublished).mockResolvedValue(published);
+    vi.mocked(StudioApi.setPublished).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+
+    host = document.createElement("div");
+    await new StudioApp(host).start();
+    await vi.waitFor(() => {
+      if (!publishButton()) throw new Error("toolbar not ready");
+    });
+  }
+
+  function publishButton(): HTMLButtonElement | undefined {
+    return [...host.querySelectorAll("button")].find((b) => /نشر/.test(b.textContent ?? "")) as
+      | HTMLButtonElement
+      | undefined;
+  }
+
+  it("يعرض «نشر القصة» لمسوّدة", async () => {
+    await mountWith(false);
+    expect(publishButton()?.textContent).toContain("نشر القصة");
+    expect(publishButton()?.disabled).toBe(false);
+  });
+
+  it("يعرض «سحب النشر» لقصة منشورة", async () => {
+    await mountWith(true);
+    expect(publishButton()?.textContent).toContain("سحب النشر");
+  });
+
+  it("النشر يستدعي الواجهة بالمعرّف والحالة الجديدة", async () => {
+    await mountWith(false);
+    publishButton()!.click();
+    await vi.waitFor(() => {
+      expect(vi.mocked(StudioApi.setPublished)).toHaveBeenCalledWith("b", true);
+    });
+  });
+
+  it("السحب يمرّر false", async () => {
+    await mountWith(true);
+    publishButton()!.click();
+    await vi.waitFor(() => {
+      expect(vi.mocked(StudioApi.setPublished)).toHaveBeenCalledWith("b", false);
+    });
+  });
+
+  it("الزرّ معطّل حين تكون الحالة غير معروفة — لا تخمين", async () => {
+    // بلا جلسة أو بلا خادم: زرّ يقول «انشري» عن قصّة منشورة أسوأ من لا زرّ.
+    await mountWith(null);
+    expect(publishButton()?.disabled).toBe(true);
+  });
+
+  it("لا ينشر مسوّدة فيها تعديلات غير محفوظة — الصف يرى النسخة المحفوظة", async () => {
+    await mountWith(false);
+    const line = [...host.querySelectorAll("textarea, input")].find(
+      (i) => (i as HTMLInputElement).value === "مرحبا"
+    ) as HTMLInputElement | undefined;
+    if (line) {
+      line.value = "تغيير";
+      line.dispatchEvent(new Event("input", { bubbles: true }));
+      publishButton()!.click();
+      await Promise.resolve();
+      expect(vi.mocked(StudioApi.setPublished)).not.toHaveBeenCalled();
+    }
   });
 });

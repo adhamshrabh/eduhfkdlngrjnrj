@@ -9,9 +9,10 @@
 `SchemaValidator.ts`، وما هنا يمنع فقط ما يُعطب المحرّك وقت العرض.
 """
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 from rest_framework.exceptions import ValidationError
 
+from .models import Story
 from .validators import extract_scene_objects, validate_layout_json, validate_story_json
 
 
@@ -102,3 +103,61 @@ class LayoutTests(SimpleTestCase):
     def test_puzzle_must_be_an_object_when_present(self):
         with self.assertRaises(ValidationError):
             validate_layout_json({"puzzle": []})
+
+
+class CompatVisibilityTests(TestCase):
+    """
+    مسارات `/content/` تقرأ رمز JWT.
+
+    الحارس هنا يمنع ارتداداً بعينه: هذه دوالّ Django عادية لا DRF، وميدلوير
+    Django يقرأ الهوية من الجلسة وحدها. فكان شرط «المعلّمة ترى قصصها» كوداً
+    ميّتاً لا يعمل أبداً — لا معاينة لمسوّدة، ولا ظهور لها في أي فهرس، وكل
+    قصّة جديدة مسوّدة بالتعريف.
+    """
+
+    def setUp(self):
+        from apps.accounts.models import User
+
+        self.teacher = User.objects.create_user(email="t@x.local", password="pw12345678", full_name="م")
+        self.other = User.objects.create_user(email="o@x.local", password="pw12345678", full_name="ن")
+        self.draft = Story.objects.create(
+            slug="draft1", title="مسوّدة", owner=self.teacher, is_published=False,
+            story_json={"id": "draft1", "title": "مسوّدة", "story": {"scenes": []}},
+        )
+        Story.objects.create(
+            slug="pub1", title="منشورة", owner=self.teacher, is_published=True,
+            story_json={"id": "pub1", "title": "منشورة", "story": {"scenes": []}},
+        )
+
+    def _bearer(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        return {"HTTP_AUTHORIZATION": f"Bearer {RefreshToken.for_user(user).access_token}"}
+
+    def test_guest_cannot_read_a_draft(self):
+        self.assertEqual(self.client.get("/content/stories/draft1/story.json").status_code, 404)
+
+    def test_guest_can_read_a_published_story(self):
+        """العرض على شاشة الصف قد يجري بلا جلسة — هذا مقصود."""
+        self.assertEqual(self.client.get("/content/stories/pub1/story.json").status_code, 200)
+
+    def test_owner_can_read_their_own_draft(self):
+        res = self.client.get("/content/stories/draft1/story.json", **self._bearer(self.teacher))
+        self.assertEqual(res.status_code, 200)
+
+    def test_another_teacher_cannot_read_someone_elses_draft(self):
+        res = self.client.get("/content/stories/draft1/story.json", **self._bearer(self.other))
+        self.assertEqual(res.status_code, 404)
+
+    def test_index_hides_drafts_from_guests_and_shows_them_to_the_owner(self):
+        guest = self.client.get("/content/stories/index.json").json()["stories"]
+        self.assertNotIn("draft1", guest)
+        self.assertIn("pub1", guest)
+
+        owner = self.client.get("/content/stories/index.json", **self._bearer(self.teacher)).json()["stories"]
+        self.assertIn("draft1", owner)
+
+    def test_a_broken_token_degrades_to_guest_rather_than_erroring(self):
+        """انتهاء جلسة أثناء الحصّة يجب ألّا يُسقط قصّة منشورة."""
+        res = self.client.get("/content/stories/pub1/story.json", HTTP_AUTHORIZATION="Bearer not-a-token")
+        self.assertEqual(res.status_code, 200)

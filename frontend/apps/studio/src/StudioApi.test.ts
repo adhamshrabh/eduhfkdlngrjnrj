@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { LocalOverrides } from "@core/content";
+import { ContentStore, LocalOverrides } from "@core/content";
 import { StudioApi } from "./StudioApi";
 
 function okResponse(body: Record<string, unknown>): Response {
@@ -211,5 +211,60 @@ describe("StudioApi — working without a dev server", () => {
     }));
 
     await expect(StudioApi.loadStory("b")).resolves.toEqual(story);
+  });
+});
+
+describe("saveFile — a server that refuses is a FAILED save, not a warning", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reports failure on 401 instead of claiming success", async () => {
+    // The reported bug: the Studio is a separate origin (5174) from the web
+    // app (5173), so opening it directly leaves it with no token. Every
+    // save was rejected 401 while the UI said "تم الحفظ" — the author's
+    // element lived only in the in-memory draft, visible on the Studio
+    // stage and absent from Preview, because the engine reads the server.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(failResponse(401, { ok: false, error: "يلزم تسجيل الدخول." }))
+    );
+    const out = await StudioApi.saveStory("b", { id: "b", story: { scenes: [] } });
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain("انتهت جلسة الدخول");
+  });
+
+  it("reports failure on 403 the same way", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(failResponse(403, { ok: false, error: "ممنوع" })));
+    const out = await StudioApi.saveStory("b", { id: "b", story: { scenes: [] } });
+    expect(out.ok).toBe(false);
+  });
+
+  it("surfaces any other explicit server error rather than swallowing it", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(failResponse(500, { ok: false, error: "disk full" })));
+    const out = await StudioApi.saveStory("b", { id: "b", story: { scenes: [] } });
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe("disk full");
+  });
+
+  it("still succeeds browser-only when there is NO server at all", async () => {
+    // The legitimate offline case the two-tier design exists for: nothing
+    // answered, so the browser copy is a real fallback, not a lie.
+    //
+    // The browser tier is stubbed because jsdom has no IndexedDB — without
+    // this the test would pass for the wrong reason (both tiers failing).
+    const store = vi.spyOn(ContentStore, "saveDocument").mockResolvedValue(true);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    const out = await StudioApi.saveStory("b", { id: "b", story: { scenes: [] } });
+    expect(out.ok).toBe(true);
+    expect(out.publicMirrorOk).toBe(false);
+    store.mockRestore();
+  });
+
+  it("fails when there is no server AND no browser storage — nothing held it", async () => {
+    vi.spyOn(ContentStore, "saveDocument").mockResolvedValue(false);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    const out = await StudioApi.saveStory("b", { id: "b", story: { scenes: [] } });
+    expect(out.ok).toBe(false);
   });
 });

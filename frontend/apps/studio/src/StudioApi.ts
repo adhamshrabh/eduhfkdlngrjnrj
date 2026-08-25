@@ -63,15 +63,18 @@ export class StudioApi {
   static async listStories(): Promise<string[]> {
     const stored = await ContentStore.listStories();
 
+    // `/__editor/list-stories` وليس `/content/stories/index.json`: الفهرس
+    // مسار توافقٍ للمحرّك يُخدَم بلا مصادقة، فلا يُرجع إلا المنشور — وكل
+    // قصّة جديدة مسوّدة، فكانت تختفي من قائمة الاستوديو فور إنشائها.
     let onDisk: string[] = [];
     try {
-      const res = await fetch(`/content/stories/index.json?t=${Date.now()}`);
+      const res = await fetch(`/__editor/list-stories?t=${Date.now()}`);
       if (res.ok) {
         const data = (await res.json()) as { stories?: unknown };
         onDisk = Array.isArray(data.stories) ? data.stories.map(String) : [];
       }
     } catch {
-      // No dev server / no index on disk — stored stories still list.
+      // No server behind the bridge — stored stories still list.
     }
     return [...onDisk, ...stored.filter((id) => !onDisk.includes(id))];
   }
@@ -89,6 +92,55 @@ export class StudioApi {
     if (fromDisk) return fromDisk;
 
     throw new Error(`تعذّر فتح القصة "${storyId}".`);
+  }
+
+  /**
+   * Whether the story is published, i.e. visible to anyone opening the
+   * app rather than only to its author.
+   *
+   * Deliberately NOT part of `loadStory()`: publication is platform state
+   * stored on the record, not content inside `story.json`. Folding it into
+   * the document would put a database column into the Scene Model, and the
+   * next author to hand-edit a story file would be editing permissions.
+   *
+   * Returns null when the state cannot be determined (no server, or no
+   * session) — the caller then hides the control rather than guessing,
+   * because showing "مسودة" for a published story would invite an author
+   * to publish something that already is.
+   */
+  static async isPublished(storyId: string): Promise<boolean | null> {
+    try {
+      const res = await fetch(`/__editor/story-meta?storyId=${encodeURIComponent(storyId)}`);
+      const data = (await res.json()) as { ok?: boolean; isPublished?: boolean };
+      if (!res.ok || data.ok !== true) return null;
+      return data.isPublished === true;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Publishes the story, or withdraws it. */
+  static async setPublished(storyId: string, isPublished: boolean): Promise<SaveOutcome> {
+    try {
+      const res = await fetch("/__editor/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storyId, isPublished }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || data.ok !== true) {
+        return {
+          ok: false,
+          error:
+            res.status === 401 || res.status === 403
+              ? "لم يُنفَّذ — انتهت جلسة الدخول. افتحي الاستوديو من زرّ «الاستوديو» داخل التطبيق."
+              : (data.error ?? "تعذّر تغيير حالة النشر."),
+        };
+      }
+      return { ok: true, publicMirrorOk: true };
+    } catch {
+      return { ok: false, error: "تعذّر الاتصال بالخادم." };
+    }
   }
 
   /**
@@ -361,12 +413,14 @@ export class StudioApi {
     let savedToDisk = false;
     let publicMirrorOk = false;
     let diskError: string | null = null;
+    let diskStatus = 0;
     try {
       const res = await fetch("/__editor/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ storyId, storyJson: json, fileName })
       });
+      diskStatus = res.status;
       const text = await res.text();
       try {
         const data = JSON.parse(text) as { ok?: boolean; publicMirrorOk?: boolean; error?: string };
@@ -382,6 +436,28 @@ export class StudioApi {
       }
     } catch {
       diskError = null; // offline / no server — expected, not an error
+    }
+
+    // ── الخادم ردّ ورفض: هذا فشل حفظ، مهما احتفظ المتصفّح بنسخة ──────────
+    //
+    // كان هذا الشرط `!storedInBrowser && !savedToDisk`، أي أن رفض الخادم
+    // يُبتلَع ما دامت نسخة المتصفّح نجحت. النتيجة عطل فقدان بيانات صامت:
+    // رمز الدخول لا يصل إلى الاستوديو حين يُفتح مباشرةً (أصل 5174 منفصل عن
+    // 5173)، فيردّ الخادم 401، ويُعلَن الحفظ ناجحاً، وتبقى الإضافة في
+    // المسودّة وحدها — فتراها المعلّمة في المسرح ولا تراها في المعاينة،
+    // لأن المحرّك يقرأ من الخادم. قِيس فعلياً: HTTP 401 «يلزم تسجيل الدخول».
+    //
+    // التمييز الحاسم: `diskError === null` يعني «لا خادم أصلاً» (بلا شبكة،
+    // أو ردّ غير JSON) — وهناك النسخة المحلية سقوط مشروع. أمّا رسالة خطأ
+    // صريحة فتعني خادماً موجوداً قال لا، ولا يجوز أن تُقرأ نجاحاً.
+    if (diskError !== null) {
+      return {
+        ok: false,
+        error:
+          diskStatus === 401 || diskStatus === 403
+            ? "لم يُحفظ — انتهت جلسة الدخول. افتحي الاستوديو من زرّ «الاستوديو» داخل التطبيق ليصل رمز الدخول."
+            : diskError
+      };
     }
 
     if (!storedInBrowser && !savedToDisk) {

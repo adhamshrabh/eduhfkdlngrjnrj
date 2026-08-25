@@ -26,6 +26,35 @@ from django.views.decorators.http import require_GET
 from .models import Story, StoryAsset
 
 
+def _authenticated_user(request):
+    """
+    صاحبة الطلب، من الجلسة أو من رمز JWT.
+
+    ⚠️ درس مدفوع الثمن: هذه الدوالّ دوالّ Django عادية (`@require_GET`) لا
+    DRF، وميدلوير Django يقرأ الهوية من **الجلسة وحدها**. ترويسة
+    `Authorization: Bearer` لا يفكّها إلا DRF عبر أصناف المصادقة، فكان
+    `request.user` زائراً مجهولاً دائماً هنا مهما أرسل العميل من رموز.
+
+    الأثر لم يكن نظرياً: شرط «المعلّمة ترى قصصها» أدناه كان **كوداً ميّتاً
+    لا يعمل أبداً**، فلا المعلّمة تعاين مسوّدتها ولا تظهر في أي فهرس —
+    وحلقة التأليف (أنشئي ← حرّري ← عايني) مكسورة لكل قصّة جديدة، لأن كل
+    قصّة جديدة مسوّدة بالتعريف.
+    """
+    user = getattr(request, "user", None)
+    if user is not None and user.is_authenticated:
+        return user
+
+    try:
+        from rest_framework_simplejwt.authentication import JWTAuthentication
+
+        result = JWTAuthentication().authenticate(request)
+    except Exception:
+        # رمز تالف أو منتهٍ = زائر، لا خطأ. القصص المنشورة يجب أن تبقى
+        # قابلة للعرض على الصف حتى لو انتهت جلسة المعلّمة أثناء الحصّة.
+        return None
+    return result[0] if result else None
+
+
 def _visible_stories(request):
     """
     القصص المنشورة عامة للقراءة؛ المعلّمة ترى قصصها أيضاً.
@@ -34,14 +63,15 @@ def _visible_stories(request):
     بلا جلسة، ولا يوجد في القصص المنشورة ما هو خاص.
     """
     qs = Story.objects.all()
-    user = getattr(request, "user", None)
-    if user is not None and user.is_authenticated and not user.is_admin_role:
-        from django.db.models import Q
-
-        return qs.filter(Q(is_published=True) | Q(owner=user))
-    if user is None or not user.is_authenticated:
+    user = _authenticated_user(request)
+    if user is None:
         return qs.filter(is_published=True)
-    return qs
+    if user.is_admin_role:
+        return qs
+
+    from django.db.models import Q
+
+    return qs.filter(Q(is_published=True) | Q(owner=user))
 
 
 @require_GET

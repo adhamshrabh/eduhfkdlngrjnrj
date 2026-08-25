@@ -1742,3 +1742,19 @@ button.s-issue:hover { border-color: var(--s-border-strong); box-shadow: var(--s
 .s-bar .s-btn--danger { padding: 8px 12px; font-size: 13px; }
 .s-bar .s-btn--danger:hover:not(:disabled) { background: var(--s-bad-tint); }
 
+
+/* بوّابة الدخول — تظهر بدل الاستوديو حين يُفتح بلا رمز دخول.
+   انظري التعليق في main.ts: السبب عطل فقدان بيانات لا تفصيلة عرض. */
+.s-auth-gate {
+  max-width: 34rem;
+  margin: 18vh auto;
+  padding: 2rem;
+  text-align: center;
+  background: var(--s-panel-bg, #1e1b2e);
+  border-radius: 14px;
+  color: var(--s-fg, #eee);
+}
+.s-auth-gate h1 { font-size: 1.4rem; margin: 0 0 .75rem; }
+.s-auth-gate p { margin: 0 0 .75rem; line-height: 1.7; opacity: .9; }
+.s-auth-gate__why { font-size: .9rem; opacity: .65; }
+.s-auth-gate a { display: inline-block; margin-top: .5rem; text-decoration: none; }

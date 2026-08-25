@@ -47,6 +47,17 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
+/**
+ * هل يملك هذا الأصل رمز دخول أصلاً؟
+ *
+ * تُسأل عند الإقلاع لا عند الحفظ. القراءة تعمل بلا رمز (مسارات المحتوى
+ * مفتوحة)، فالاستوديو كان يفتح ويعرض القصص ويبدو سليماً تماماً — ثم يفشل
+ * أول حفظ بـ 401. أي أن العطل كان يظهر بعد عمل المعلّمة لا قبله.
+ */
+export function hasAuthToken(): boolean {
+  return Boolean(localStorage.getItem(ACCESS_KEY));
+}
+
 function jsonResponse(body: JsonBody, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -105,6 +116,70 @@ async function handleSave(request: Request): Promise<Response> {
   // `publicMirrorOk` بقيّة من نموذج المرآة القديم — لم تعد هناك مرآة أصلاً،
   // فنُرجعها true دائماً حتى لا يُظهر الاستوديو تحذيراً عن شيء لم يعد موجوداً.
   return jsonResponse({ ok: true, publicMirrorOk: true });
+}
+
+/**
+ * GET /__editor/list-stories — معرّفات القصص التي تملكها المعلّمة أو المنشورة.
+ *
+ * سبب وجودها: الاستوديو كان يقرأ `/content/stories/index.json`، وهو مسار
+ * توافقٍ للمحرّك يُخدَم بلا مصادقة فلا يرى إلا المنشور. النتيجة أن المعلّمة
+ * تُنشئ قصّة جديدة — وكل قصّة جديدة مسوّدة بالتعريف — ثم **لا تجدها في قائمة
+ * الاستوديو إطلاقاً**. قِيس فعلياً: الفهرس أعاد سبع قصص منشورة ولم يذكر
+ * مسوّدة المعلّمة.
+ *
+ * `/api/stories/` يحلّها لأنه مُصادَق ويُصفّي بـ `owner=user | is_published`.
+ */
+async function handleListStories(): Promise<Response> {
+  const res = await fetch("/api/stories/?page_size=200", { headers: authHeaders() });
+  if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّر جلب القصص.") }, res.status);
+
+  const body = (await res.json()) as { data?: { results?: Array<{ slug?: string }> } };
+  const stories = (body.data?.results ?? []).map((s) => s.slug).filter((s): s is string => typeof s === "string");
+  return jsonResponse({ ok: true, stories });
+}
+
+/**
+ * GET /__editor/story-meta?storyId= — حالة النشر ورقم النسخة.
+ *
+ * منفصلة عن `handleRead` لأن ما تعيده ليس مستنداً: `is_published` حقل في
+ * قاعدة البيانات لا داخل `story.json`، وخلطه بالمستند كان سيعني تسريب
+ * بيانات المنصّة إلى ملف المحتوى — وهو ما يبقيه العقد نظيفاً بعدم فعله.
+ */
+async function handleStoryMeta(url: URL): Promise<Response> {
+  const storyId = url.searchParams.get("storyId") ?? "";
+  const res = await fetch(`/api/stories/${encodeURIComponent(storyId)}/`, { headers: authHeaders() });
+  if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّرت القراءة.") }, res.status);
+
+  const body = (await res.json()) as { data?: { is_published?: boolean; version?: number } };
+  versionCache.set(storyId, body.data?.version ?? 1);
+  return jsonResponse({ ok: true, isPublished: body.data?.is_published === true });
+}
+
+/**
+ * POST /__editor/publish — تنشر القصّة أو تسحبها.
+ *
+ * تمرّ بنفس فحص النسخة الذي يمرّ به الحفظ: النشر تعديل على السجلّ نفسه،
+ * وتجاهل النسخة هنا كان سيسمح لنشرٍ متأخّر أن يدهس حفظاً أحدث بصمت.
+ */
+async function handlePublish(request: Request): Promise<Response> {
+  const payload = (await request.json()) as { storyId: string; isPublished: boolean };
+
+  const body: JsonBody = { is_published: payload.isPublished };
+  const knownVersion = versionCache.get(payload.storyId);
+  if (knownVersion !== undefined) body.version = knownVersion;
+
+  const res = await fetch(`/api/stories/${encodeURIComponent(payload.storyId)}/`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّر تغيير حالة النشر.") }, res.status);
+  }
+
+  const saved = (await res.json()) as { data?: { version?: number; is_published?: boolean } };
+  versionCache.set(payload.storyId, saved.data?.version ?? (knownVersion ?? 1) + 1);
+  return jsonResponse({ ok: true, isPublished: saved.data?.is_published === true });
 }
 
 async function handleCreateStory(request: Request): Promise<Response> {
@@ -175,6 +250,9 @@ type Handler = (request: Request, url: URL) => Promise<Response>;
 
 const ROUTES: Array<[string, Handler]> = [
   ["/__editor/read", (_req, url) => handleRead(url)],
+  ["/__editor/list-stories", () => handleListStories()],
+  ["/__editor/story-meta", (_req, url) => handleStoryMeta(url)],
+  ["/__editor/publish", (req) => handlePublish(req)],
   ["/__editor/save", (req) => handleSave(req)],
   ["/__editor/create-story", (req) => handleCreateStory(req)],
   ["/__editor/delete-story", (req) => handleDeleteStory(req)],
