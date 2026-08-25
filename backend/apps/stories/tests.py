@@ -161,3 +161,83 @@ class CompatVisibilityTests(TestCase):
         """انتهاء جلسة أثناء الحصّة يجب ألّا يُسقط قصّة منشورة."""
         res = self.client.get("/content/stories/pub1/story.json", HTTP_AUTHORIZATION="Bearer not-a-token")
         self.assertEqual(res.status_code, 200)
+
+
+class BuriedSlugTests(TestCase):
+    """
+    معرّف يشغله صفّ محذوف حذفاً ناعماً.
+
+    `slug` فريد على مستوى الجدول كلّه والحذف الناعم لا يحرّره، فيبقى المعرّف
+    محجوزاً بصفّ لا يراه أي استعلام. الاستوديو يفحص التوفّر عبر قائمة تستبعد
+    المحذوف، فيظنّه متاحاً — ثم يفشل الإنشاء ويعود الحفظ بـ 404 يتحدّث عن
+    صلاحيات بينما السبب معرّف مدفون. حدث فعلاً مع قصّة اسمها `tree`.
+    """
+
+    def setUp(self):
+        from apps.accounts.models import User
+
+        self.teacher = User.objects.create_user(email="t2@x.local", password="pw12345678", full_name="م")
+        self.other = User.objects.create_user(email="o2@x.local", password="pw12345678", full_name="ن")
+
+    def _login(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        self.client.credentials = None
+        return {"HTTP_AUTHORIZATION": f"Bearer {RefreshToken.for_user(user).access_token}"}
+
+    def _bury(self, slug, owner):
+        story = Story.objects.create(slug=slug, title="قديمة", owner=owner, story_json={"id": slug})
+        story.delete()  # حذف ناعم
+        return story
+
+    def test_creating_over_own_buried_slug_revives_it(self):
+        buried = self._bury("tree", self.teacher)
+        res = self.client.post(
+            "/api/stories/",
+            {"slug": "tree", "title": "tree", "story_json": {"id": "tree", "title": "tree"}},
+            content_type="application/json",
+            **self._login(self.teacher),
+        )
+        self.assertEqual(res.status_code, 201)
+        revived = Story.objects.get(slug="tree")  # مرئية للاستعلام العادي الآن
+        self.assertEqual(revived.pk, buried.pk)
+        self.assertIsNone(revived.deleted_at)
+        self.assertEqual(revived.title, "tree")
+
+    def test_the_revived_story_can_then_be_saved(self):
+        """الحفظ بعد الإنشاء هو ما كان يفشل بـ 404 — الحارس الحقيقي."""
+        self._bury("tree", self.teacher)
+        self.client.post(
+            "/api/stories/",
+            {"slug": "tree", "title": "tree", "story_json": {"id": "tree"}},
+            content_type="application/json",
+            **self._login(self.teacher),
+        )
+        res = self.client.patch(
+            "/api/stories/tree/",
+            {"story_json": {"id": "tree", "story": {"scenes": [{"id": "scene01"}]}}},
+            content_type="application/json",
+            **self._login(self.teacher),
+        )
+        self.assertEqual(res.status_code, 200)
+
+    def test_someone_elses_buried_slug_is_refused_by_name_not_by_permission(self):
+        self._bury("tree", self.other)
+        res = self.client.post(
+            "/api/stories/",
+            {"slug": "tree", "title": "tree", "story_json": {"id": "tree"}},
+            content_type="application/json",
+            **self._login(self.teacher),
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("محجوز", str(res.json()))
+
+    def test_a_free_slug_still_creates_normally(self):
+        res = self.client.post(
+            "/api/stories/",
+            {"slug": "brandnew", "title": "جديدة", "story_json": {"id": "brandnew"}},
+            content_type="application/json",
+            **self._login(self.teacher),
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(Story.objects.filter(slug="brandnew").exists())

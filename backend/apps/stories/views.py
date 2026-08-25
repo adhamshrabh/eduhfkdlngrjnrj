@@ -83,6 +83,40 @@ class StoryViewSet(viewsets.ModelViewSet):
         return ok(self.get_serializer(self.get_object()).data)
 
     def create(self, request: Request, *args, **kwargs):
+        # ── معرّف يشغله صفّ محذوف حذفاً ناعماً ──────────────────────────────
+        #
+        # `slug` فريد على مستوى الجدول كلّه، والحذف الناعم لا يحرّره. فالمعرّف
+        # يبقى محجوزاً إلى الأبد بصفّ لا يراه أي استعلام عادي.
+        #
+        # الأثر المقيس: الاستوديو يفحص التوفّر عبر قائمة القصص — وهي تستبعد
+        # المحذوف — فيظنّ المعرّف متاحاً، ثم يفشل الإنشاء، ثم يذهب الحفظ إلى
+        # قصّة لا يراها الاستعلام فيعود 404 «العنصر غير موجود أو لا تملكين
+        # صلاحية الوصول إليه». رسالة تتحدّث عن صلاحيات بينما السبب معرّف مدفون.
+        #
+        # الإحياء لا الرفض: المالكة حذفتها بنفسها ثم طلبت إنشاءها من جديد —
+        # وهذا هو المعنى الحرفي لطلبها. أمّا معرّف يخصّ غيرها فيُرفض برسالة
+        # تقول السبب الحقيقي بدل أن تلوم الصلاحيات.
+        slug = request.data.get("slug")
+        buried = (
+            Story.all_objects.filter(slug=slug, deleted_at__isnull=False).first()
+            if isinstance(slug, str) and slug
+            else None
+        )
+
+        if buried is not None:
+            if buried.owner_id != request.user.id and not request.user.is_admin_role:
+                raise ValidationError(
+                    {"slug": f"المعرّف «{slug}» محجوز لقصة محذوفة تخصّ معلّمة أخرى. اختاري معرّفاً غيره."}
+                )
+            serializer = self.get_serializer(buried, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            with transaction.atomic():
+                story = serializer.save(owner=request.user)
+                # يُكتب مباشرةً لأن `save()` العادي لا يمسّ حقل الحذف.
+                Story.all_objects.filter(pk=story.pk).update(deleted_at=None)
+            story.refresh_from_db()
+            return ok(StoryDetailSerializer(story, context=self.get_serializer_context()).data, "تم إنشاء القصة.", 201)
+
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         story = serializer.save(owner=request.user)
