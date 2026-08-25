@@ -47,6 +47,19 @@ const BLINK_DURATION = 0.14;
 const BLINK_MIN = 0.12;
 
 /**
+ * Sway (v1.0.19 §3). ~2° over 5.2s — air, not agitation. Slower than the
+ * breath deliberately, and neither period divides the other, so a tree
+ * and a bird beside it never fall into a pattern the eye can learn.
+ */
+const SWAY_AMPLITUDE = 0.035;
+const SWAY_PERIOD = 5.2;
+
+/** The longest idle cycle, so a random phase can reach every point of
+ *  each of them. Sine-based kinds simply wrap when the phase exceeds
+ *  their own period. */
+const LONGEST_PERIOD = Math.max(BREATH_PERIOD, BLINK_PERIOD, SWAY_PERIOD);
+
+/**
  * The breath multiplier at a moment in time. Pure, and the only piece of
  * arithmetic in this file worth testing directly.
  *
@@ -75,16 +88,31 @@ export function blinkAt(seconds: number, phase: number): number {
   return 1 - (1 - BLINK_MIN) * Math.sin((t / BLINK_DURATION) * Math.PI);
 }
 
+/**
+ * The rotation offset of a sway at a moment in time (v1.0.19 §4).
+ *
+ * Returned as an OFFSET, not a multiplier, because it is added to the
+ * element's own authored angle: foliage an author tilted stays tilted and
+ * sways around that, rather than being swept back to horizontal.
+ */
+export function swayAt(seconds: number, phase: number): number {
+  return SWAY_AMPLITUDE * Math.sin(((seconds + phase) / SWAY_PERIOD) * Math.PI * 2);
+}
+
 interface IdleEntry {
   readonly id: string;
   readonly kind: IdleKind;
   readonly phase: number;
   elapsed: number;
-  /** The scale to oscillate around, or null while the entry is standing
-   *  down. Null is not "unknown" — it is the flag that says "re-read this
-   *  the moment you resume", which is what makes an authored `scale`
-   *  effect survive (§4 rule 2). */
-  base: { x: number; y: number } | null;
+  /** The transform to oscillate around, or null while the entry is
+   *  standing down. Null is not "unknown" — it is the flag that says
+   *  "re-read this the moment you resume", which is what makes an
+   *  authored `scale` or `rotate` effect survive (§4 rule 2).
+   *
+   *  `rotation` joined `x`/`y` for sway: it oscillates a different
+   *  property, and capturing only scale would have swayed every element
+   *  around zero instead of around the angle its author chose. */
+  base: { x: number; y: number; rotation: number } | null;
 }
 
 export class IdleMotion {
@@ -102,7 +130,7 @@ export class IdleMotion {
      *  leave the last 0.6s of the blink cycle unreachable, so no eye
      *  would ever start there. The breath is unaffected — it is a sine
      *  with period 3.6, so a larger phase simply wraps. */
-    private readonly randomPhase: () => number = () => Math.random() * Math.max(BREATH_PERIOD, BLINK_PERIOD)
+    private readonly randomPhase: () => number = () => Math.random() * LONGEST_PERIOD
   ) {
     this.resolve = resolve;
     this.isBusy = isBusy;
@@ -159,7 +187,7 @@ export class IdleMotion {
 
       // Resuming (or starting): oscillate around wherever the element
       // actually is now, never around an absolute remembered value.
-      entry.base ??= { x: target.scale.x, y: target.scale.y };
+      entry.base ??= { x: target.scale.x, y: target.scale.y, rotation: target.rotation };
       entry.elapsed += seconds;
       this.apply(entry, target);
     }
@@ -182,6 +210,14 @@ export class IdleMotion {
         // Vertical only: an eye closes, it does not shrink. Writing
         // scale.x too would be a flinch of the whole element.
         target.scale.y = base.y * blinkAt(entry.elapsed, entry.phase);
+        break;
+      }
+      case "sway": {
+        // Rotation, around the element's own anchor: foliage pivots where
+        // it meets the branch. Moving it on x instead would detach it
+        // visibly at the join — the one place the eye is already looking,
+        // because that is where two images meet (v1.0.19 §1).
+        target.rotation = base.rotation + swayAt(entry.elapsed, entry.phase);
         break;
       }
     }

@@ -107,7 +107,8 @@ const NEW_GROUP = "__new_group__";
  */
 const IDLE_LABELS: Record<string, string> = {
   breathe: "تنفّس",
-  blink: "رمش"
+  blink: "رمش",
+  sway: "تمايل"
 };
 /** «تنتهي القصة هنا» — v1.0.13's `endsStory`, as a dropdown value. Never
  *  written to the document: setSceneEnds() is what the document sees. */

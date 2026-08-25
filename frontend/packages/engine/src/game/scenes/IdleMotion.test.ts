@@ -14,7 +14,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { IdleMotion, breathAt, blinkAt } from "./IdleMotion";
+import { IdleMotion, breathAt, blinkAt, swayAt } from "./IdleMotion";
 import type { EffectTarget } from "@core/effects";
 
 function makeTarget(scale = 1): EffectTarget {
@@ -120,6 +120,66 @@ describe("IdleMotion — blink (v1.0.18)", () => {
   it("accepts blink as a known kind", () => {
     const { idle } = setup();
     idle.add("sheep", "blink");
+    expect(idle.size).toBe(1);
+  });
+});
+
+describe("swayAt — the shape of moving air (v1.0.19 §3)", () => {
+  it("is an OFFSET centred on zero, so it adds to an authored angle", () => {
+    expect(swayAt(0, 0)).toBeCloseTo(0, 10);
+  });
+
+  it("stays inside ~2° — atmosphere, never something the eye tracks", () => {
+    // Past roughly 5° the leaves start competing with the voice.
+    for (let t = 0; t < 5.2; t += 0.01) expect(Math.abs(swayAt(t, 0))).toBeLessThanOrEqual(0.035);
+  });
+
+  it("repeats every 5.2 seconds", () => {
+    expect(swayAt(1.3, 0)).toBeCloseTo(swayAt(1.3 + 5.2, 0), 10);
+  });
+
+  it("is slower than the breath — air is slower than a body", () => {
+    // Quarter-cycle peaks: sway reaches its peak later than the breath.
+    expect(swayAt(1.3, 0)).toBeCloseTo(0.035, 6); // 5.2/4
+    expect(breathAt(0.9, 0)).toBeCloseTo(1.012, 6); // 3.6/4
+  });
+
+  it("phase desynchronises — two trees in lockstep read as wallpaper", () => {
+    expect(swayAt(1.3, 0)).not.toBeCloseTo(swayAt(1.3, 2.0), 3);
+  });
+});
+
+describe("IdleMotion — sway (v1.0.19)", () => {
+  it("rotates, and leaves scale untouched", () => {
+    const { target, idle } = setup();
+    idle.add("sheep", "sway");
+    idle.update(1.3);
+    expect(target.rotation).toBeCloseTo(0.035, 6);
+    expect(target.scale.x).toBe(1);
+    expect(target.scale.y).toBe(1);
+  });
+
+  it("sways around the author's own angle, never around zero", () => {
+    // Sweeping a deliberately tilted element back to horizontal would be
+    // destroying authored work to make the idle simpler (§4).
+    const { target, idle } = setup();
+    target.rotation = 0.5;
+    idle.add("sheep", "sway");
+    idle.update(1.3);
+    expect(target.rotation).toBeCloseTo(0.5 + 0.035, 6);
+  });
+
+  it("stands down while an authored rotate effect owns the element", () => {
+    const { target, busy, idle } = setup();
+    idle.add("sheep", "sway");
+    busy.value = true;
+    idle.update(1.3);
+    expect(target.rotation).toBe(0);
+  });
+
+  it("accepts sway as a known kind", () => {
+    const { idle } = setup();
+    idle.add("sheep", "sway");
     expect(idle.size).toBe(1);
   });
 });

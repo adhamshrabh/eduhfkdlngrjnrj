@@ -14,7 +14,7 @@
  * `game/`. No imports, no DOM.
  */
 
-export const IDLE_KINDS = ["breathe", "blink"] as const;
+export const IDLE_KINDS = ["breathe", "blink", "sway"] as const;
 
 export type IdleKind = (typeof IDLE_KINDS)[number];
 
