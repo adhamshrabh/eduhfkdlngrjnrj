@@ -14,6 +14,10 @@ export {
   SUPPORTED_INPUT_MODES
 } from "./SchemaValidator";
 export type { SchemaValidationResult } from "./SchemaValidator";
+// Exported so the Studio's «الحيوية» dropdown is driven by the contract's
+// own list rather than a hand-kept copy (v1.0.18).
+export { IDLE_KINDS, isIdleKind } from "./IdleKinds";
+export type { IdleKind } from "./IdleKinds";
 export { ContentStore } from "./ContentStore";
 export { AssetUrls } from "./AssetUrls";
 export { isImageAsset, isAudioAsset } from "./AssetKinds";

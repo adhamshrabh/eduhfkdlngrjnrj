@@ -25,6 +25,7 @@ This page is the map. Read the base first, then the patches that touch what you 
 | [v1.0.15](./Scene-Model-Specification-v1.0.15.md) | §2.2 | `elements[].idle` — the scene stays alive between beats |
 | [v1.0.16](./Scene-Model-Specification-v1.0.16.md) | §12.8 | `play-audio` — a second sound at the same moment |
 | [v1.0.17](./Scene-Model-Specification-v1.0.17.md) | §2.3 | `type: "group"` + `groupId` — several elements that move as one |
+| [v1.0.18](./Scene-Model-Specification-v1.0.18.md) | §2.2 | `idle: "blink"` — the eyes say the character is awake |
 
 ## What every patch has kept true
 
@@ -48,7 +49,7 @@ These held from v1.0 through v1.0.17, and a patch that breaks one is a patch to 
 | Choices and input | §7.1–§7.3, §13 | `YaraBedScene` + `core/input/ExternalInput.ts` | scenario page, Scene tab |
 | Where a scene leads | §1, v1.0.13 | `resolveSceneExit` in `YaraBedScene.ts` | «المشهد التالي» on the scenario page |
 | Timing motion to voice | v1.0.14 | `scaleEffectTo` + `AudioManager.getDuration` | «امتدّ مع الصوت» on the Effects tab |
-| Living stillness | v1.0.15 | `game/scenes/IdleMotion.ts`, in `Scene.update` | «الحيوية» on the Element tab |
+| Living stillness | v1.0.15, v1.0.18 | `game/scenes/IdleMotion.ts`, in `Scene.update` | «الحيوية» on the Element tab |
 | Sound beside the voice | v1.0.16 | `play-audio` in `EffectRunner`, on the `sfx` channel | «يُشغّل صوتًا» in the effect list |
 | Grouping and parenting | v1.0.17 | `Pixi.Container` via `SpriteRegistry.revealGroup` | «المجموعة» on the Element tab |
 | Validation | all | `core/content/SchemaValidator.ts` | the validation strip |

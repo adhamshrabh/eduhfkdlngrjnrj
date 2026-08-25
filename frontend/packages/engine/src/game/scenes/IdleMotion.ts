@@ -36,6 +36,17 @@ const BREATH_AMPLITUDE = 0.012;
 const BREATH_PERIOD = 3.6;
 
 /**
+ * A blink (v1.0.18 §3). Roughly one every four seconds, lasting 140ms,
+ * squashing the eye to 12% of its height — never to 0, because a sprite
+ * that vanishes for two frames reads as a dropped frame, not a closing
+ * eye. Fixed here for the same reason the breath is: an author who can
+ * set these will eventually set them wrong, and it lands on a child.
+ */
+const BLINK_PERIOD = 4.2;
+const BLINK_DURATION = 0.14;
+const BLINK_MIN = 0.12;
+
+/**
  * The breath multiplier at a moment in time. Pure, and the only piece of
  * arithmetic in this file worth testing directly.
  *
@@ -45,6 +56,23 @@ const BREATH_PERIOD = 3.6;
  */
 export function breathAt(seconds: number, phase: number): number {
   return 1 + BREATH_AMPLITUDE * Math.sin(((seconds + phase) / BREATH_PERIOD) * Math.PI * 2);
+}
+
+/**
+ * The vertical squash of a blink at a moment in time (v1.0.18 §4).
+ *
+ * Unlike the breath this is mostly 1: nothing happens for about four
+ * seconds, then a fast closure. That discrete shape is the whole reason
+ * blinking reads as attention rather than as motion — a continuously
+ * moving eye would be a tic.
+ *
+ * The half-sine closes and reopens in one motion with no discontinuity
+ * at either end, so the eye never snaps.
+ */
+export function blinkAt(seconds: number, phase: number): number {
+  const t = (seconds + phase) % BLINK_PERIOD;
+  if (t >= BLINK_DURATION) return 1;
+  return 1 - (1 - BLINK_MIN) * Math.sin((t / BLINK_DURATION) * Math.PI);
 }
 
 interface IdleEntry {
@@ -68,8 +96,13 @@ export class IdleMotion {
     resolve: (id: string) => EffectTarget | undefined,
     isBusy: (target: EffectTarget) => boolean,
     /** Injectable only so tests are deterministic; production wants the
-     *  spread of real random phases. */
-    private readonly randomPhase: () => number = () => Math.random() * BREATH_PERIOD
+     *  spread of real random phases.
+     *
+     *  Spans the LONGER of the two cycles: a range of only 3.6s would
+     *  leave the last 0.6s of the blink cycle unreachable, so no eye
+     *  would ever start there. The breath is unaffected — it is a sine
+     *  with period 3.6, so a larger phase simply wraps. */
+    private readonly randomPhase: () => number = () => Math.random() * Math.max(BREATH_PERIOD, BLINK_PERIOD)
   ) {
     this.resolve = resolve;
     this.isBusy = isBusy;
@@ -143,6 +176,12 @@ export class IdleMotion {
         const f = breathAt(entry.elapsed, entry.phase);
         target.scale.x = base.x * f;
         target.scale.y = base.y * f;
+        break;
+      }
+      case "blink": {
+        // Vertical only: an eye closes, it does not shrink. Writing
+        // scale.x too would be a flinch of the whole element.
+        target.scale.y = base.y * blinkAt(entry.elapsed, entry.phase);
         break;
       }
     }

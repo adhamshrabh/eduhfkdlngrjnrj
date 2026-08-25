@@ -14,7 +14,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { IdleMotion, breathAt } from "./IdleMotion";
+import { IdleMotion, breathAt, blinkAt } from "./IdleMotion";
 import type { EffectTarget } from "@core/effects";
 
 function makeTarget(scale = 1): EffectTarget {
@@ -59,6 +59,68 @@ describe("breathAt — the shape of a breath (v1.0.15 §3)", () => {
 
   it("phase desynchronises elements — a scene must not pulse as one heart", () => {
     expect(breathAt(0, 0)).not.toBeCloseTo(breathAt(0, 0.9), 4);
+  });
+});
+
+describe("blinkAt — the shape of a blink (v1.0.18 §3)", () => {
+  it("is 1 for most of the cycle — a blink is an event, not a motion", () => {
+    // Anything continuously moving would be a tic, not attention.
+    expect(blinkAt(1.0, 0)).toBe(1);
+    expect(blinkAt(2.0, 0)).toBe(1);
+    expect(blinkAt(4.0, 0)).toBe(1);
+  });
+
+  it("closes to 12%, never to 0 — a vanished sprite reads as a dropped frame", () => {
+    // Deepest point is the middle of the closure.
+    expect(blinkAt(0.07, 0)).toBeCloseTo(0.12, 6);
+  });
+
+  it("opens and closes without a snap at either end", () => {
+    expect(blinkAt(0, 0)).toBeCloseTo(1, 10);
+    expect(blinkAt(0.1399, 0)).toBeCloseTo(1, 2);
+  });
+
+  it("repeats every 4.2 seconds", () => {
+    expect(blinkAt(0.07, 0)).toBeCloseTo(blinkAt(0.07 + 4.2, 0), 10);
+  });
+
+  it("phase desynchronises — two eyes in lockstep look mechanical", () => {
+    expect(blinkAt(0.07, 0)).not.toBeCloseTo(blinkAt(0.07, 1.5), 3);
+  });
+
+  it("never exceeds 1 — a blink closes an eye, it never enlarges it", () => {
+    for (let t = 0; t < 4.2; t += 0.01) expect(blinkAt(t, 0)).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("IdleMotion — blink (v1.0.18)", () => {
+  it("squashes only vertically: an eye closes, it does not shrink", () => {
+    const { target, idle } = setup();
+    idle.add("sheep", "blink");
+    idle.update(0.07);
+    expect(target.scale.y).toBeCloseTo(0.12, 6);
+    expect(target.scale.x).toBe(1); // untouched
+  });
+
+  it("oscillates around the element's own scale, not an absolute value", () => {
+    const { target, idle } = setup(2);
+    idle.add("sheep", "blink");
+    idle.update(0.07);
+    expect(target.scale.y).toBeCloseTo(2 * 0.12, 6);
+  });
+
+  it("stands down while an authored effect owns the element", () => {
+    const { target, busy, idle } = setup();
+    idle.add("sheep", "blink");
+    busy.value = true;
+    idle.update(0.07);
+    expect(target.scale.y).toBe(1);
+  });
+
+  it("accepts blink as a known kind", () => {
+    const { idle } = setup();
+    idle.add("sheep", "blink");
+    expect(idle.size).toBe(1);
   });
 });
 
