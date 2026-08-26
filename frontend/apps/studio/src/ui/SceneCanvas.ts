@@ -53,6 +53,19 @@ const ELEMENT_CENTER_X = 960;
 const ELEMENT_DEFAULT_Y = 780;
 const ELEMENT_DEFAULT_SCALE = 0.45;
 
+/**
+ * Where an un-dragged activity option sits, and how tall it is drawn.
+ *
+ * These three MIRROR `PickCorrectRunner`'s SPREAD_Y / SPREAD_GAP /
+ * CHOICE_HEIGHT and must stay equal to them. They are duplicated rather
+ * than imported because the Studio does not depend on `@game` — the layer
+ * boundary EduStudio-Phase-1 established — so the guard is a test that
+ * reads both files, not the type system.
+ */
+const CHOICE_SPREAD_Y = 760;
+const CHOICE_SPREAD_GAP = 320;
+const CHOICE_HEIGHT = 220;
+
 export interface SceneCanvasElement {
   /** The layout.json id this element's position is saved/loaded under —
    *  its own content id, same as the Runtime's SpriteRegistry keys. */
@@ -61,6 +74,23 @@ export interface SceneCanvasElement {
   /** Draw inside this group's container instead of the scene root
    *  (v1.0.17). Its x/y are then LOCAL to that container. */
   groupId?: string;
+}
+
+/**
+ * One "pick the correct answer" option, drawn on the stage so the author
+ * places it by dragging — the same gesture she already uses for elements.
+ *
+ * Deliberately NOT a `SceneCanvasElement`: a choice is not part of the
+ * scene, it belongs to the scene's activity. Its position is saved in the
+ * activity payload, never in `layout.json`, so the layout keeps meaning
+ * exactly "where the scene's elements are".
+ */
+export interface SceneCanvasChoice {
+  id: string;
+  url: string;
+  x?: number;
+  y?: number;
+  scale?: number;
 }
 
 export interface SceneCanvasOptions {
@@ -91,6 +121,14 @@ export interface SceneCanvasOptions {
    * user drags, before the gesture has actually committed anything.
    */
   onElementDragging?: (id: string, x: number, y: number) => void;
+  /** The scene activity's options, if it is a "pick-correct" activity. */
+  choices?: SceneCanvasChoice[];
+  /**
+   * Fired on release when a choice is dragged. Separate from
+   * `onElementMoved` because the destination is different: a choice's
+   * position belongs to the activity, not to `layout.json`.
+   */
+  onChoiceMoved?: (id: string, x: number, y: number) => void;
   /** The element id to show a selection outline around, if any. */
   selectedId?: string | null;
   /**
@@ -220,7 +258,85 @@ export class SceneCanvas {
       }, { draggable: true, zIndex: 1, parent: element.groupId });
     }
 
+    // Activity options, on top of the scene — the layer the child picks
+    // from. Drawn last so an option is never hidden behind scenery.
+    //
+    // The three constants below MUST match PickCorrectRunner's own
+    // (SPREAD_Y / SPREAD_GAP / CHOICE_HEIGHT). They are the fallback for
+    // an option the author has not dragged yet, and if the two disagree
+    // the Studio shows a position the engine will not use — a stage that
+    // lies is worse than no stage at all.
+    const choices = options.choices ?? [];
+    const choiceStartX = DESIGN_WIDTH / 2 - ((choices.length - 1) * CHOICE_SPREAD_GAP) / 2;
+    for (const [index, choice] of choices.entries()) {
+      if (this.destroyed) return;
+      await this.addChoiceSprite(choice, index, choiceStartX, options);
+    }
+
     this.drawSelectionOutline();
+  }
+
+  /**
+   * One draggable activity option.
+   *
+   * Kept out of `addSprite` deliberately: that method reads and writes
+   * `layout.json` through `getPosition`/`onElementMoved`, and a choice
+   * must touch neither. Sharing the code would mean threading "but not
+   * for this one" through every step of it.
+   */
+  private async addChoiceSprite(
+    choice: SceneCanvasChoice,
+    index: number,
+    startX: number,
+    options: SceneCanvasOptions
+  ): Promise<void> {
+    let texture: Texture;
+    try {
+      texture = await Assets.load<Texture>(AssetUrls.pixiSource(choice.url) as never);
+    } catch (err) {
+      console.warn(`[SceneCanvas] Failed to load choice "${choice.url}":`, err);
+      return;
+    }
+    if (this.destroyed) return;
+
+    const sprite = new Sprite(texture);
+    sprite.anchor.set(0.5, 0.5);
+    // Uniform height, aspect preserved — same rule the runner applies, and
+    // the reason for it is pedagogical: options the child compares must
+    // not differ in visual weight, or the answer can be found by looking.
+    sprite.scale.set(choice.scale ?? (texture.height > 0 ? CHOICE_HEIGHT / texture.height : 1));
+    sprite.x = choice.x ?? startX + index * CHOICE_SPREAD_GAP;
+    sprite.y = choice.y ?? CHOICE_SPREAD_Y;
+    sprite.zIndex = 50;
+    sprite.interactive = true;
+    sprite.cursor = "grab";
+    this.root.addChild(sprite);
+
+    let dragging = false;
+    let offset = { x: 0, y: 0 };
+    sprite.on("pointerdown", (e: FederatedPointerEvent) => {
+      e.stopPropagation();
+      dragging = true;
+      sprite.cursor = "grabbing";
+      sprite.alpha = 0.85;
+      const local = e.getLocalPosition(this.root);
+      offset = { x: sprite.x - local.x, y: sprite.y - local.y };
+    });
+    this.app.stage.on("pointermove", (e: FederatedPointerEvent) => {
+      if (!dragging) return;
+      const local = e.getLocalPosition(this.root);
+      sprite.x = local.x + offset.x;
+      sprite.y = local.y + offset.y;
+    });
+    const endDrag = (): void => {
+      if (!dragging) return;
+      dragging = false;
+      sprite.cursor = "grab";
+      sprite.alpha = 1;
+      options.onChoiceMoved?.(choice.id, Math.round(sprite.x), Math.round(sprite.y));
+    };
+    this.app.stage.on("pointerup", endDrag);
+    this.app.stage.on("pointerupoutside", endDrag);
   }
 
   private async addSprite(

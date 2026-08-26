@@ -29,30 +29,16 @@ import { Text, TextStyle, Container, Graphics, type FederatedPointerEvent } from
 import type { EventBus } from "@core/events/EventBus";
 import { EngineEvents } from "@core/events/EngineEvents";
 import type { AnimationManager } from "@core/animation/AnimationManager";
-import type { ActivityEffects } from "@core/effects";
 import type { TweenConfig } from "@shared/types";
 import type { LayoutApplier } from "./LayoutApplier";
 import { DEFAULT_TARGET_X } from "./LayoutApplier";
+import type { ActivityData, DragMatchActivity } from "./ActivityTypes";
 
-export interface ActivityData {
-  type: string;
-  word: string;
-  letters: string[];
-  missingIndex: number;
-  matchTolerance?: number;
-  onSolved?: {
-    showObject?: string;
-    playAudio?: string;
-    animation?: string;
-    characterArrival?: string;
-    nextScene?: string;
-  };
-  /** Lifecycle effects (core/effects/EffectContract.ts). Purely
-   *  declarative and entirely optional — an activity without them
-   *  behaves exactly as it did before the effect contract existed. The
-   *  scene, not this runner, decides when each hook fires. */
-  effects?: ActivityEffects;
-}
+// The shapes moved to ActivityTypes.ts when a second activity type needed
+// them (see that file's header). Re-exported here because every existing
+// importer names this module — moving the definition must not become a
+// rename across the codebase.
+export type { ActivityData, DragMatchActivity } from "./ActivityTypes";
 
 const DEFAULT_MATCH_TOLERANCE = 35;
 
@@ -70,7 +56,7 @@ export class PuzzleRunner {
   private idlePulseTween: { kill: () => void } | null = null;
   private gameActive = false;
   private isSolved = false;
-  private currentActivity: ActivityData | null = null;
+  private currentActivity: DragMatchActivity | null = null;
   private puzzleId = "";
   private onSolvedCallback: (() => void) | null = null;
   /** Every animation id this instance has started, so destroy()/reset()
@@ -105,7 +91,14 @@ export class PuzzleRunner {
 
   /** Starts a puzzle for the given activity — works identically no
    *  matter which scene or which line in that scene triggers it. */
-  start(activity: ActivityData, puzzleId: string, onSolved: () => void): void {
+  start(incoming: ActivityData, puzzleId: string, onSolved: () => void): void {
+    // Narrowed once, here. `ActivityRendererRegistry` resolves a renderer
+    // BY the activity's own `type`, so a runner registered for
+    // "drag-match" is only ever handed a drag-match activity — the
+    // registry is the guarantee, and asserting it in one place beats
+    // guarding the same three fields at five call sites below.
+    const activity = incoming as DragMatchActivity;
+
     this.currentActivity = activity;
     this.puzzleId = puzzleId;
     this.onSolvedCallback = onSolved;

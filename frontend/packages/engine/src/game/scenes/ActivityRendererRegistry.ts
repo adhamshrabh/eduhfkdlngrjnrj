@@ -21,8 +21,11 @@
 import type { Container } from "pixi.js";
 import type { EventBus } from "@core/events/EventBus";
 import type { AnimationManager } from "@core/animation/AnimationManager";
+import type { AssetManager } from "@core/assets/AssetManager";
 import type { LayoutApplier } from "./LayoutApplier";
-import { PuzzleRunner, type ActivityData } from "./PuzzleRunner";
+import { PuzzleRunner } from "./PuzzleRunner";
+import { PickCorrectRunner } from "./PickCorrectRunner";
+import { PICK_CORRECT_TYPE, type ActivityData } from "./ActivityTypes";
 
 /**
  * The public contract every activity renderer must satisfy — exactly the
@@ -39,12 +42,19 @@ export interface ActivityRenderer {
 }
 
 /** Builds a renderer instance given the same scene-owned dependencies
- *  PuzzleRunner's constructor already takes. */
+ *  PuzzleRunner's constructor already takes.
+ *
+ *  `assets` was appended when the first renderer needed to draw an IMAGE
+ *  rather than shapes and text: drag-match paints letter bubbles with
+ *  Graphics, so it never needed textures. Appended, not inserted, and
+ *  optional — PuzzleRunner's factory ignores a parameter it does not
+ *  declare, so no existing registration changes. */
 export type ActivityRendererFactory = (
   container: Container,
   eventBus: EventBus,
   animation: AnimationManager,
-  layout: LayoutApplier
+  layout: LayoutApplier,
+  assets: AssetManager
 ) => ActivityRenderer;
 
 export class ActivityRendererRegistry {
@@ -83,4 +93,10 @@ export class ActivityRendererRegistry {
 ActivityRendererRegistry.register(
   "drag-match",
   (container, eventBus, animation, layout) => new PuzzleRunner(container, eventBus, animation, layout)
+);
+
+ActivityRendererRegistry.register(
+  PICK_CORRECT_TYPE,
+  (container, eventBus, animation, layout, assets) =>
+    new PickCorrectRunner(container, eventBus, animation, layout, assets)
 );

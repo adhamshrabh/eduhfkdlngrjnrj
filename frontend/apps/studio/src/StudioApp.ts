@@ -43,7 +43,7 @@ import { icon } from "./ui/icons";
 import { defaultPlacement, drawSceneThumbnail, type ThumbSpec } from "./ui/SceneThumbnail";
 import { LayoutDraft, degreesToRadians, radiansToDegrees, type DraftPosition } from "./LayoutDraft";
 import { StudioApi } from "./StudioApi";
-import { SceneCanvas, type SceneCanvasElement } from "./ui/SceneCanvas";
+import { SceneCanvas, type SceneCanvasChoice, type SceneCanvasElement } from "./ui/SceneCanvas";
 import { ActivityPreview } from "./ui/ActivityPreview";
 import { assetChooser } from "./ui/AssetPicker";
 import { AudioRecorder, aliasFromFileName, blobToBase64, pickFile, safeFileName } from "./ui/AudioRecorder";
@@ -2594,7 +2594,12 @@ export class StudioApp {
       return wrap;
     }
 
-    if (activity.type !== "drag-match") {
+    const KNOWN_TYPES = [
+      { value: "drag-match", label: "سحب ومطابقة" },
+      { value: "pick-correct", label: "اختيار الإجابة الصحيحة" }
+    ];
+
+    if (!KNOWN_TYPES.some((t) => t.value === activity.type)) {
       wrap.appendChild(
         status(
           "warn",
@@ -2607,12 +2612,22 @@ export class StudioApp {
     // --- 1. what the child does -------------------------------------
     wrap.appendChild(el("div", "s-field__label", "١ · النشاط"));
 
-    // A real (if single-option today) selector, deliberately, so a second
-    // activity type later is an added option + branch here, not a
-    // restructure.
+    // Switching type never destroys the other type's fields (see
+    // StoryDraft.setActivityType): an author who switches back finds her
+    // word still there.
     wrap.appendChild(
-      selectField("النوع", "drag-match", [{ value: "drag-match", label: "سحب ومطابقة" }], () => {})
+      selectField("النوع", activity.type, KNOWN_TYPES, (value) => {
+        if (value === activity.type) return;
+        draft.setActivityType(scene.id, value);
+        this.markEdited();
+        this.render();
+      })
     );
+
+    if (activity.type === "pick-correct") {
+      wrap.appendChild(this.renderPickCorrectEditor(scene, activity));
+      return wrap;
+    }
 
     wrap.appendChild(this.renderActivityPreviewControls(scene, activity));
 
@@ -3301,6 +3316,161 @@ export class StudioApp {
    * into (same constraint the canvas's own drag sync works around), and
    * previewing is not an edit, so it must not mark the document dirty.
    */
+  /**
+   * «اختيار الإجابة الصحيحة» — the form for the second activity type.
+   *
+   * Three decisions worth stating, because each is a place the obvious
+   * design would have been worse:
+   *
+   * 1. **Position is set by dragging on the stage**, not by X/Y fields.
+   *    The author already places every element that way; a second
+   *    positioning idiom for the same act would be a thing to learn for
+   *    no gain. The stage draws the options alongside the scene, which is
+   *    also the only way to judge whether they overlap the character.
+   *
+   * 2. **Exactly one option is correct** — marking a new one clears the
+   *    others (StoryDraft enforces it). Two correct answers is not a
+   *    richer question; it is a question the author did not finish.
+   *
+   * 3. **What happens after a correct answer is NOT here.** It is the
+   *    existing «التأثيرات» tab and «المشهد التالي» — the same fields
+   *    every activity already had. Duplicating them into this form would
+   *    have created a second place to set one thing.
+   */
+  private renderPickCorrectEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const imageAssets = draft.assets.filter((a) => isImageAsset(a.src));
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    const audioOptions = [
+      { value: "", label: "لا شيء" },
+      ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
+    ];
+
+    // ---------- the question ----------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(
+      textField("نص السؤال", activity.question?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "question", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت السؤال", activity.question?.audio ?? "", audioOptions, (v) => {
+        draft.updateActivityText(scene.id, "question", { audio: v });
+        this.markEdited();
+        this.renderPropertiesBody();
+      })
+    );
+
+    // ---------- the options ----------
+    wrap.appendChild(el("div", "s-field__label", "٣ · الخيارات"));
+    const choices = activity.choices ?? [];
+
+    if (choices.length === 0) {
+      wrap.appendChild(el("div", "s-empty", "أضف خيارًا من الأصول أدناه."));
+    }
+
+    for (const choice of choices) {
+      const row = el("div", "s-item");
+      const asset = imageAssets.find((a) => a.alias === choice.alias);
+      if (asset) {
+        const thumb = el("img", "s-thumb") as HTMLImageElement;
+        thumb.src = this.assetUrl(asset.src);
+        thumb.alt = "";
+        row.appendChild(thumb);
+      }
+      row.appendChild(el("div", "s-item__name", choice.alias));
+
+      const correct = el("button", `s-btn ${choice.correct ? "s-btn--primary" : "s-btn--ghost"}`) as HTMLButtonElement;
+      correct.type = "button";
+      correct.textContent = choice.correct ? "✓ الصحيح" : "اجعله الصحيح";
+      correct.onclick = () => {
+        draft.updateActivityChoice(scene.id, choice.id, { correct: !choice.correct });
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(correct);
+
+      row.appendChild(
+        el(
+          "div",
+          "s-item__meta",
+          choice.x === undefined ? "لم يُوضع بعد — يُوزَّع تلقائيًا" : `(${Math.round(choice.x)}، ${Math.round(choice.y ?? 0)})`
+        )
+      );
+
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      remove.onclick = () => {
+        draft.removeActivityChoice(scene.id, choice.id);
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(remove);
+
+      wrap.appendChild(row);
+    }
+
+    if (imageAssets.length === 0) {
+      wrap.appendChild(status("info", "لا توجد صور بعد — استوردها من «الأصول»."));
+    } else {
+      wrap.appendChild(
+        assetChooser(
+          "",
+          imageAssets.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          undefined,
+          (alias) => {
+            if (!alias) return;
+            draft.addActivityChoice(scene.id, alias);
+            this.markEdited();
+            this.render();
+          },
+          { triggerLabel: "+ إضافة خيار" }
+        )
+      );
+    }
+
+    wrap.appendChild(
+      el("div", "s-item__meta", "اسحب الخيارات على المسرح لتحديد مواضعها. خيار بلا موضع يُوزَّع تلقائيًا فيبقى مرئيًا.")
+    );
+
+    // ---------- the wrong answer ----------
+    wrap.appendChild(el("div", "s-field__label", "٤ · عند الاختيار الخاطئ"));
+    wrap.appendChild(
+      textField("ردّ الشخصية", activity.wrongResponse?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت الردّ", activity.wrongResponse?.audio ?? "", audioOptions, (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { audio: v });
+        this.markEdited();
+        this.renderPropertiesBody();
+      })
+    );
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "الخيار الخاطئ يبقى على الشاشة. اجعل الردّ يصف ما جرّبته الشخصية («هذا ثقيل») لا حكمًا على الطفل — فيصير الخطأ معلومة يستدلّ بها."
+      )
+    );
+
+    // ---------- what comes after ----------
+    wrap.appendChild(el("div", "s-field__label", "٥ · بعد الإجابة الصحيحة"));
+    wrap.appendChild(
+      status(
+        "info",
+        "التأثير يُختار من تبويب «التأثيرات» (عند الحل). ولتحديد ما بعده: اترك «المشهد التالي» فارغًا ليبقى المشهد، أو اختر مشهدًا آخر لسؤال جديد."
+      )
+    );
+
+    return wrap;
+  }
+
   private renderActivityPreviewControls(scene: DraftScene, activity: DraftActivity): HTMLElement {
     const wrap = el("div", "s-stack");
     const resultHost = el("div");
@@ -3395,12 +3565,31 @@ export class StudioApp {
       if (src) elements.push({ id: element.id, url: this.assetUrl(src), groupId: element.groupId });
     }
 
+    // "Pick the correct answer" options, drawn on the stage so the author
+    // places each one by dragging — the same gesture she already uses for
+    // elements, rather than a second positioning UI to learn.
+    const activity = draft.getActivity(scene.id);
+    const choices: SceneCanvasChoice[] = [];
+    for (const choice of activity?.choices ?? []) {
+      const src = assetsByAlias.get(choice.alias);
+      if (src) choices.push({ id: choice.id, url: this.assetUrl(src), x: choice.x, y: choice.y, scale: choice.scale });
+    }
+
     try {
       const canvas = await SceneCanvas.mount(host, {
         backgroundUrl: backgroundSrc ? this.assetUrl(backgroundSrc) : undefined,
         backgroundLayoutId: scene.background ? `background:${scene.background}` : undefined,
         elements,
         groups: scene.elements.filter((e) => e.type === "group").map((e) => e.id),
+        choices,
+        // A choice's position belongs to the activity, never to
+        // layout.json — so this writes through the draft's activity
+        // methods, not through layoutDraft.
+        onChoiceMoved: (id, x, y) => {
+          draft.updateActivityChoice(scene.id, id, { x, y });
+          this.markEdited();
+          this.renderPropertiesBody();
+        },
         getPosition: (id) => layoutDraft.getPosition(id),
         selectedId: this.selectedElementId,
         // Selection must NOT trigger a full render() here — SceneCanvas

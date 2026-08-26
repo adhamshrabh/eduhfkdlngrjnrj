@@ -505,7 +505,7 @@ export class YaraBedScene extends Scene {
     // renderer in ActivityRendererRegistry and use its `type` in story.json.
     const activityType = this.scenes.find((s) => s.activity)?.activity?.type ?? "drag-match";
     const rendererFactory = ActivityRendererRegistry.resolveOrDefault(activityType, "drag-match");
-    this.puzzle = rendererFactory(this.root, this.eventBus, this.animation, this.layout);
+    this.puzzle = rendererFactory(this.root, this.eventBus, this.animation, this.layout, this.assets);
     this.eventBus.on(EngineEvents.Input.KeyDown, this.onKeyDown);
     // Every non-pointer way of choosing arrives here (v1.0.8 §7.2).
     this.eventBus.on(EngineEvents.Dialogue.ChoiceSelected, this.onChoiceIntent);

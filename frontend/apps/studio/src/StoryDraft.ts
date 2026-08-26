@@ -112,12 +112,34 @@ export interface DraftActivityOnSolved {
  * this interface doesn't know about. Adding a second type is a second
  * tab-rendering branch in Studio, not a StoryDraft redesign.
  */
+/** One option in a «اختيار الإجابة الصحيحة» activity. */
+export interface DraftActivityChoice {
+  id: string;
+  /** An entry in the story's `assets[]` — content never names a path. */
+  alias: string;
+  correct?: boolean;
+  /** Stage coordinates, set by dragging. Absent = the engine spreads it,
+   *  so an unplaced option is visible rather than stacked. */
+  x?: number;
+  y?: number;
+  scale?: number;
+}
+
 export interface DraftActivity {
   type: string;
+  // ── drag-match ──
   word?: string;
   letters?: string[];
   missingIndex?: number;
   matchTolerance?: number;
+  // ── pick-correct ──
+  /** What the character asks before the options appear. */
+  question?: { text?: string; audio?: string };
+  choices?: DraftActivityChoice[];
+  /** The character's reaction to a wrong pick — never a verdict on the
+   *  child, so the mistake carries something to reason from. */
+  wrongResponse?: { text?: string; audio?: string };
+  // ── shared ──
   onSolved?: DraftActivityOnSolved;
   /** Lifecycle effects (Scene-Model-Specification-v1.0.4.md §6.1). */
   effects?: ActivityEffects;
@@ -147,6 +169,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** A `{ text, audio }` pair, or undefined when neither is present. */
+function readActivityText(node: unknown): { text?: string; audio?: string } | undefined {
+  if (!isPlainObject(node)) return undefined;
+  const text = typeof node.text === "string" ? node.text : undefined;
+  const audio = typeof node.audio === "string" ? node.audio : undefined;
+  return text === undefined && audio === undefined ? undefined : { text, audio };
 }
 
 export class StoryDraft {
@@ -362,6 +392,21 @@ export class StoryDraft {
       letters: Array.isArray(node.letters) ? node.letters.filter((l): l is string => typeof l === "string") : undefined,
       missingIndex: typeof node.missingIndex === "number" ? node.missingIndex : undefined,
       matchTolerance: typeof node.matchTolerance === "number" ? node.matchTolerance : undefined,
+      question: readActivityText(node.question),
+      choices: Array.isArray(node.choices)
+        ? node.choices
+            .filter(isPlainObject)
+            .filter((c) => typeof c.id === "string" && typeof c.alias === "string")
+            .map((c) => ({
+              id: c.id as string,
+              alias: c.alias as string,
+              correct: c.correct === true ? true : undefined,
+              x: typeof c.x === "number" ? c.x : undefined,
+              y: typeof c.y === "number" ? c.y : undefined,
+              scale: typeof c.scale === "number" ? c.scale : undefined
+            }))
+        : undefined,
+      wrongResponse: readActivityText(node.wrongResponse),
       onSolved,
       // Passed through as-authored. Studio's UI edits one primitive per
       // hook, but the contract allows nested sequence/parallel — reading
@@ -1022,6 +1067,106 @@ export class StoryDraft {
     }
     if (patch.missingIndex !== undefined) activity.missingIndex = patch.missingIndex;
     if (patch.matchTolerance !== undefined) activity.matchTolerance = patch.matchTolerance;
+  }
+
+  // ---------------------------------------------------------------------
+  // «اختيار الإجابة الصحيحة» (pick-correct)
+  //
+  // Every method below patches the live node in place, exactly as the
+  // drag-match writers do, so switching an activity's type never destroys
+  // the other type's fields. An author who switches back finds her word
+  // still there — and, more importantly, a story hand-authored with fields
+  // Studio does not know about survives a round-trip through this form.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Switches the activity's type, scaffolding the minimum the new type
+   * needs. Nothing is removed: the previous type's fields stay on the node
+   * and simply stop being read.
+   */
+  setActivityType(sceneId: string, type: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity;
+    activity.type = type;
+
+    if (type === "pick-correct" && !Array.isArray(activity.choices)) activity.choices = [];
+    if (type === "drag-match" && typeof activity.word !== "string") {
+      activity.word = "";
+      activity.letters = [];
+      activity.missingIndex = 0;
+    }
+  }
+
+  /** Adds an option showing `alias`. The id is generated — never authored
+   *  (v1.0.10 §7.1: ids are an address, not an authoring surface). */
+  addActivityChoice(sceneId: string, alias: string): string | null {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !alias) return null;
+    const activity = node.activity;
+    if (!Array.isArray(activity.choices)) activity.choices = [];
+
+    const id = `ch_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+    (activity.choices as unknown[]).push({ id, alias });
+    return id;
+  }
+
+  updateActivityChoice(sceneId: string, choiceId: string, patch: Partial<DraftActivityChoice>): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const choices = (node.activity as Record<string, unknown>).choices;
+    if (!Array.isArray(choices)) return;
+
+    const choice = (choices as Record<string, unknown>[]).find((c) => isPlainObject(c) && c.id === choiceId);
+    if (!choice) return;
+
+    if (patch.alias !== undefined) choice.alias = patch.alias;
+    if (patch.x !== undefined) choice.x = patch.x;
+    if (patch.y !== undefined) choice.y = patch.y;
+    if (patch.scale !== undefined) choice.scale = patch.scale;
+    if (patch.correct !== undefined) {
+      // Exactly one correct option: marking a new one clears the rest.
+      // Two correct answers is not a richer question, it is a question the
+      // author did not finish deciding.
+      if (patch.correct) {
+        for (const c of choices as Record<string, unknown>[]) if (isPlainObject(c)) delete c.correct;
+        choice.correct = true;
+      } else {
+        delete choice.correct;
+      }
+    }
+  }
+
+  removeActivityChoice(sceneId: string, choiceId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity as Record<string, unknown>;
+    if (!Array.isArray(activity.choices)) return;
+    activity.choices = (activity.choices as Record<string, unknown>[]).filter(
+      (c) => !(isPlainObject(c) && c.id === choiceId)
+    );
+  }
+
+  /** Sets the question or the wrong-answer response. An emptied field is
+   *  removed rather than left as `""` — an empty string reads as "authored
+   *  and blank" where absent reads as "not used". */
+  updateActivityText(
+    sceneId: string,
+    which: "question" | "wrongResponse",
+    patch: { text?: string; audio?: string }
+  ): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity as Record<string, unknown>;
+    if (!isPlainObject(activity[which])) activity[which] = {};
+    const target = activity[which] as Record<string, unknown>;
+
+    for (const key of ["text", "audio"] as const) {
+      if (patch[key] === undefined) continue;
+      if (patch[key] === "") delete target[key];
+      else target[key] = patch[key];
+    }
+    if (Object.keys(target).length === 0) delete activity[which];
   }
 
   /**
