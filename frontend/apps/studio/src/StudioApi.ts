@@ -357,12 +357,14 @@ export class StudioApi {
     // Tier 2 — best-effort write to disk.
     let savedToDisk = false;
     let diskError: string | null = null;
+    let diskStatus = 0;
     try {
       const res = await fetch("/__editor/upload-base64", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ storyId, fileName, base64, assetType })
       });
+      diskStatus = res.status;
       const text = await res.text();
       try {
         const data = JSON.parse(text) as { ok?: boolean; path?: string; error?: string };
@@ -375,11 +377,29 @@ export class StudioApi {
       diskError = null;
     }
 
+    // ── الخادم ردّ ورفض: هذا فشل رفع، مهما احتفظ المتصفّح بنسخة ──────────
+    //
+    // نفس التمييز الذي يطبّقه `saveFile` — وغيابه هنا كان يُنتج العطل نفسه
+    // في الأصول: الصورة تُخزَّن في IndexedDB فتظهر في الاستوديو، ويُعلَن
+    // الرفع ناجحاً، ولا يصل الخادم شيء. فتراها المعلّمة في المسرح ولا تراها
+    // في المعاينة، لأن المحرّك يقرأ من الخادم.
+    //
+    // `diskError === null` تعني «لا خادم أصلاً» — وهناك النسخة المحلية سقوط
+    // مشروع. أمّا رسالة خطأ صريحة فتعني خادماً قال لا.
+    if (diskError !== null) {
+      return {
+        ok: false,
+        error:
+          diskStatus === 401 || diskStatus === 403
+            ? "لم يُرفع — انتهت جلسة الدخول. افتحي الاستوديو من زرّ «الاستوديو» داخل التطبيق."
+            : diskError
+      };
+    }
+
     if (!storedInBrowser && !savedToDisk) {
       return {
         ok: false,
         error:
-          diskError ??
           "تعذّر حفظ الملف: لا يوجد خادم تأليف، والتخزين في هذا المتصفّح غير متاح أو امتلأت المساحة."
       };
     }

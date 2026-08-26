@@ -217,17 +217,30 @@ async function handleUploadBase64(request: Request): Promise<Response> {
     alias?: string;
     dataUrl?: string;
     data?: string;
+    /** ما يرسله `StudioApi.uploadAsset` فعلاً — data URL كاملة. */
+    base64?: string;
     kind?: string;
+    /** ما يرسله `StudioApi.uploadAsset` فعلاً: "image" | "audio". */
+    assetType?: string;
   };
   const alias = payload.alias || (payload.fileName ?? "asset").replace(/\.[^.]+$/, "");
+
+  // `base64` و`assetType` ليسا مرادفين تجميليين — هما المفتاحان اللذان
+  // يرسلهما الاستوديو بالفعل. قراءة `dataUrl`/`kind` وحدهما كانت تمرّر
+  // نصّاً فارغاً فيردّ الخادم 400 «أرسلي ملفاً أو حقل data_url»، وتُصنَّف
+  // كل الأصوات صوراً. النتيجة المقيسة: صفر سجلّ أصل في المنصّة كلّها رغم
+  // أن الاستوديو يعرض الصور — لأنها في IndexedDB وحدها.
+  const dataUrl = payload.dataUrl ?? payload.data ?? payload.base64 ?? "";
+  const kind = payload.kind ?? (payload.assetType === "audio" ? "audio" : "images");
+
   const res = await fetch(`/api/stories/${encodeURIComponent(payload.storyId)}/assets/`, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({
       alias,
-      kind: payload.kind ?? "images",
+      kind,
       filename: payload.fileName,
-      data_url: payload.dataUrl ?? payload.data ?? "",
+      data_url: dataUrl,
     }),
   });
   if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّر رفع الملف.") }, res.status);
