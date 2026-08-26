@@ -32,11 +32,49 @@ function isContentPath(url: string): boolean {
   }
 }
 
+/**
+ * اسم الكوكي الذي يقرأه الخادم على مسارات `/content/` — ويجب أن يطابق
+ * `CONTENT_TOKEN_COOKIE` في `backend/apps/stories/compat_views.py`.
+ */
+const CONTENT_COOKIE = "edu_content";
+
+/**
+ * يعكس رمز الدخول في كوكي على نفس الأصل.
+ *
+ * الترويسة وحدها لا تكفي، وهذا ليس تفصيلاً: `story.json` يجلبه المحرّك بـ
+ * `fetch` من الخيط الرئيسي فيلتقطه الاعتراض أعلاه — أمّا **الصور** فيحمّلها
+ * PixiJS داخل **Web Worker**، وللعامل نطاق عام مستقلّ لا يرى أي اعتراض
+ * هنا. فتخرج طلباته بلا رمز، وتفشل كل صورة في مسوّدة بـ 404 بينما تنجح
+ * بيانات القصّة — فيُعرض مشهد فارغ بلا رسالة تشرح شيئاً. قِيس فعلياً:
+ * `[WorkerManager.loadImageBitmap] Failed to fetch … 404`.
+ *
+ * الكوكي يُرسَل تلقائياً من أي سياق — عامل أو صورة أو fetch — فيحلّ الحالات
+ * الثلاث بلا لمس المحرّك.
+ *
+ * `SameSite=Lax` يمنع إرساله من مواقع أخرى. ولا يزيد الانكشاف عمّا هو قائم:
+ * الرمز نفسه محفوظ في `localStorage` أصلاً، وهذا الكوكي لا يمنح إلا قراءة
+ * ما تملكه صاحبته — كل كتابة تمرّ بـ `/api/` بترويستها.
+ */
+function syncContentCookie(): void {
+  const access = tokens.access;
+  if (access) {
+    document.cookie = `${CONTENT_COOKIE}=${encodeURIComponent(access)}; Path=/; SameSite=Lax`;
+  } else {
+    document.cookie = `${CONTENT_COOKIE}=; Path=/; SameSite=Lax; Max-Age=0`;
+  }
+}
+
 let installed = false;
 
 export function installContentAuth(): void {
   if (installed) return;
   installed = true;
+
+  syncContentCookie();
+  // الرمز يتغيّر بالدخول والخروج والتجديد، والكوكي يجب أن يتبعه. فحص دوري
+  // خفيف أبسط من ربط كل مسار يكتب الرمز، ولا يفوته مسار نسيناه.
+  window.setInterval(syncContentCookie, 2000);
+  window.addEventListener("focus", syncContentCookie);
 
   const originalFetch = window.fetch.bind(window);
 

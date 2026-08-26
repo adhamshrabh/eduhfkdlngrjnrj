@@ -14,6 +14,12 @@
 
 import { App, EngineEvents, StoryLoader } from "@edu/engine";
 
+// نفس ما يفعله `main.tsx`: بدونه تذهب نداءات `/content/` بلا رمز، فتُحجب
+// مسوّدات المعلّمة — وتصير الصفحة تشخّص غياب المصادقة لا حالة المشهد.
+import { installContentAuth } from "./lib/contentAuth";
+
+installContentAuth();
+
 const params = new URLSearchParams(location.search);
 const storyId = params.get("story") ?? "birds";
 const report = document.getElementById("report")!;

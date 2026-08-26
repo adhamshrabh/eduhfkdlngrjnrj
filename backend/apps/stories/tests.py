@@ -162,6 +162,35 @@ class CompatVisibilityTests(TestCase):
         res = self.client.get("/content/stories/pub1/story.json", HTTP_AUTHORIZATION="Bearer not-a-token")
         self.assertEqual(res.status_code, 200)
 
+    # ── الكوكي: الطريق الوحيد الذي تسلكه الصور ──────────────────────────
+    #
+    # PixiJS يحمّل الصور داخل Web Worker، وللعامل نطاق عام مستقلّ لا يرى أي
+    # اعتراض على `fetch` في الخيط الرئيسي — فتخرج طلباته بلا ترويسة مهما
+    # فعل تطبيق الويب. الأثر المقيس: `story.json` ينجح ثم تفشل **كل** صورة
+    # بـ 404 في مسوّدة، فيُعرض مشهد فارغ بلا رسالة.
+
+    def _cookie(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        return str(RefreshToken.for_user(user).access_token)
+
+    def test_owner_reads_a_draft_by_cookie_alone(self):
+        """بلا ترويسة إطلاقاً — تماماً كما يطلب العامل الصور."""
+        self.client.cookies["edu_content"] = self._cookie(self.teacher)
+        res = self.client.get("/content/stories/draft1/story.json")
+        self.assertEqual(res.status_code, 200)
+
+    def test_no_cookie_still_hides_a_draft(self):
+        self.assertEqual(self.client.get("/content/stories/draft1/story.json").status_code, 404)
+
+    def test_another_teachers_cookie_does_not_open_a_draft(self):
+        self.client.cookies["edu_content"] = self._cookie(self.other)
+        self.assertEqual(self.client.get("/content/stories/draft1/story.json").status_code, 404)
+
+    def test_a_broken_cookie_degrades_to_guest(self):
+        self.client.cookies["edu_content"] = "garbage"
+        self.assertEqual(self.client.get("/content/stories/pub1/story.json").status_code, 200)
+
 
 class BuriedSlugTests(TestCase):
     """

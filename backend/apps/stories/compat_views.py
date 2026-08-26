@@ -26,6 +26,12 @@ from django.views.decorators.http import require_GET
 from .models import Story, StoryAsset
 
 
+#: اسم الكوكي الذي يحمل رمز القراءة. يضبطه تطبيق الويب عند الدخول ويمسحه
+#: عند الخروج؛ ولا يُستعمل إلا هنا، لقراءة المحتوى وحدها — كل كتابة تمرّ
+#: بـ `/api/stories/` بترويستها وصلاحياتها.
+CONTENT_TOKEN_COOKIE = "edu_content"
+
+
 def _authenticated_user(request):
     """
     صاحبة الطلب، من الجلسة أو من رمز JWT.
@@ -47,12 +53,32 @@ def _authenticated_user(request):
     try:
         from rest_framework_simplejwt.authentication import JWTAuthentication
 
-        result = JWTAuthentication().authenticate(request)
+        auth = JWTAuthentication()
+        result = auth.authenticate(request)
+        if result:
+            return result[0]
+
+        # ── الكوكي: الطريق الوحيد الذي تسلكه الصور ──────────────────────
+        #
+        # الترويسة تكفي لـ `story.json` لأن `StoryLoader` يجلبه بـ fetch من
+        # الخيط الرئيسي، حيث يستطيع تطبيق الويب اعتراضه وإضافة الرمز.
+        # الصور لا تمرّ من هناك إطلاقاً: PixiJS يحمّلها داخل **Web Worker**
+        # (`WorkerManager.loadImageBitmap`)، وللعامل نطاق عام مستقلّ لا يرى
+        # أي اعتراض على الخيط الرئيسي — فتخرج طلباته بلا رمز.
+        #
+        # النتيجة المقيسة: `story.json` يُحمَّل بنجاح، ثم تفشل **كل** صورة
+        # بـ 404 في مسوّدة، فيُعرض مشهد فارغ بلا رسالة تشرح شيئاً.
+        #
+        # الكوكي يُرسَل تلقائياً من أي سياق — عامل أو صورة أو fetch — فيحلّ
+        # الحالات الثلاث بلا لمس المحرّك، وهو شرط معماري هنا.
+        raw = request.COOKIES.get(CONTENT_TOKEN_COOKIE)
+        if raw:
+            return auth.get_user(auth.get_validated_token(raw))
     except Exception:
         # رمز تالف أو منتهٍ = زائر، لا خطأ. القصص المنشورة يجب أن تبقى
         # قابلة للعرض على الصف حتى لو انتهت جلسة المعلّمة أثناء الحصّة.
         return None
-    return result[0] if result else None
+    return None
 
 
 def _visible_stories(request):
