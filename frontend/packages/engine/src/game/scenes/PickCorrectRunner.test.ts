@@ -57,12 +57,48 @@ describe("PickCorrectRunner", () => {
     expect(root.children.length).toBe(4);
   });
 
-  it("skips a choice whose image is not a loaded asset, and keeps the rest", () => {
-    // A missing asset must not take the whole activity down with it.
-    const { container, runner, solved } = setup(["stone", "leaf"]);
+  it("skips a distractor whose image is missing, and keeps the rest", () => {
+    // A missing asset must not take the whole activity down with it —
+    // as long as the answer itself is still pickable.
+    const { container, runner, solved } = setup(["stone", "nest"]); // "leaf" absent
     runner.start(activity(), "a1", solved);
     const root = container.children[0] as Container;
     expect(root.children.length).toBe(3); // prompt + 2 drawable choices
+    expect(runner.isActive).toBe(true);
+  });
+
+  describe("an activity that cannot be solved must not strand the scene", () => {
+    // The contract's standing rule: the Runtime keeps a child's story
+    // playable. An unsolvable activity would otherwise stop a class on a
+    // blank stage with no way forward — measured on story "birds", whose
+    // first scene held an empty activity and killed the whole preview.
+
+    it("reports solved when there are no choices at all", () => {
+      const { container, runner, solved } = setup();
+      runner.start(activity({ choices: [] }), "a1", solved);
+      expect(solved).toHaveBeenCalledTimes(1);
+      expect(runner.isActive).toBe(false);
+      expect(container.children.length).toBe(0);
+    });
+
+    it("reports solved when no choice is marked correct", () => {
+      const { runner, solved } = setup();
+      runner.start(
+        activity({ choices: [{ id: "c1", alias: "stone" }, { id: "c2", alias: "leaf" }] }),
+        "a1",
+        solved
+      );
+      expect(solved).toHaveBeenCalledTimes(1);
+      expect(runner.isActive).toBe(false);
+    });
+
+    it("reports solved when the correct choice's own image is missing", () => {
+      // Every option would be a wrong answer — unsolvable, not merely ugly.
+      const { runner, solved } = setup(["stone", "leaf"]); // "nest" absent
+      runner.start(activity(), "a1", solved);
+      expect(solved).toHaveBeenCalledTimes(1);
+      expect(runner.isActive).toBe(false);
+    });
   });
 
   it("ignores an activity of another type rather than throwing", () => {

@@ -119,6 +119,28 @@ export class PickCorrectRunner {
   start(incoming: ActivityData, _activityId: string, onSolved: () => void): void {
     if (!isPickCorrect(incoming)) return;
 
+    // ── an activity with nothing to pick must not become a dead end ──────
+    //
+    // The contract's standing rule: "the Runtime keeps a child's story
+    // playable" — an authoring mistake must never strand a class mid-
+    // lesson. An activity that is switched on but has no options (or none
+    // marked correct) can never be solved, so blocking here would stop the
+    // story on that scene forever with a blank stage and no way forward.
+    //
+    // Measured: story "birds" scene01 had `choices: []` after its type was
+    // switched from drag-match, and the preview died there — the author's
+    // real activity was in the NEXT scene and was never reached.
+    //
+    // Reporting solved is the honest degradation: the scene proceeds
+    // exactly as if the activity had been completed, which is what an
+    // empty activity means. The Studio warns before saving (that is where
+    // a mistake belongs); the Runtime just keeps going.
+    const usable = incoming.choices.filter((c) => c.alias && this.assets.has(c.alias));
+    if (usable.length === 0 || !usable.some((c) => c.correct === true)) {
+      onSolved();
+      return;
+    }
+
     this.activity = incoming;
     this.onSolvedCallback = onSolved;
     this.active = true;

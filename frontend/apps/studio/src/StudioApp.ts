@@ -3367,8 +3367,18 @@ export class StudioApp {
     wrap.appendChild(el("div", "s-field__label", "٣ · الخيارات"));
     const choices = activity.choices ?? [];
 
+    // A switched-on activity with nothing to pick used to be invisible
+    // here and fatal in the preview: the story simply stopped on that
+    // scene. The Runtime now degrades instead of stalling, but the mistake
+    // belongs HERE — where the author can still fix it — not there.
     if (choices.length === 0) {
-      wrap.appendChild(el("div", "s-empty", "أضف خيارًا من الأصول أدناه."));
+      wrap.appendChild(
+        status("warn", "النشاط مُفعَّل بلا خيارات — لن يظهر شيء في المعاينة، وسيتخطّاه المحرّك. أضف خيارًا أدناه، أو أوقف النشاط أعلاه.")
+      );
+    } else if (!choices.some((c) => c.correct)) {
+      wrap.appendChild(
+        status("warn", "لا يوجد خيار صحيح — لا يمكن حلّ النشاط. اضغط «اجعله الصحيح» على أحد الخيارات.")
+      );
     }
 
     for (const choice of choices) {
