@@ -322,7 +322,12 @@ export class YaraBedScene extends Scene {
 
   // Layout + puzzles + dialogue + sprites — extracted, self-contained units (system-architecture-redesign.md section 5)
   private layout = new LayoutApplier();
+  /** The renderer currently on stage — reassigned per activity, because a
+   *  story may mix activity types across its scenes. */
   private puzzle!: ActivityRenderer;
+  /** One renderer per activity type, so re-entering a type reuses its
+   *  instance instead of stacking another onto the scene root. */
+  private readonly renderersByType = new Map<string, ActivityRenderer>();
   private dialogue!: DialoguePlayer;
   private spriteRegistry!: SpriteRegistry;
   private actionExecutor!: ActionExecutor;
@@ -506,6 +511,7 @@ export class YaraBedScene extends Scene {
     const activityType = this.scenes.find((s) => s.activity)?.activity?.type ?? "drag-match";
     const rendererFactory = ActivityRendererRegistry.resolveOrDefault(activityType, "drag-match");
     this.puzzle = rendererFactory(this.root, this.eventBus, this.animation, this.layout, this.assets);
+    this.renderersByType.set(activityType, this.puzzle);
     this.eventBus.on(EngineEvents.Input.KeyDown, this.onKeyDown);
     // Every non-pointer way of choosing arrives here (v1.0.8 §7.2).
     this.eventBus.on(EngineEvents.Dialogue.ChoiceSelected, this.onChoiceIntent);
@@ -1212,12 +1218,49 @@ export class YaraBedScene extends Scene {
    *  what to do once solved (the JSON-driven onSolved actions, which are
    *  a scene-orchestration concern, not the puzzle mechanic itself). */
   private startPuzzleFor(activity: ActivityData): void {
+    // ── the renderer is chosen HERE, from the activity that is starting ──
+    //
+    // It used to be chosen once in enter(), from `this.scenes` — which is
+    // still EMPTY at that point, because the story arrives afterwards via
+    // Content.RunRequested. `find()` returned undefined, the `?? "drag-match"`
+    // fallback took over, and PuzzleRunner was then used for every activity
+    // in the story no matter what its type said.
+    //
+    // Measured: story "birds", both scenes `type: "pick-correct"`, and the
+    // preview drew drag-match's red target circle with none of the authored
+    // options. The type in the content was correct the whole time; nothing
+    // ever read it.
+    //
+    // Renderers are cached per type: entering the same activity type twice
+    // must not leak a second instance onto the scene root.
+    this.puzzle = this.rendererFor(activity.type);
+
     // Tracked so the bus-driven correct/wrong hooks below know which
     // activity's effects to play — those events carry only a puzzle id,
     // not the activity definition.
     this.activeActivity = activity;
     this.puzzle.start(activity, `pz-${this.currentSceneIndex}`, () => this.onActivitySolved(activity));
     void this.effectRunner.run(activity.effects?.onStart);
+  }
+
+  /**
+   * The renderer for one activity type, built once and reused.
+   *
+   * Falls back to whatever `enter()` built when a type has no registered
+   * renderer, so unknown content still gets *something* rather than
+   * throwing mid-story — the same "keep it playable" rule the rest of the
+   * Runtime follows.
+   */
+  private rendererFor(type: string): ActivityRenderer {
+    const existing = this.renderersByType.get(type);
+    if (existing) return existing;
+
+    const factory = ActivityRendererRegistry.resolve(type);
+    if (!factory) return this.puzzle;
+
+    const renderer = factory(this.root, this.eventBus, this.animation, this.layout, this.assets);
+    this.renderersByType.set(type, renderer);
+    return renderer;
   }
 
   /** Immediate feedback the instant a correct answer registers —

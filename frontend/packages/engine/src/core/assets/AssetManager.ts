@@ -77,19 +77,48 @@ export class AssetManager {
       return;
     }
     this.eventBus.emit(EngineEvents.Asset.BundleLoadStarted, { bundleId });
+    let bundleError: unknown = null;
     try {
       // Try the bundle API first.
       await Assets.loadBundle(bundleId);
+    } catch (err) {
+      bundleError = err;
+    }
+
+    // ── did it ACTUALLY resolve? ────────────────────────────────────────
+    //
+    // `Assets.loadBundle` does not always reject when an asset inside the
+    // bundle cannot be parsed — it can resolve while leaving EVERY alias
+    // unresolved. Trusting the absence of a throw is what made a single
+    // bad file take a whole story down.
+    //
+    // Measured on story "birds": 28 assets, exactly one of them a `.jfif`
+    // (a JPEG with a Windows extension Pixi has no parser for). Pixi
+    // warned about that one file and resolved; not one texture existed
+    // afterwards. No sprite drew — including the background, which is the
+    // tap target that starts the story, so the scene sat forever on
+    // "اضغط هنا للبدء" with nothing able to receive the tap.
+    //
+    // So the result is verified rather than assumed: if any alias is
+    // missing, fall through to loading each asset on its own, where one
+    // failure costs exactly one image.
+    const bundle = this.registeredBundles.get(bundleId);
+    const missing = bundle ? bundle.assets.filter((a) => !Assets.cache.has(a.alias)) : [];
+
+    if (bundleError === null && missing.length === 0) {
       this.loadedBundles.add(bundleId);
       this.eventBus.emit(EngineEvents.Asset.BundleLoaded, { bundleId });
-    } catch (err) {
-      this.logger.warn(`Bundle "${bundleId}" load via Assets.loadBundle failed, falling back to individual loads:`, err);
-      // Fallback: load each asset in the bundle individually.
-      const bundle = this.registeredBundles.get(bundleId);
+      return;
+    }
+
+    {
+      const reason = bundleError !== null ? String(bundleError) : `${missing.length} asset(s) never resolved`;
+      this.logger.warn(`Bundle "${bundleId}" did not load cleanly (${reason}) — falling back to individual loads.`);
       if (!bundle) {
         this.logger.error(`Bundle "${bundleId}" was never registered.`);
-        this.eventBus.emit(EngineEvents.Asset.LoadError, { bundleId, error: String(err) });
-        throw err;
+        this.eventBus.emit(EngineEvents.Asset.LoadError, { bundleId, error: reason });
+        if (bundleError !== null) throw bundleError;
+        return;
       }
       for (const entry of bundle.assets) {
         try {

@@ -29,10 +29,30 @@ from .serializers import (
 SAFE_NAME = re.compile(r"[^\w.\-؀-ۿ]+")
 
 
+#: امتدادات هي نفس الصيغة تحت اسم آخر. المتصفّح يقرأها، ومحمّل PixiJS لا
+#: يعرف لها مُحلِّلاً — فيرفضها. `.jfif` تحديداً ما يحفظه ويندوز وكروم أحياناً
+#: بدل `.jpg`، وهي JPEG حرفياً لا صيغة أخرى.
+EXTENSION_ALIASES = {".jfif": ".jpg", ".jpe": ".jpg", ".jfi": ".jpg"}
+
+
 def _safe_filename(name: str) -> str:
-    """يسمح بالعربية والأرقام والشرطات فقط — ويمنع أي محاولة اجتياز مسار."""
+    """
+    يسمح بالعربية والأرقام والشرطات فقط — ويمنع أي محاولة اجتياز مسار،
+    ويُطبّع الامتدادات المرادفة.
+
+    التطبيع ليس تجميلاً: ملف `.jfif` واحد داخل حزمة من 28 أصلاً أسقط
+    **الحزمة كلّها** في المحرّك، فاختفت كل الصور — ومنها الخلفية التي تحمل
+    مُستقبِل نقرة البدء، فبقيت القصّة عالقة على «اضغط هنا للبدء» بلا شيء
+    يستقبل النقرة. أُصلح المحرّك ليتنازل عن الأصل الواحد لا عن الحزمة،
+    وهذا يمنع دخول الحالة أصلاً.
+    """
     cleaned = SAFE_NAME.sub("_", (name or "asset").strip()).lstrip(".")
-    return cleaned[:120] or "asset"
+    cleaned = cleaned[:120] or "asset"
+    lowered = cleaned.lower()
+    for bad, good in EXTENSION_ALIASES.items():
+        if lowered.endswith(bad):
+            return cleaned[: -len(bad)] + good
+    return cleaned
 
 
 class StoryViewSet(viewsets.ModelViewSet):
