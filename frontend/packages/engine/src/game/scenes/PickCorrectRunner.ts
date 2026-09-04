@@ -35,6 +35,7 @@ import type { TweenConfig } from "@shared/types";
 import type { ActivityData, PickCorrectActivity, PickCorrectChoice } from "./ActivityTypes";
 import { isPickCorrect } from "./ActivityTypes";
 import type { LayoutApplier } from "./LayoutApplier";
+import { ActivityBase, isSolvable, resolveAddress } from "./ActivityBase";
 
 /** Stage space every position in this file is expressed in. */
 const DESIGN_WIDTH = 1920;
@@ -50,27 +51,19 @@ const SPREAD_GAP = 320;
  *  found by looking instead of by listening. */
 const CHOICE_HEIGHT = 220;
 
-export class PickCorrectRunner {
+export class PickCorrectRunner extends ActivityBase {
   private readonly container: Container;
-  private readonly eventBus: EventBus;
   private readonly animation: AnimationManager;
   private readonly assets: AssetManager;
 
   private root: Container | null = null;
   private prompt: Text | null = null;
   private activity: PickCorrectActivity | null = null;
-  private onSolvedCallback: (() => void) | null = null;
 
   /** Sprite per choice id, so an intent can find its target. */
   private readonly sprites = new Map<string, Container>();
   /** Every animation id started here, so teardown kills exactly its own. */
   private readonly tweens = new Set<string>();
-
-  private active = false;
-  private solved = false;
-  /** True while a wrong answer is playing its response — further picks are
-   *  ignored so a child mashing options cannot stack reactions. */
-  private busy = false;
 
   constructor(
     container: Container,
@@ -79,96 +72,35 @@ export class PickCorrectRunner {
     _layout: LayoutApplier,
     assets: AssetManager
   ) {
+    super(eventBus);
     this.container = container;
-    this.eventBus = eventBus;
     this.animation = animation;
     this.assets = assets;
     this.eventBus.on(EngineEvents.Dialogue.ChoiceSelected, this.onChoiceIntent);
   }
 
-  get isActive(): boolean {
-    return this.active;
-  }
-
-  /**
-   * Non-pointer input. Three addresses, tried in order of how specific
-   * they are: the authored choice id, the option's asset ALIAS, then a
-   * 1-based position (`"2"`, `"choice_2"`).
-   *
-   * ── لماذا الاسم المستعار عنوانٌ ثالث ────────────────────────────────
-   *
-   * الموضع يكفي لصندوق زرّين، ولا يكفي لبطاقات مصوّرة: البطاقة نفسها تصير
-   * «الأول» في مشهد و«الثاني» في آخر، فلا معنى ثابتاً لها. والمعرّف يبدو
-   * الحلّ لكنه ليس كذلك — معرّفات خيارات هذا النشاط **مولَّدة** (`ch_…`،
-   * انظر `StoryDraft.addActivityChoice`)، والعقد يسمّيها «عنواناً لا سطح
-   * تأليف» (v1.0.10 §7.1). أي أنه لا يوجد نصّ يكتبه المؤلّف ويصلح للربط.
-   *
-   * الاسم المستعار هو ذلك النصّ، وهو موجود مسبقاً: كل خيار يشير إلى صورة
-   * باسم اختارته المعلّمة. فبطاقة «تفاحة» تطابق الخيار الذي يعرض صورة
-   * «تفاحة» — وهو ما تفكّر به المعلّمة حرفياً، بلا حقل جديد في العقد.
-   *
-   * والترتيب مقصود: المعرّف أولاً لأنه فريد بالتعريف، ثم الاسم المستعار،
-   * ثم الموضع أخيراً — فرقمٌ يصادف أن يكون اسماً مستعاراً لا يُقرأ موضعاً.
-   *
-   * An intent naming something not on screen is ignored, not reported:
-   * a stray scan must never break a story a child is inside.
-   */
+  /** إدخال غير اللمس. العناوين الثلاثة وترتيبها في `resolveAddress`. */
   private readonly onChoiceIntent = (payload: unknown): void => {
-    if (!this.active || this.solved || this.busy) return;
+    if (!this.accepts()) return;
     const raw = (payload as { choice?: unknown })?.choice;
-    if (typeof raw !== "string" || raw.length === 0) return;
+    if (typeof raw !== "string") return;
 
-    const byId = this.activity?.choices.find((c) => c.id === raw);
-    if (byId) {
-      this.pick(byId);
-      return;
-    }
-
-    // أول خيار يحمل هذا الاسم. تكرار الاسم في نشاط واحد يعني خيارين
-    // بالصورة نفسها — وهو سؤال لم تُكمِل المؤلّفة تحديده، لا حالة تستحقّ
-    // قاعدة ترجيح هنا.
-    const byAlias = this.activity?.choices.find((c) => c.alias === raw);
-    if (byAlias) {
-      this.pick(byAlias);
-      return;
-    }
-
-    const position = Number(raw.replace(/^choice_/, ""));
-    if (!Number.isInteger(position) || position < 1) return;
-    const byPosition = this.activity?.choices[position - 1];
-    if (byPosition) this.pick(byPosition);
+    const chosen = resolveAddress(this.activity?.choices ?? [], raw);
+    if (chosen) this.pick(chosen);
   };
 
   start(incoming: ActivityData, _activityId: string, onSolved: () => void): void {
     if (!isPickCorrect(incoming)) return;
 
-    // ── an activity with nothing to pick must not become a dead end ──────
-    //
-    // The contract's standing rule: "the Runtime keeps a child's story
-    // playable" — an authoring mistake must never strand a class mid-
-    // lesson. An activity that is switched on but has no options (or none
-    // marked correct) can never be solved, so blocking here would stop the
-    // story on that scene forever with a blank stage and no way forward.
-    //
-    // Measured: story "birds" scene01 had `choices: []` after its type was
-    // switched from drag-match, and the preview died there — the author's
-    // real activity was in the NEXT scene and was never reached.
-    //
-    // Reporting solved is the honest degradation: the scene proceeds
-    // exactly as if the activity had been completed, which is what an
-    // empty activity means. The Studio warns before saving (that is where
-    // a mistake belongs); the Runtime just keeps going.
-    const usable = incoming.choices.filter((c) => c.alias && this.assets.has(c.alias));
-    if (usable.length === 0 || !usable.some((c) => c.correct === true)) {
+    // نشاط لا يُحلّ يُبلَّغ محلولاً وتمضي القصّة — انظر `isSolvable` للعطل
+    // الذي فرض ذلك (قصّة `birds`، مسرح فارغ لا مخرج منه).
+    if (!isSolvable(incoming.choices, (alias) => this.assets.has(alias))) {
       onSolved();
       return;
     }
 
     this.activity = incoming;
-    this.onSolvedCallback = onSolved;
-    this.active = true;
-    this.solved = false;
-    this.busy = false;
+    this.begin(onSolved);
 
     this.root = new Container();
     this.root.zIndex = 50; // above scene elements, below the dialogue box
@@ -233,41 +165,35 @@ export class PickCorrectRunner {
   }
 
   private pick(choice: PickCorrectChoice): void {
-    if (!this.active || this.solved || this.busy) return;
+    if (!this.accepts()) return;
 
     if (choice.correct === true) {
-      this.solved = true;
-      this.active = false;
       const sprite = this.sprites.get(choice.id);
-      if (sprite) this.play(`choice-correct-${choice.id}`, sprite.scale, { x: sprite.scale.x * 1.18, y: sprite.scale.y * 1.18, duration: 0.25, yoyo: true, repeat: 1 });
-
-      this.eventBus.emit(EngineEvents.Puzzle.Solved, { id: choice.id });
-      // Ends here, deliberately: the celebration and where the story goes
-      // next are authored (`effects.onSolved`, `onSolved.nextScene`).
-      this.onSolvedCallback?.();
+      if (sprite) {
+        this.play(`choice-correct-${choice.id}`, sprite.scale, {
+          x: sprite.scale.x * 1.18, y: sprite.scale.y * 1.18, duration: 0.25, yoyo: true, repeat: 1
+        });
+      }
+      this.reportSolved(choice.id);
       return;
     }
 
-    this.busy = true;
     const sprite = this.sprites.get(choice.id);
     if (sprite) {
       // A shake, then the option stays. Removing it would turn a mistake
       // into elimination; leaving it lets the child reconsider.
       this.play(`choice-wrong-${choice.id}`, sprite, { x: sprite.x - 14, duration: 0.07, yoyo: true, repeat: 5 });
     }
-    if (this.activity?.wrongResponse) {
-      this.eventBus.emit(EngineEvents.Puzzle.Failed, { id: choice.id, response: this.activity.wrongResponse });
-    }
-    this.play("wrong-cooldown", { v: 0 } as never, { duration: 0.6, onComplete: () => { this.busy = false; } });
+    this.reportWrong(choice.id, this.activity?.wrongResponse, (done) =>
+      this.play("wrong-cooldown", { v: 0 } as never, { duration: 0.6, onComplete: done })
+    );
   }
 
   /** Keyboard fallback: 1..9 pick by position, matching the device rule. */
   handleKeyDown(payload: unknown): void {
     const key = (payload as { key?: unknown })?.key;
     if (typeof key !== "string") return;
-    const position = Number(key);
-    if (!Number.isInteger(position) || position < 1) return;
-    const choice = this.activity?.choices[position - 1];
+    const choice = resolveAddress(this.activity?.choices ?? [], key);
     if (choice) this.pick(choice);
   }
 
@@ -278,11 +204,8 @@ export class PickCorrectRunner {
 
   reset(): void {
     this.teardown();
-    this.active = false;
-    this.solved = false;
-    this.busy = false;
+    this.clearState();
     this.activity = null;
-    this.onSolvedCallback = null;
   }
 
   destroy(): void {
