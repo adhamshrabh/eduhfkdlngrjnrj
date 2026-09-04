@@ -6,7 +6,7 @@
  * على الجوال يتحوّل الشريط إلى شريط سفلي — إبهام لا فأرة.
  */
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
-import { BookOpen, Gamepad2, LogOut, NotebookPen, Palette, Settings, User as UserIcon } from "lucide-react";
+import { BookOpen, Cpu, Gamepad2, LogOut, NotebookPen, Palette, Settings, User as UserIcon } from "lucide-react";
 
 import { AuroraBackground } from "@/components/AuroraBackground";
 import { Logo } from "@/components/Logo";
@@ -30,6 +30,8 @@ const TABS: TabDefinition[] = [
   { to: "/games", label: ar.nav.games, icon: <Gamepad2 size={20} /> },
   { to: "/classroom", label: ar.nav.classroom, icon: <NotebookPen size={20} /> },
   { to: STUDIO_URL, label: ar.nav.studio, icon: <Palette size={20} />, roles: ["TEACHER", "ADMIN"], external: true },
+  // القارئ عتادٌ تملكه المعلّمة وتضبطه بنفسها — لا شأن للإدارة به.
+  { to: "/devices", label: ar.nav.devices, icon: <Cpu size={20} />, roles: ["TEACHER", "ADMIN"] },
   { to: "/admin", label: ar.nav.admin, icon: <Settings size={20} />, roles: ["ADMIN"] },
 ];
 

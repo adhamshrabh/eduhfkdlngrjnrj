@@ -17,6 +17,7 @@ urlpatterns = [
     path("api/classrooms/", include("apps.classrooms.urls")),
     path("api/stories/", include("apps.stories.urls")),
     path("api/games/", include("apps.games.urls")),
+    path("api/devices/", include("apps.devices.urls")),
     # توافق المحرّك — يقرأ المحتوى من نفس المسارات القديمة بلا تعديل فيه
     path("content/stories/", include("apps.stories.compat_urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),

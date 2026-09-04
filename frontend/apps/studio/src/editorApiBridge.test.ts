@@ -32,11 +32,11 @@ function apiResponse(body: unknown, status = 200): Response {
 }
 
 /** ما يقع تحت الجسر — يمثّل الشبكة الحقيقية. */
-const underlying = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+async function defaultUnderlying(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   let body: Record<string, unknown> = {};
   try {
-    body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    body = init?.body && typeof init.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
   } catch {
     body = {};
   }
@@ -49,7 +49,9 @@ const underlying = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
 
   if (url.includes("/assets/")) return apiResponse({ data: { url: "assets/images/cat.png", asset_id: "a1" } });
   return apiResponse({ data: { version: 2, is_published: false, story_json: {}, layout_json: {} } });
-});
+}
+
+const underlying = vi.fn(defaultUnderlying);
 
 // مرّة واحدة لا في كل اختبار: `installEditorApiBridge` يحرس نفسه من
 // التنصيب المزدوج (`if (installed) return`). فإعادة التنصيب في beforeEach
@@ -65,7 +67,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   captured = [];
-  underlying.mockClear();
+  // `mockClear` وحده يمسح السجلّ ويُبقي أي تنفيذ خاصّ وضعه اختبار سابق —
+  // فيتسرّب إلى ما بعده. الاستعادة الصريحة تُبقي كل اختبار مستقلاً.
+  underlying.mockImplementation(defaultUnderlying);
   localStorage.setItem("edu.access", "test-token");
 });
 
@@ -140,6 +144,140 @@ describe("رفع أصل — أسماء الحقول بين الاستوديو و
     });
 
     expect(captured.find((c) => c.url.includes("/assets/"))!.body.alias).toBe("tree_leaves");
+  });
+});
+
+describe("إنشاء قصّة — ما يصل الخادم يجب أن يكون قابلاً للفتح", () => {
+  /** يستدعي الجسر مرّة ويعيد جسم `POST /api/stories/`. */
+  async function createStory(id: string, title?: string): Promise<Record<string, unknown>> {
+    await fetch("/__editor/create-story", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, title })
+    });
+    const call = captured.find((c) => c.method === "POST" && c.url.endsWith("/api/stories/"));
+    expect(call).toBeDefined();
+    return call!.body;
+  }
+
+  it("يرسل وثيقة كاملة بكائن `story` — لا الشكل المسطّح الذي يُسقط الاستوديو", async () => {
+    // العطل بعينه: كان `story_json` يساوي `{ id, title, scenes: [] }`، فتفشل
+    // `StoryDraft.fromJson` بـ «missing its story object» على أي جهاز لا
+    // يحمل نسخة IndexedDB.
+    const body = await createStory("tree", "الشجرة");
+    const storyJson = body.story_json as Record<string, unknown>;
+    const story = storyJson.story as Record<string, unknown>;
+
+    expect(story).toBeTypeOf("object");
+    expect(story.scene).toBe("YaraBedScene");
+    expect(storyJson.schemaVersion).toBe("1.0");
+  });
+
+  it("يرسل مشهداً أوّل حقيقياً — قصّة بلا مشاهد لا شيء فيها لتحريره", async () => {
+    const storyJson = (await createStory("tree", "الشجرة")).story_json as Record<string, unknown>;
+    const scenes = (storyJson.story as { scenes: Array<{ id: string; lines: unknown[] }> }).scenes;
+
+    expect(scenes).toHaveLength(1);
+    expect(scenes[0]!.id).toBe("scene01");
+    expect(scenes[0]!.lines).toHaveLength(1);
+  });
+
+  it("يرسل تخطيطاً بمقاس التصميم — لا `{}` فارغاً", async () => {
+    const layoutJson = (await createStory("tree", "الشجرة")).layout_json as Record<string, unknown>;
+    expect(layoutJson.design).toEqual({ width: 1920, height: 1080 });
+    expect(layoutJson.characters).toEqual([]);
+  });
+
+  it("يسقط على المعرّف حين لا عنوان — وفي الموضعين معاً", async () => {
+    const storyJson = (await createStory("tree")).story_json as Record<string, unknown>;
+    expect(storyJson.title).toBe("tree");
+    expect((storyJson.story as { title: string }).title).toBe("tree");
+  });
+});
+
+describe("حذف أصل — الاسم المستعار يُترجَم إلى asset_id", () => {
+  /** يجيب على قائمة الأصول، ويسجّل نداء الحذف. */
+  function withAssetList(assets: Array<{ asset_id: string; alias: string; url?: string }>) {
+    underlying.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      captured.push({ url, method: init?.method ?? "GET", body: {}, headers: {} });
+      if (url.includes("/assets/") && (init?.method ?? "GET") === "GET") return apiResponse({ data: assets });
+      return apiResponse({ data: {} });
+    });
+  }
+
+  it("يحذف بالمعرّف الذي يعرفه الخادم، لا بمسار فارغ", async () => {
+    // العطل: الاستوديو يرسل `path`، والجسر كان يقرأ `assetId ?? alias` —
+    // فيبني `/assets//` ويردّ الخادم 404. أي أن الحذف كان يفشل دائماً.
+    withAssetList([
+      { asset_id: "asset_0007", alias: "cat", url: "http://x/media/stories/tree/images/cat.png" }
+    ]);
+
+    const res = await fetch("/__editor/delete-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ storyId: "tree", path: "assets/images/cat.png", alias: "cat" })
+    });
+
+    expect(await res.json()).toEqual({ ok: true });
+    const del = captured.find((c) => c.method === "DELETE");
+    expect(del).toBeDefined();
+    expect(del!.url).toContain("/assets/asset_0007/");
+    expect(del!.url).not.toContain("/assets//");
+  });
+
+  it("يسقط على اسم الملفّ حين اختلف الاسم المستعار عمّا سُجّل", async () => {
+    withAssetList([
+      { asset_id: "asset_0009", alias: "قطة", url: "http://x/media/stories/tree/images/cat.png" }
+    ]);
+
+    await fetch("/__editor/delete-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ storyId: "tree", path: "assets/images/cat.png", alias: "cat" })
+    });
+
+    expect(captured.find((c) => c.method === "DELETE")!.url).toContain("/assets/asset_0009/");
+  });
+
+  it("أصل بلا نظير على الخادم ليس فشلاً — أُزيل من المتصفّح ومن assets[] بالفعل", async () => {
+    withAssetList([]);
+
+    const res = await fetch("/__editor/delete-asset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ storyId: "tree", path: "assets/images/ghost.png", alias: "ghost" })
+    });
+
+    expect(await res.json()).toEqual({ ok: true });
+    expect(captured.find((c) => c.method === "DELETE")).toBeUndefined();
+  });
+});
+
+describe("رفع أصل — multipart", () => {
+  it("يمرّر الملفّ إلى الخادم بلا ترويسة Content-Type يدوية", async () => {
+    // تعيينها يمحو حدّ الأجزاء فيصل الجسم غير قابل للتفكيك.
+    let seen: { headers: unknown; isForm: boolean } | null = null;
+    underlying.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/assets/")) {
+        seen = { headers: init?.headers, isForm: init?.body instanceof FormData };
+        return apiResponse({ data: { url: "assets/images/cat.png", asset_id: "a1" } });
+      }
+      return apiResponse({ data: {} });
+    });
+
+    const form = new FormData();
+    form.append("storyId", "tree");
+    form.append("fileName", "cat.png");
+    form.append("assetType", "image");
+    form.append("file", new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }), "cat.png");
+
+    const res = await fetch("/__editor/upload-asset", { method: "POST", body: form });
+
+    expect(await res.json()).toMatchObject({ ok: true, assetId: "a1" });
+    expect(seen!.isForm).toBe(true);
+    expect((seen!.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
   });
 });
 

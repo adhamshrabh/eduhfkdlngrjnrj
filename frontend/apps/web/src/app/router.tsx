@@ -24,6 +24,7 @@ const ClassroomPage = lazy(() =>
   import("@/features/classroom/ClassroomPage").then((m) => ({ default: m.ClassroomPage })),
 );
 const AdminPage = lazy(() => import("@/features/admin/AdminPage").then((m) => ({ default: m.AdminPage })));
+const DevicesPage = lazy(() => import("@/features/devices/DevicesPage").then((m) => ({ default: m.DevicesPage })));
 const AccountPage = lazy(() => import("@/features/account/AccountPage").then((m) => ({ default: m.AccountPage })));
 
 function Loading(): JSX.Element {
@@ -52,6 +53,10 @@ export const router = createBrowserRouter([
           { path: "/stories", element: <StoriesPage /> },
           { path: "/games", element: deferred(<GamesPage />) },
           { path: "/classroom", element: deferred(<ClassroomPage />) },
+          {
+            element: <RequireRole roles={["TEACHER", "ADMIN"]} />,
+            children: [{ path: "/devices", element: deferred(<DevicesPage />) }],
+          },
           { path: "/account", element: deferred(<AccountPage />) },
           {
             element: <RequireRole roles={["ADMIN"]} />,

@@ -9,6 +9,7 @@ export const ar = {
     games: "الألعاب",
     classroom: "صفّي",
     studio: "الاستوديو",
+    devices: "الأجهزة",
     admin: "الإدارة",
     logout: "تسجيل الخروج",
   },
@@ -38,6 +39,8 @@ export const ar = {
     failed: "تعذّر تشغيل القصة.",
     exitPresent: "للخروج من وضع العرض اضغطي Esc",
     startPresent: "بدء العرض",
+    deviceReady: "قارئ البطاقات جاهز",
+    deviceOffline: "قارئ البطاقات غير متّصل",
   },
   games: {
     title: "الألعاب",

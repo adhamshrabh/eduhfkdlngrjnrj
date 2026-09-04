@@ -1259,7 +1259,8 @@ describe("StudioApp — Canvas Editing v1 + Workspace tabs", () => {
 
       // Reuses uploadAsset — no second persistence path was introduced.
       expect(StudioApi.uploadAsset).toHaveBeenCalledWith(
-        "b", "shepherd_idle.png", expect.any(String), "image"
+        // الملفّ نفسه لا نصّ base64 — انظر تعليق `StudioApi.uploadAsset`.
+        "b", "shepherd_idle.png", expect.any(Blob), "image"
       );
     });
 
@@ -1951,7 +1952,9 @@ describe("StudioApp — deleting an asset", () => {
     // The click is fire-and-forget, so the call resolving is not the same
     // moment as the re-render that follows it — wait on the DOM.
     await vi.waitFor(() => expect(host.textContent).toContain("الأصوات (0)"));
-    expect(StudioApi.deleteAsset).toHaveBeenCalledWith("b", "assets/audio/welcome.mp3");
+    // الاسم المستعار يُمرَّر أيضاً: الخادم يعنون الأصل بـ `asset_id`، والجسر
+    // يترجم الاسم إليه — بدونه كان كل حذف يبني مساراً بمعرّف فارغ ويردّ 404.
+    expect(StudioApi.deleteAsset).toHaveBeenCalledWith("b", "assets/audio/welcome.mp3", "welcome");
   });
 
   it("the deletion reaches story.json on the next save", async () => {

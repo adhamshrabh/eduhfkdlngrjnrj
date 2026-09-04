@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "apps.classrooms",
     "apps.stories",
     "apps.games",
+    "apps.devices",
 ]
 
 MIDDLEWARE = [

@@ -159,11 +159,71 @@ export function readInputMode(line: unknown): InputMode {
   return value === "pointer" || value === "keyboard" || value === "device" ? value : "any";
 }
 
+/**
+ * الموضع الذي تشير إليه إشارة عتاد — «الأول»، «الثاني»… أو `null` حين لا
+ * تحمل الإشارة موضعاً أصلاً (نبضة حياة، أو رفع بطاقة).
+ *
+ * `type` ثم `payload`، لأن أيّهما يحمل الرقم يقرّره سكتش اللوحة لا القصّة.
+ *
+ * نقيّة ومُصدَّرة لأن هذا هو منطق «ماذا تعني الإشارة» كلّه، والمشهد الذي
+ * يستعمله لا يُنشَأ في اختبار وحدة (Pixi). القاعدة نفسها التي تتبعها
+ * `resolveSceneExit` و`inputHintFor`.
+ *
+ * الموضع يبدأ من ١ لا من ٠: هذا ما تكتبه لوحة المفاتيح على الشاشة
+ * («اضغط ١ أو ٢»)، وما يقرؤه `PickCorrectRunner.handleKeyDown` — ووحدةُ
+ * عدٍّ واحدة عبر المصادر الثلاثة هي ما يجعل الزرّ والمفتاح والبطاقة تعني
+ * الشيء نفسه بلا أي تأليف.
+ */
+export function readDevicePosition(event: { type?: unknown; payload?: unknown } | null): number | null {
+  if (!event) return null;
+  for (const candidate of [event.type, event.payload]) {
+    // `Number("")` و`Number(null)` كلاهما صفر — وصفرٌ ليس موضعاً، فيسقط
+    // على شرط `>= 1` بدل أن يُقرأ «الخيار رقم صفر».
+    if (candidate === "" || candidate === null || candidate === undefined) continue;
+    const position = Number(candidate);
+    if (Number.isInteger(position) && position >= 1) return position;
+  }
+  return null;
+}
+
 /** One branch of a choice point (Scene-Model-Specification-v1.0.6.md §7.1). */
 export interface SceneChoice {
   id: string;
   label: string;
   nextScene: string;
+}
+
+/**
+ * الفرع الذي يعنيه عنوانٌ وارد — معرّفاً كان أو نصّاً ظاهراً.
+ *
+ * ⚠️ لماذا النصّ عنوانٌ ثانٍ:
+ *
+ * معرّفات الفروع مولَّدة (`scene01_l1_c1`) لا يكتبها مؤلّف، فلا يصلح أحدها
+ * لربط بطاقة مصوّرة. والموضع يكفي صندوق أزرار ولا يكفي بطاقة: البطاقة
+ * نفسها تصير «الأول» في مشهد و«الثاني» في آخر، فلا معنى ثابتاً لها.
+ *
+ * يبقى النصّ — وهو الشيء الوحيد الذي تكتبه المعلّمة لكل فرع بيدها، وتقرؤه
+ * الطفلة على الزرّ. فبطاقة «نعم» تختار الفرع المكتوب عليه «نعم»، تماماً
+ * كما تفعل إصبعٌ تلمسه. وبهذا تقبل تفريعات الحوار البطاقات بالاصطلاح نفسه
+ * الذي يقبله نشاط «اختيار الإجابة الصحيحة»، وبلا حقل جديد في العقد.
+ *
+ * الترتيب مقصود: المعرّف أولاً لأنه فريد بالتعريف، ثم النصّ. ونصّان
+ * متطابقان على فرعين ليسا سؤالاً أتمّت المؤلّفة تحديده — فيفوز الأول، كما
+ * تفعل قاعدة الاسم المستعار في النشاط.
+ *
+ * والمطابقة حرفية: `"نعم"` غير `"نعم "`. تساهلٌ هنا كان سيجعل فرعين
+ * متقاربَي النصّ يتبادلان الأدوار بحسب مسافةٍ لا تراها المعلّمة.
+ *
+ * نقيّة ومُصدَّرة لأن المشهد نفسه غير قابل للإنشاء في اختبار وحدة — نفس
+ * سبب `resolveSceneExit` و`readDevicePosition`.
+ */
+export function resolveBranchAddress(
+  choices: ReadonlyArray<SceneChoice>,
+  address: string
+): SceneChoice | undefined {
+  return (
+    choices.find((c) => c.id === address) ?? choices.find((c) => c.label === address)
+  );
 }
 
 /**
@@ -374,21 +434,41 @@ export class YaraBedScene extends Scene {
    *  the keyboard does, so a two-button box, a keypad and two card pads
    *  all behave identically and none of them is authored anywhere. */
   private readonly onHardwareEvent = (payload: unknown): void => {
-    if (this.pendingChoices.length === 0 || !this.accepts("device")) return;
     const event = payload as { type?: unknown; payload?: unknown } | null;
     if (!event) return;
     // By POSITION, exactly like the keyboard (v1.0.10 §7.2): a two-button
     // box, a numeric keypad and two card pads then behave identically, and
     // none of them needs anything written into the story. Type or payload,
     // because which one carries the number depends on the board's sketch.
-    for (const candidate of [event.type, event.payload]) {
-      const index = Number(candidate) - 1;
-      const chosen = Number.isInteger(index) ? this.pendingChoices[index] : undefined;
-      if (chosen) {
-        this.takeChoice(chosen.id);
-        return;
-      }
+    const position = readDevicePosition(event);
+    if (position === null) return;
+
+    // A branch is on screen: the story's own `input` decides whether this
+    // source is even listened to (v1.0.9 §13).
+    if (this.pendingChoices.length > 0) {
+      if (!this.accepts("device")) return;
+      const chosen = this.pendingChoices[position - 1];
+      if (chosen) this.takeChoice(chosen.id);
+      return;
     }
+
+    // ── وإلّا: نشاط يعمل، فتُمرَّر إليه كما تُمرَّر لوحة المفاتيح ──────────
+    //
+    // `onKeyPressed` يمرّر كل ضغطة لا تلتقطها الفروع إلى `this.puzzle`،
+    // بينما كان هذا المعالج يخرج فوراً حين لا فروع — فالمفتاح يصل النشاط
+    // والبطاقة لا تصله. لم يكن ذلك قراراً: «اختر الإجابة الصحيحة» يُجاب
+    // بالموضع أصلاً (PickCorrectRunner.handleKeyDown)، فبطاقةٌ تعني «الثاني»
+    // كانت تُهمَل بصمت أمام نشاط يفهم «الثاني» تماماً.
+    //
+    // بلا بوّابة `accepts`، عمداً: `inputMode` يُضبط عند نقطة اختيار ولا
+    // يُعاد ضبطه إلّا عند مغادرة المشهد، فهو هنا حالةٌ قديمة تصف لحظةً
+    // مضت — والاحتكام إليها كان سيجعل سؤالاً سابقاً ضُبط على «لوحة
+    // المفاتيح» يُسكِت البطاقات في نشاطٍ لا علاقة له به. النشاط بلا ضبط
+    // إدخال اليوم، فيقبل كل مصدر — تماماً كما يقبل لوحة المفاتيح الآن.
+    //
+    // `drag-match` يتجاهلها بحكم بنائه (يقرأ i/k/j/l وحدها)، وهو الصواب:
+    // فقاعته الوحيدة هي الحرف الناقص نفسه، فلا شيء فيه يُنتقى.
+    this.puzzle.handleKeyDown({ key: String(position) });
   };
 
   constructor() {
@@ -1049,8 +1129,9 @@ export class YaraBedScene extends Scene {
     return this.inputMode === "any" || this.inputMode === source;
   }
 
+  /** يقبل معرّف الفرع أو نصّه الظاهر — انظر `resolveBranchAddress`. */
   private takeChoice(choiceId: string): void {
-    const chosen = this.pendingChoices.find((c) => c.id === choiceId);
+    const chosen = resolveBranchAddress(this.pendingChoices, choiceId);
     if (!chosen) return;
     this.pendingChoices = [];
     this.dialogue.clearChoiceButtons();

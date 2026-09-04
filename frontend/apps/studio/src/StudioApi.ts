@@ -25,6 +25,7 @@
  */
 
 import { AssetUrls, ContentStore, LocalOverrides } from "@core/content";
+import { newStoryScaffold } from "./storyScaffold";
 
 export interface SaveOutcome {
   ok: boolean;
@@ -32,26 +33,6 @@ export interface SaveOutcome {
    *  fetches was not — the save route reports this explicitly. */
   publicMirrorOk?: boolean;
   error?: string;
-}
-
-/**
- * Turns the data URL the upload route expects back into a Blob for
- * IndexedDB. Returns null rather than throwing on a malformed string —
- * the caller then falls back to the dev-server tier alone.
- */
-function base64ToBlob(dataUrl: string): Blob | null {
-  try {
-    const comma = dataUrl.indexOf(",");
-    if (comma < 0) return null;
-    const meta = dataUrl.slice(0, comma);
-    const mime = /:(.*?);/.exec(meta)?.[1] ?? "application/octet-stream";
-    const binary = atob(dataUrl.slice(comma + 1));
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return new Blob([bytes], { type: mime });
-  } catch {
-    return null;
-  }
 }
 
 export class StudioApi {
@@ -174,57 +155,120 @@ export class StudioApi {
   }
 
   /**
-   * Scaffold a new story. The documents are written to ContentStore
-   * (durable, server-free); the dev server is then asked to create the
-   * matching folder on disk so the story is also visible to git — but a
-   * missing server is not a failure.
+   * هل للقصّة سجلّ على الخادم؟
    *
-   * Refuses an id that already exists in either tier, matching the
-   * dev-server route's own 409.
+   *   true  — موجودة
+   *   false — الخادم أجاب ولا يعرفها (404)
+   *   null  — تعذّر السؤال أصلاً: لا خادم، أو ردّ غير JSON (سقوط SPA)، أو
+   *           401 لا يقول شيئاً عن الوجود
+   *
+   * التمييز الثالث هو المهمّ: «لا أعرف» ليس «غير موجودة»، وخلطهما كان
+   * سيجعل انقطاع الشبكة يبدو دعوةً لإنشاء قصّة فوق أخرى.
+   */
+  private static async existsOnServer(storyId: string): Promise<boolean | null> {
+    try {
+      const res = await fetch(`/__editor/story-meta?storyId=${encodeURIComponent(storyId)}`);
+      const data = (await res.json()) as { ok?: boolean };
+      if (res.ok && data.ok === true) return true;
+      if (res.status === 404) return false;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** الطبقة الدائمة وحدها — تُستدعى بعد أن يقبل الخادم، أو حين لا خادم. */
+  private static async storeLocally(
+    storyId: string,
+    storyJson: Record<string, unknown>,
+    layoutJson: Record<string, unknown>
+  ): Promise<void> {
+    const saved = await ContentStore.saveDocument(storyId, "story.json", storyJson);
+    await ContentStore.saveDocument(storyId, "layout.json", layoutJson);
+    if (!saved) {
+      throw new Error("تعذّر حفظ القصة في هذا المتصفّح — قد يكون التخزين معطّلًا (وضع التصفّح الخاص).");
+    }
+  }
+
+  /**
+   * تُنشئ قصّة جديدة — **على الخادم أولاً**، لا في المتصفّح أولاً.
+   *
+   * ── العطل الذي قلب هذا الترتيب ──────────────────────────────────────────
+   *
+   * كان النداء الأخير `fetch("/__editor/create-story")` ملفوفاً بـ
+   * `try {} catch {}` فارغ لا يقرأ الردّ إطلاقاً، بحجّة «خادم مفقود ليس
+   * فشلاً». لكن الجسر لا يسقط: هو يترجم إلى `POST /api/stories/` ويعيد
+   * رفض الخادم كما هو. فكان أيّ رفض — معرّف لا يقبله `SlugField` (مسافة أو
+   * نقطة)، أو جلسة منتهية بـ 401 — يمرّ صامتاً، وتُعلَن القصّة منشأة وهي في
+   * IndexedDB وحدها.
+   *
+   * ولأن `loadStory` يقرأ IndexedDB قبل الخادم، يبدو كل شيء سليماً: القصّة
+   * تُفتح، وتُحرَّر، وتظهر في القائمة. أول ما يكشف الحقيقة رفعُ صورة —
+   * `POST /api/stories/<slug>/assets/` — فيردّ الخادم «القصة غير موجودة»،
+   * وهي رسالة صحيحة عن مشكلة أخرى تماماً: المعلّمة تقرأ أن الصورة أخفقت،
+   * والحقيقة أن القصّة نفسها لم تُنشأ قطّ.
+   *
+   * التمييز المطبَّق هنا هو نفسه الذي يطبّقه `saveFile` و`uploadAsset`:
+   * خادم **أجاب ورفض** فشلٌ يُرمى، وغياب الخادم سقوطٌ مشروع على المتصفّح.
+   *
+   * ── ولماذا يقبل نسخة محلية قائمة ───────────────────────────────────────
+   *
+   * قصّة في المتصفّح بلا نظير على الخادم هي بالضبط ما خلّفه العطل أعلاه (أو
+   * تأليفٌ بلا اتصال — وهو مقصود بالتصميم). فالإنشاء عندها **إصلاح**: يُرفع
+   * محتواها كما هو بدل دهسه بسقالة فارغة، فلا يخسر العمل السابق.
    */
   static async createStory(storyId: string, title: string): Promise<void> {
-    const existing = await StudioApi.listStories();
-    if (existing.includes(storyId)) {
+    const scaffold = newStoryScaffold(storyId, title);
+    const onServer = await StudioApi.existsOnServer(storyId);
+
+    if (onServer === true) {
       throw new Error(`قصة بهذا المعرّف "${storyId}" موجودة بالفعل.`);
     }
 
-    // Identical to createStoryRoute.ts's scaffold, so a story created
-    // with or without a dev server is byte-equivalent.
-    const storyJson = {
-      id: storyId,
-      title,
-      language: "ar",
-      story: {
-        id: `story-${storyId}`,
-        kind: "story",
-        title,
-        scene: "YaraBedScene",
-        bundle: `${storyId}-bundle`,
-        assets: [],
-        scenes: [
-          { id: "scene01", lines: [{ id: "scene01_l1", speaker: "", text: "" }], activity: null, nextScene: null }
-        ]
-      },
-      schemaVersion: "1.0"
-    };
-    const layoutJson = { design: { width: 1920, height: 1080 }, characters: [], schemaVersion: "1.0" };
-
-    const savedStory = await ContentStore.saveDocument(storyId, "story.json", storyJson);
-    await ContentStore.saveDocument(storyId, "layout.json", layoutJson);
-    if (!savedStory) {
-      throw new Error("تعذّر حفظ القصة في هذا المتصفّح — قد يكون التخزين معطّلًا (وضع التصفّح الخاص).");
+    if (onServer === null) {
+      // لا خادم نسأله — المسار غير المتّصل، كما كان تماماً.
+      const existing = await StudioApi.listStories();
+      if (existing.includes(storyId)) {
+        throw new Error(`قصة بهذا المعرّف "${storyId}" موجودة بالفعل.`);
+      }
+      await StudioApi.storeLocally(storyId, scaffold.storyJson, scaffold.layoutJson);
+      return;
     }
 
-    // Best effort: also put it on disk when a dev server is listening.
+    // مسار الإصلاح: نسخة محلية موجودة والخادم لا يعرفها.
+    const localStory = await ContentStore.getDocument<Record<string, unknown>>(storyId, "story.json");
+    const localLayout = await ContentStore.getDocument<Record<string, unknown>>(storyId, "layout.json");
+    const storyJson = localStory ?? scaffold.storyJson;
+    const layoutJson = localLayout ?? scaffold.layoutJson;
+
+    const res = await fetch("/__editor/create-story", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: storyId, title, storyJson, layoutJson })
+    });
+
+    let accepted = false;
+    let serverError: string | null = null;
     try {
-      await fetch("/__editor/create-story", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: storyId, title })
-      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      accepted = res.ok && data.ok === true;
+      if (!accepted) serverError = String(data.error ?? `تعذّر إنشاء القصة (HTTP ${res.status}).`);
     } catch {
-      /* no dev server — the store already holds it */
+      // ردّ غير JSON = لا خادم خلف المسار (سقوط SPA) — سقوط مشروع.
+      serverError = null;
     }
+
+    if (!accepted) {
+      if (serverError !== null) {
+        throw new Error(
+          res.status === 401 || res.status === 403
+            ? "لم تُنشأ القصة — انتهت جلسة الدخول. افتحي الاستوديو من زرّ «الاستوديو» داخل التطبيق."
+            : serverError
+        );
+      }
+    }
+
+    await StudioApi.storeLocally(storyId, storyJson, layoutJson);
   }
 
   /**
@@ -272,15 +316,20 @@ export class StudioApi {
    * holds the asset either way, and the caller has already removed the
    * `assets[]` entry that named it.
    */
-  static async deleteAsset(storyId: string, path: string): Promise<{ ok: boolean; error?: string }> {
+  static async deleteAsset(storyId: string, path: string, alias?: string): Promise<{ ok: boolean; error?: string }> {
     await ContentStore.deleteAsset(storyId, path);
     AssetUrls.forget(storyId, path);
 
     try {
+      // `alias` أُضيف لأن الحذف كان يفشل دائماً: الاستوديو يرسل `path` وحده،
+      // والخادم يعنون الأصل بـ `asset_id` — وهو معرّف لا يصل الاستوديو أصلاً
+      // (الرفع لا يُرجعه). فكان الجسر يقرأ `assetId ?? alias`، ويجد كليهما
+      // غائباً، فيبني مساراً بمعرّف فارغ يردّ عليه الخادم 404. الاسم المستعار
+      // هو ما يملكه الاستوديو فعلاً، والجسر يترجمه إلى `asset_id`.
       const res = await fetch("/__editor/delete-asset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storyId, path })
+        body: JSON.stringify({ storyId, path, alias })
       });
       const text = await res.text();
       try {
@@ -335,7 +384,7 @@ export class StudioApi {
   static async uploadAsset(
     storyId: string,
     fileName: string,
-    base64: string,
+    file: Blob,
     assetType: "image" | "audio"
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
     // The path an assets[] entry records. Mirrors the dev-server route's
@@ -347,23 +396,32 @@ export class StudioApi {
     // Tier 1 — the durable copy, and the only one that exists when no
     // dev server is running. Registered with AssetUrls immediately so
     // the new file is displayable without re-reading IndexedDB.
-    const blob = base64ToBlob(base64);
-    let storedInBrowser = false;
-    if (blob) {
-      storedInBrowser = await ContentStore.saveAsset(storyId, path, blob);
-      if (storedInBrowser) AssetUrls.register(storyId, path, blob);
-    }
+    const storedInBrowser = await ContentStore.saveAsset(storyId, path, file);
+    if (storedInBrowser) AssetUrls.register(storyId, path, file);
 
-    // Tier 2 — best-effort write to disk.
+    // Tier 2 — best-effort write to the server, as multipart.
     let savedToDisk = false;
     let diskError: string | null = null;
     let diskStatus = 0;
     try {
-      const res = await fetch("/__editor/upload-base64", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storyId, fileName, base64, assetType })
-      });
+      // ── FormData لا JSON — العطل الذي فرض التحويل ───────────────────────
+      //
+      // كان الملفّ يُحوَّل إلى data URL ويُرسَل داخل JSON. أثر ذلك أن الملفّ
+      // ينتفخ ٣٣٪ بترميز base64، ثم توجد منه أربع نسخ في الذاكرة معاً: النصّ،
+      // وجسم JSON، والكائن الذي يفكّه الجسر، والنصّ الذي يعيد بناءه. صورة
+      // هاتف عادية (٨–١٢ ميغابايت) تكفي لإسقاط `fetch` نفسها قبل أن تغادر
+      // المتصفّح — والرسالة التي تصل المعلّمة عندها «Failed to fetch»، وهي
+      // كل ما يقوله المتصفّح عن طلب مات في يده.
+      //
+      // `MultiPartParser` مُفعَّل على الخادم منذ البداية، فلم يكن ينقص شيء
+      // هناك. والملفّ الآن يُرسَل كما هو: بلا انتفاخ، وبلا نسخة وسيطة واحدة.
+      const form = new FormData();
+      form.append("storyId", storyId);
+      form.append("fileName", fileName);
+      form.append("assetType", assetType);
+      form.append("file", file, fileName);
+
+      const res = await fetch("/__editor/upload-asset", { method: "POST", body: form });
       diskStatus = res.status;
       const text = await res.text();
       try {

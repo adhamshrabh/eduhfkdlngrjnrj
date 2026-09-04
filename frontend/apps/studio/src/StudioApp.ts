@@ -43,10 +43,12 @@ import { icon } from "./ui/icons";
 import { defaultPlacement, drawSceneThumbnail, type ThumbSpec } from "./ui/SceneThumbnail";
 import { LayoutDraft, degreesToRadians, radiansToDegrees, type DraftPosition } from "./LayoutDraft";
 import { StudioApi } from "./StudioApi";
+import { loadCardLabels } from "./deviceCards";
+import { isValidStoryId } from "./storyScaffold";
 import { SceneCanvas, type SceneCanvasChoice, type SceneCanvasElement } from "./ui/SceneCanvas";
 import { ActivityPreview } from "./ui/ActivityPreview";
 import { assetChooser } from "./ui/AssetPicker";
-import { AudioRecorder, aliasFromFileName, blobToBase64, pickFile, safeFileName } from "./ui/AudioRecorder";
+import { AudioRecorder, aliasFromFileName, pickFile, safeFileName } from "./ui/AudioRecorder";
 import { CharacterSheetImporter } from "./ui/CharacterSheetImporter";
 import { bar, button, checkboxField, el, tag, numberField, panel, row, selectField, spacer, status, tabBar, textField } from "./ui/components";
 
@@ -293,6 +295,14 @@ export class StudioApp {
    *  being edited — off the bottom of a laptop screen. */
   private assetsExpanded = false;
 
+  /**
+   * أسماء البطاقات المربوطة — تُحمَّل مرّة عند الإقلاع لا مع كل رسم.
+   *
+   * `null` تعني «لم تصل بعد» لا «لا بطاقات»، والفرق يظهر في الواجهة:
+   * لا شارة إطلاقاً حتى تصل، بدل «لا بطاقة» على خيارٍ له بطاقة فعلاً.
+   */
+  private cardLabels: Set<string> | null = null;
+
   /** The in-progress microphone recording, if any. Kept on the instance
    *  so it survives the panel re-renders that start/stop trigger. */
   private recorder: AudioRecorder | null = null;
@@ -324,6 +334,21 @@ export class StudioApp {
 
   async start(): Promise<void> {
     this.render();
+
+    // بلا `await`: التأليف لا يتوقّف على إعدادٍ اختياري. تصل الشارات
+    // حين تصل، وإعادة الرسم عندها هي كل ما يلزم.
+    void this.refreshCardLabels();
+
+    // ── وتُحدَّث عند العودة إلى التبويب ───────────────────────────────────
+    //
+    // مسار المعلّمة الفعلي: ترى «لا بطاقة» على خيار، فتنتقل إلى تبويب
+    // المنصّة، وتربط البطاقة، وتعود. بلا هذا السطر تجد الشارة كما تركتها —
+    // فتظنّ الربط فشل، وتعيده، ثم تشكّ في النظام كلّه.
+    //
+    // `focus` لا مؤقّت دوري: الحدث يقع مرّة عند العودة بالضبط، بينما
+    // المؤقّت يستجوب الخادم طوال ساعات التأليف بلا داعٍ.
+    window.addEventListener("focus", () => void this.refreshCardLabels());
+
     await this.refreshStoryList();
     // Open the first story automatically so the app never starts on an
     // empty screen when content already exists.
@@ -337,6 +362,25 @@ export class StudioApp {
   // -------------------------------------------------------------------------
   // Actions
   // -------------------------------------------------------------------------
+
+  /**
+   * أسماء البطاقات المربوطة.
+   *
+   * لا تُعيد الرسم إلا عند تغيّر فعلي: العودة إلى التبويب حدثٌ متكرّر،
+   * وإعادة رسمٍ كاملة عند كلّ منها تهدم المسرح وتُعيد بناء لوحة PixiJS
+   * بلا سبب — وتضيع معها أي عملية سحب لم تُحفظ.
+   */
+  private async refreshCardLabels(): Promise<void> {
+    const labels = await loadCardLabels();
+    const before = this.cardLabels;
+    const changed =
+      before === null ||
+      before.size !== labels.size ||
+      [...labels].some((label) => !before.has(label));
+
+    this.cardLabels = labels;
+    if (changed && labels.size > 0) this.render();
+  }
 
   private async refreshStoryList(): Promise<void> {
     this.storyIds = await StudioApi.listStories();
@@ -384,17 +428,32 @@ export class StudioApp {
   }
 
   private async createStory(): Promise<void> {
-    const storyId = window.prompt("معرّف القصة (حروف لاتينية وأرقام و_ فقط):", "");
+    const storyId = window.prompt("معرّف القصة (حروف وأرقام و«_» و«-» — بلا مسافات):", "");
     if (!storyId) return;
+
+    // يُفحص هنا لا على الخادم. المعرّف يصبح `slug` في قاعدة البيانات، وحقل
+    // Django يرفض المسافة والنقطة — رفضاً كان يُبتلَع فتُعلَن القصّة منشأة
+    // وهي في المتصفّح وحده. الفحص صار في مكانين لأن الخادم هو الحقيقة، وهذا
+    // هنا ليقول السبب بالعربية قبل أن تُكتب كلمة واحدة من القصّة.
+    const trimmedId = storyId.trim();
+    if (!isValidStoryId(trimmedId)) {
+      this.notice = {
+        tone: "bad",
+        text: `المعرّف «${trimmedId}» غير صالح — يُقبل الحرف والرقم و«_» و«-» فقط، بلا مسافات، وبحدّ ٨٠ محرفاً.`
+      };
+      this.render();
+      return;
+    }
+
     const title = window.prompt("عنوان القصة:", "");
     if (!title) return;
 
     await this.withBusy(async () => {
-      await StudioApi.createStory(storyId.trim(), title.trim());
+      await StudioApi.createStory(trimmedId, title.trim());
       await this.refreshStoryList();
       const [storyRaw, layoutRaw] = await Promise.all([
-        StudioApi.loadStory(storyId.trim()),
-        StudioApi.loadLayout(storyId.trim())
+        StudioApi.loadStory(trimmedId),
+        StudioApi.loadLayout(trimmedId)
       ]);
       this.draft = StoryDraft.fromJson(storyRaw);
       this.layoutDraft = layoutRaw ? LayoutDraft.fromJson(layoutRaw) : LayoutDraft.createEmpty();
@@ -1155,7 +1214,7 @@ export class StudioApp {
       if (!removed) return;
       // The entry is gone from the draft either way; a disk failure only
       // leaves an orphan file, which is untidy rather than broken.
-      const result = await StudioApi.deleteAsset(draft.storyId, removed);
+      const result = await StudioApi.deleteAsset(draft.storyId, removed, alias);
       this.markEdited();
       this.notice = result.ok
         ? { tone: "ok", text: `حُذف «${alias}». احفظ القصة لتثبيت الحذف.` }
@@ -1222,8 +1281,7 @@ export class StudioApp {
     }
 
     await this.withBusy(async () => {
-      const base64 = await blobToBase64(file);
-      await this.storeAsset(fileName, base64, assetType, aliasFromFileName(fileName));
+      await this.storeAsset(fileName, file, assetType, aliasFromFileName(fileName));
     });
   }
 
@@ -1244,10 +1302,9 @@ export class StudioApp {
     await CharacterSheetImporter.open(
       {
         onSave: async (result) => {
-          const base64 = await blobToBase64(result.blob);
           const stored = await this.storeAsset(
             safeFileName(result.fileName),
-            base64,
+            result.blob,
             "image",
             result.alias
           );
@@ -1298,8 +1355,7 @@ export class StudioApp {
     const fileName = `${alias}_${Date.now().toString().slice(-6)}.${pending.extension}`;
 
     await this.withBusy(async () => {
-      const base64 = await blobToBase64(pending.blob);
-      const stored = await this.storeAsset(fileName, base64, "audio", alias);
+      const stored = await this.storeAsset(fileName, pending.blob, "audio", alias);
       if (stored) {
         URL.revokeObjectURL(pending.url);
         this.pendingRecording = null;
@@ -1317,14 +1373,14 @@ export class StudioApp {
    */
   private async storeAsset(
     fileName: string,
-    base64: string,
+    file: Blob,
     assetType: "image" | "audio",
     preferredAlias: string
   ): Promise<boolean> {
     const draft = this.draft;
     if (!draft) return false;
 
-    const result = await StudioApi.uploadAsset(draft.storyId, fileName, base64, assetType);
+    const result = await StudioApi.uploadAsset(draft.storyId, fileName, file, assetType);
     if (!result.ok) {
       this.notice = { tone: "bad", text: result.error };
       return false;
@@ -3391,6 +3447,26 @@ export class StudioApp {
         row.appendChild(thumb);
       }
       row.appendChild(el("div", "s-item__name", choice.alias));
+
+      // ── شارة البطاقة: تُخبر ولا تُقرّر ───────────────────────────────
+      //
+      // الربط قائم بالاسم نفسه (بطاقة اسمها «تفاحة» ← خيار يعرض أصل
+      // «تفاحة»)، فلا شيء يُضبط هنا. الشارة تكشف الفرق الصامت وحده:
+      // أصلٌ اسمه `nest_1` وبطاقةٌ اسمها `nest` لا يلتقيان، ولا شيء كان
+      // يقول ذلك حتى العرض أمام الصف.
+      if (this.cardLabels !== null) {
+        const bound = this.cardLabels.has(choice.alias);
+        row.appendChild(
+          tag(
+            // `chain` لا أيقونة جديدة: المجموعة مغلقة عمداً، ورسمةٌ لكل
+            // فعلٍ جديد هي ما يجعلها تتضخّم بلا اتّساق. و«سلسلة» هي معنى
+            // «مربوطة» حرفياً.
+            bound ? "chain" : "warning",
+            bound ? "بطاقة" : "لا بطاقة",
+            `s-item__meta s-item__meta--kind${bound ? "" : " s-item__meta--muted"}`
+          )
+        );
+      }
 
       const correct = el("button", `s-btn ${choice.correct ? "s-btn--primary" : "s-btn--ghost"}`) as HTMLButtonElement;
       correct.type = "button";

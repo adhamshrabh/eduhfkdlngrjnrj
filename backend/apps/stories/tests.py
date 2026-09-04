@@ -12,7 +12,7 @@
 from django.test import SimpleTestCase, TestCase
 from rest_framework.exceptions import ValidationError
 
-from .models import Story
+from .models import Story, StoryAsset
 from .validators import extract_scene_objects, validate_layout_json, validate_story_json
 
 
@@ -270,3 +270,81 @@ class BuriedSlugTests(TestCase):
         )
         self.assertEqual(res.status_code, 201)
         self.assertTrue(Story.objects.filter(slug="brandnew").exists())
+
+
+class AssetOwnershipTests(TestCase):
+    """
+    حذف أصل داخل قصّة تملكها المعلّمة.
+
+    ⚠️ عطل قِيس فعلياً: `IsOwnerOrAdmin` كان يقرأ `getattr(obj, "owner_id",
+    None)`، و`StoryAsset` لا يحمل هذا الحقل إطلاقاً — الملكية تخصّ القصّة
+    والأصل يتبعها بـ CASCADE. فكانت النتيجة None لكل أصل، وNone لا يساوي أي
+    معرّف: **حذف أي صورة مرفوض لكل معلّمة، حتى داخل قصّتها هي**، برسالة
+    «لا تملكين صلاحية تعديل هذا العنصر» تصف ملكيةً قائمة فعلاً.
+
+    ولم يكن العطل مرئياً لسببين: المديرة تخرج قبل الفحص فينجح حذفها، والرفع
+    يمرّ لأن DRF لا ينادي `get_object()` عند الإنشاء. أي أن الصورة تُرفع
+    ولا تُحذف.
+    """
+
+    def setUp(self):
+        from apps.accounts.models import User
+
+        self.teacher = User.objects.create_user(email="t3@x.local", password="pw12345678", full_name="م")
+        self.other = User.objects.create_user(email="o3@x.local", password="pw12345678", full_name="ن")
+        self.story = Story.objects.create(
+            slug="mine", title="قصتي", owner=self.teacher, story_json={"id": "mine"}
+        )
+
+    def _login(self, user):
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        return {"HTTP_AUTHORIZATION": f"Bearer {RefreshToken.for_user(user).access_token}"}
+
+    def _upload(self, user, alias="cat"):
+        import base64
+
+        return self.client.post(
+            f"/api/stories/{self.story.slug}/assets/",
+            {
+                "alias": alias,
+                "kind": "images",
+                "filename": f"{alias}.png",
+                "data_url": "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n").decode(),
+            },
+            content_type="application/json",
+            **self._login(user),
+        )
+
+    def test_owner_can_delete_an_asset_in_her_own_story(self):
+        created = self._upload(self.teacher)
+        self.assertEqual(created.status_code, 201)
+        asset_id = created.json()["data"]["asset_id"]
+
+        res = self.client.delete(
+            f"/api/stories/{self.story.slug}/assets/{asset_id}/", **self._login(self.teacher)
+        )
+        self.assertEqual(res.status_code, 200, res.content.decode())
+        self.assertFalse(StoryAsset.objects.filter(story=self.story, asset_id=asset_id).exists())
+
+    def test_uploading_and_deleting_answer_the_same_way(self):
+        """التناقض بعينه: ما يُسمح برفعه يجب أن يُسمح بحذفه."""
+        created = self._upload(self.teacher, alias="pair")
+        deleted = self.client.delete(
+            f"/api/stories/{self.story.slug}/assets/{created.json()['data']['asset_id']}/",
+            **self._login(self.teacher),
+        )
+        self.assertEqual((created.status_code, deleted.status_code), (201, 200))
+
+    def test_another_teacher_still_cannot_delete(self):
+        """الإصلاح يوسّع النسب إلى القصّة، ولا يفتح شيئاً لغير مالكتها."""
+        asset_id = self._upload(self.teacher, alias="guarded").json()["data"]["asset_id"]
+
+        res = self.client.delete(
+            f"/api/stories/{self.story.slug}/assets/{asset_id}/", **self._login(self.other)
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertTrue(StoryAsset.objects.filter(story=self.story, asset_id=asset_id).exists())
+
+    def test_another_teacher_cannot_upload_either(self):
+        self.assertEqual(self._upload(self.other, alias="intruder").status_code, 403)

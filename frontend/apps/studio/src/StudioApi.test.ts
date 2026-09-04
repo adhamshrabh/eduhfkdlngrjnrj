@@ -28,6 +28,10 @@ function failResponse(status: number, body: Record<string, unknown>): Response {
   return { ok: false, status, text: async () => JSON.stringify(body) } as Response;
 }
 
+/** `uploadAsset` صار يستقبل الملفّ نفسه لا data URL — انظر تعليقه. */
+const png = (): Blob => new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+const webm = (): Blob => new Blob([new Uint8Array([26, 69, 223, 163])], { type: "audio/webm" });
+
 describe("StudioApi.saveStory / saveLayout — LocalOverrides clearing", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -83,25 +87,36 @@ describe("StudioApi.uploadAsset", () => {
       vi.fn().mockResolvedValue(okResponse({ ok: true, path: "assets/images/cat.png" }))
     );
 
-    const result = await StudioApi.uploadAsset("b", "cat.png", "data:image/png;base64,AAA", "image");
+    const result = await StudioApi.uploadAsset("b", "cat.png", png(), "image");
 
     expect(result).toEqual({ ok: true, path: "assets/images/cat.png" });
   });
 
-  it("sends the assetType the route uses to choose the folder", async () => {
+  it("يرسل الملفّ كـ FormData لا كنصّ base64 داخل JSON", async () => {
+    // العطل المبلَّغ عنه: «Failed to fetch» عند رفع صورة. سببه أن الملفّ كان
+    // ينتفخ ٣٣٪ بـ base64 ثم يوجد منه أربع نسخ في الذاكرة معاً. الحارس يثبّت
+    // أن ما يغادر المتصفّح هو الملفّ نفسه.
     const fetchMock = vi.fn().mockResolvedValue(okResponse({ ok: true, path: "assets/audio/v.webm" }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await StudioApi.uploadAsset("b", "v.webm", "data:audio/webm;base64,AAA", "audio");
+    await StudioApi.uploadAsset("b", "v.webm", webm(), "audio");
 
-    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
-    expect(body).toMatchObject({ storyId: "b", fileName: "v.webm", assetType: "audio" });
+    const [url, init] = fetchMock.mock.calls[0]! as [string, RequestInit];
+    const body = init.body as FormData;
+    expect(url).toBe("/__editor/upload-asset");
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get("storyId")).toBe("b");
+    expect(body.get("fileName")).toBe("v.webm");
+    expect(body.get("assetType")).toBe("audio");
+    expect(body.get("file")).toBeInstanceOf(Blob);
+    // لا ترويسة Content-Type يدوية — تعيينها يمحو حدّ الأجزاء.
+    expect(init.headers).toBeUndefined();
   });
 
   it("reports a server failure instead of pretending the file was stored", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(failResponse(500, { ok: false, error: "disk full" })));
 
-    const result = await StudioApi.uploadAsset("b", "cat.png", "data:image/png;base64,AAA", "image");
+    const result = await StudioApi.uploadAsset("b", "cat.png", png(), "image");
 
     expect(result).toEqual({ ok: false, error: "disk full" });
   });
@@ -112,7 +127,7 @@ describe("StudioApi.uploadAsset", () => {
     // rather than surfacing a raw network error.
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
 
-    const result = await StudioApi.uploadAsset("b", "cat.png", "data:image/png;base64,AAA", "image");
+    const result = await StudioApi.uploadAsset("b", "cat.png", png(), "image");
 
     expect(result.ok).toBe(false);
     expect((result as { error: string }).error).toMatch(/التخزين في هذا المتصفّح/);
@@ -121,8 +136,8 @@ describe("StudioApi.uploadAsset", () => {
   it("records the same story-relative path the dev-server route would write", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({ ok: true, path: "assets/audio/v.webm" })));
 
-    const image = await StudioApi.uploadAsset("b", "cat.png", "data:image/png;base64,AAA", "image");
-    const audio = await StudioApi.uploadAsset("b", "v.webm", "data:audio/webm;base64,AAA", "audio");
+    const image = await StudioApi.uploadAsset("b", "cat.png", png(), "image");
+    const audio = await StudioApi.uploadAsset("b", "v.webm", webm(), "audio");
 
     expect(image).toEqual({ ok: true, path: "assets/images/cat.png" });
     expect(audio).toEqual({ ok: true, path: "assets/audio/v.webm" });
@@ -131,7 +146,7 @@ describe("StudioApi.uploadAsset", () => {
   it("treats a 200 with no path as a failure — the caller must never record an empty src", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({ ok: true })));
 
-    const result = await StudioApi.uploadAsset("b", "cat.png", "data:image/png;base64,AAA", "image");
+    const result = await StudioApi.uploadAsset("b", "cat.png", png(), "image");
 
     expect(result.ok).toBe(false);
   });
@@ -211,6 +226,108 @@ describe("StudioApi — working without a dev server", () => {
     }));
 
     await expect(StudioApi.loadStory("b")).resolves.toEqual(story);
+  });
+});
+
+/**
+ * العطل المبلَّغ عنه: «القصة تُنشأ، لكن رفع أي صورة يردّ: القصة غير موجودة».
+ *
+ * السبب لم يكن في الأصول إطلاقاً — كان نداء الإنشاء ملفوفاً بـ `try {} catch {}`
+ * فارغ لا يقرأ الردّ، فيمرّ رفض الخادم صامتاً وتبقى القصّة في IndexedDB وحدها.
+ * ولأن القراءة تبدأ من IndexedDB، لا يظهر شيء حتى أول نداء يذهب إلى الخادم
+ * مباشرةً — وهو رفع صورة.
+ */
+describe("createStory — خادم يرفض ليس إنشاءً ناجحاً", () => {
+  /** ردّ الجسر على `story-meta` لقصّة لا يعرفها الخادم. */
+  const notOnServer = { ok: false, status: 404, json: async () => ({ ok: false }) } as Response;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(ContentStore, "saveDocument").mockResolvedValue(true);
+    vi.spyOn(ContentStore, "getDocument").mockResolvedValue(null);
+  });
+
+  function routeFetch(createResponse: Response | Error) {
+    return vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/__editor/story-meta")) return Promise.resolve(notOnServer);
+      if (url.includes("/__editor/create-story")) {
+        return createResponse instanceof Error
+          ? Promise.reject(createResponse)
+          : Promise.resolve(createResponse);
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, stories: [] }) } as Response);
+    });
+  }
+
+  it("يرمي رسالة الخادم بدل أن يعلن النجاح", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routeFetch({ ok: false, status: 400, json: async () => ({ ok: false, error: "أدخلي قيمة صالحة." }) } as Response)
+    );
+
+    await expect(StudioApi.createStory("قصة جديدة", "ع")).rejects.toThrow("أدخلي قيمة صالحة.");
+  });
+
+  it("لا يكتب القصّة في المتصفّح حين يرفضها الخادم — وإلا بقيت شبحاً يُفتح ولا يُرفع له شيء", async () => {
+    const store = vi.spyOn(ContentStore, "saveDocument").mockResolvedValue(true);
+    vi.stubGlobal(
+      "fetch",
+      routeFetch({ ok: false, status: 400, json: async () => ({ ok: false, error: "slug غير صالح" }) } as Response)
+    );
+
+    await expect(StudioApi.createStory("bad id", "ع")).rejects.toThrow();
+    expect(store).not.toHaveBeenCalled();
+  });
+
+  it("يترجم 401 إلى سبب الجلسة، كما يفعل الحفظ ورفع الأصول", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routeFetch({ ok: false, status: 401, json: async () => ({ ok: false, error: "auth" }) } as Response)
+    );
+
+    await expect(StudioApi.createStory("tree", "ع")).rejects.toThrow(/انتهت جلسة الدخول/);
+  });
+
+  it("ينجح ويكتب الطبقتين حين يقبل الخادم", async () => {
+    const store = vi.spyOn(ContentStore, "saveDocument").mockResolvedValue(true);
+    vi.stubGlobal("fetch", routeFetch({ ok: true, status: 201, json: async () => ({ ok: true }) } as Response));
+
+    await expect(StudioApi.createStory("tree", "الشجرة")).resolves.toBeUndefined();
+    expect(store).toHaveBeenCalledTimes(2); // story.json + layout.json
+  });
+
+  it("يرفع النسخة المحلية كما هي حين يجهلها الخادم — إصلاح لا دهس", async () => {
+    // هذه حال كل قصّة خلّفها العطل: محتوى كامل في المتصفّح، ولا سجلّ هناك.
+    const authored = { id: "tree", title: "الشجرة", story: { scenes: [{ id: "scene01" }, { id: "scene02" }] } };
+    vi.spyOn(ContentStore, "getDocument").mockImplementation(async (_id, file) =>
+      (file === "story.json" ? authored : null) as never
+    );
+    const fetchMock = routeFetch({ ok: true, status: 201, json: async () => ({ ok: true }) } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await StudioApi.createStory("tree", "الشجرة");
+
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).includes("/__editor/create-story"));
+    expect(JSON.parse(call![1].body as string).storyJson).toEqual(authored);
+  });
+
+  it("بلا خادم يبقى الإنشاء محلياً — السقوط المشروع الذي تقوم عليه الطبقتان", async () => {
+    const store = vi.spyOn(ContentStore, "saveDocument").mockResolvedValue(true);
+    // لا شيء يجيب: `story-meta` يفشل، فلا نعرف — وهذا ليس رفضاً.
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+
+    await expect(StudioApi.createStory("offline_story", "بلا اتصال")).resolves.toBeUndefined();
+    expect(store).toHaveBeenCalledTimes(2);
+  });
+
+  it("يرفض معرّفاً موجوداً على الخادم", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) =>
+      url.includes("/__editor/story-meta")
+        ? Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, isPublished: false }) } as Response)
+        : Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true }) } as Response)
+    ));
+
+    await expect(StudioApi.createStory("birds", "طيور")).rejects.toThrow(/موجودة بالفعل/);
   });
 });
 

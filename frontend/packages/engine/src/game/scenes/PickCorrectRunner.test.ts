@@ -183,6 +183,73 @@ describe("PickCorrectRunner", () => {
     });
   });
 
+  /**
+   * البطاقة المصوّرة تحتاج عنواناً ثابت المعنى عبر المشاهد، والموضع ليس
+   * كذلك. والمعرّف مولَّد (`ch_…`) فلا يكتبه مؤلّف. يبقى الاسم المستعار —
+   * وهو النصّ الوحيد الذي تختاره المعلّمة بنفسها لكل خيار.
+   */
+  describe("اختيار بالاسم المستعار — عنوان البطاقة المصوّرة", () => {
+    it("بطاقة «nest» تختار الخيار الذي يعرض صورة nest", () => {
+      const { bus, runner, solved } = setup();
+      runner.start(activity(), "a1", solved);
+      bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "nest" });
+      expect(solved).toHaveBeenCalledTimes(1);
+    });
+
+    it("اسم خيار خاطئ لا يحلّ النشاط — البطاقة تختار، ولا تُصحّح", () => {
+      const { bus, runner, solved } = setup();
+      runner.start(activity(), "a1", solved);
+      bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "stone" });
+      expect(solved).not.toHaveBeenCalled();
+      expect(runner.isActive).toBe(true);
+    });
+
+    it("المعرّف يسبق الاسم المستعار حين يتصادمان", () => {
+      // خيار معرّفه «nest» واسمه شيء آخر: المعرّف فريد بالتعريف فيفوز.
+      const { bus, runner, solved } = setup();
+      runner.start(
+        activity({
+          choices: [
+            { id: "nest", alias: "stone" },
+            { id: "c2", alias: "nest", correct: true }
+          ]
+        }),
+        "a1",
+        solved
+      );
+      bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "nest" });
+      // فاز المعرّف — وهو الخيار الخاطئ، فلا حلّ.
+      expect(solved).not.toHaveBeenCalled();
+    });
+
+    it("الاسم المستعار يسبق الموضع — اسم رقمي لا يُقرأ رقم ترتيب", () => {
+      // أصل اسمه «2» موجود فعلاً في محتوى حقيقي (صور مرقّمة). لولا هذا
+      // الترتيب لاختارت البطاقة الخيار الثاني بدل الخيار المسمّى «2».
+      const { bus, runner, solved } = setup();
+      runner.start(
+        activity({
+          choices: [
+            { id: "c1", alias: "stone" },
+            { id: "c2", alias: "leaf" },
+            { id: "c3", alias: "2", correct: true }
+          ]
+        }),
+        "a1",
+        solved
+      );
+      bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "2" });
+      expect(solved).toHaveBeenCalledTimes(1);
+    });
+
+    it("اسم لا وجود له يُهمَل بصمت — مسحة عابرة لا تُعطب قصّة", () => {
+      const { bus, runner, solved } = setup();
+      runner.start(activity(), "a1", solved);
+      expect(() => bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "تفاحة" })).not.toThrow();
+      expect(solved).not.toHaveBeenCalled();
+      expect(runner.isActive).toBe(true);
+    });
+  });
+
   describe("teardown", () => {
     it("reset() removes everything it drew", () => {
       const { container, runner, solved } = setup();

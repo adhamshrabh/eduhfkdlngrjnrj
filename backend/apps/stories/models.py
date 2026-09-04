@@ -110,6 +110,17 @@ class StoryAsset(BaseModel):
     def __str__(self) -> str:
         return f"{self.alias} ({self.asset_id})"
 
+    @property
+    def owner_id(self):
+        """
+        مالك الأصل هو مالك قصّته — الأصل لا يُملَك وحده.
+
+        خاصيّة لا حقل: تكرار المالك على كل صفّ أصل يفتح باب تعارضٍ بينه وبين
+        مالك القصّة، وهو ما لا معنى له. وهي الاصطلاح الذي يقرأه
+        `IsOwnerOrAdmin` — انظر تعليقه لِما كان غيابها يفعله.
+        """
+        return self.story.owner_id
+
     @staticmethod
     def next_asset_id(story: Story) -> str:
         """asset_0001, asset_0002… — تسلسل لا يعيد استخدام رقم محذوف."""

@@ -16,7 +16,7 @@ import { ArrowRight, Maximize2, Minimize2 } from "lucide-react";
 import { Button, ErrorNote, Spinner } from "@/components/ui";
 import { ar } from "@/lib/i18n";
 
-import { useEngine } from "./useEngine";
+import { useDeviceStatus, useEngine, useLastScan } from "./useEngine";
 
 /** WakeLock ما زال غير موجود في تعريفات TS القياسية لكل البيئات. */
 interface WakeLockSentinelLike {
@@ -32,7 +32,10 @@ export function PlayerPage(): JSX.Element {
   const [presenting, setPresenting] = useState(false);
   const [showHint, setShowHint] = useState(false);
 
-  const { status, error } = useEngine(hostRef, slug);
+  const { status, error, app, cardBindings } = useEngine(hostRef, slug);
+  // `null` = لا قارئ بطاقات في هذه الغرفة، فلا مؤشّر — انظر useDeviceStatus.
+  const deviceConnected = useDeviceStatus(app);
+  const lastScan = useLastScan(app, cardBindings);
 
   // ------------------------------------------------------------ ملء الشاشة
 
@@ -116,6 +119,46 @@ export function PlayerPage(): JSX.Element {
           </Button>
         </div>
       ) : null}
+
+      {/* حالة قارئ البطاقات — تبقى ظاهرة في وضع العرض أيضاً، عمداً: هي
+          الحالة الوحيدة التي تحتاج المعلّمة معرفتها والصفّ جالس، ولو
+          أخفيناها مع بقيّة الواجهة لاكتشفت انفصال القارئ من صمت الأطفال. */}
+      {deviceConnected === null ? null : (
+        <div
+          data-device-status
+          className={`absolute bottom-4 right-4 z-20 flex items-center gap-2 rounded-full px-3 py-1.5
+            text-sm ${deviceConnected ? "bg-white/70 text-slate-500" : "bg-amber-100 text-amber-900"}`}
+        >
+          <span
+            className={`w-2 h-2 rounded-full ${deviceConnected ? "bg-emerald-500" : "bg-amber-500"}`}
+            aria-hidden
+          />
+          {deviceConnected ? ar.player.deviceReady : ar.player.deviceOffline}
+        </div>
+      )}
+
+      {/* ── آخر بطاقة مُسحت ───────────────────────────────────────────────
+          تشخيصٌ على الشاشة لا في طرفية المتصفّح: المعلّمة لا تفتح الطرفية،
+          ولا يجوز أن نطلب منها ذلك. ثلاث حالات تفصل وصلات السلسلة فوراً —
+          لا شيء (الإشارة لم تصل)، «غير معروفة» (لم تُربَط)، أو الاسم
+          (وصلت وتُرجمت، فما بقي هو النشاط أو تطابق الاسم). */}
+      {lastScan && (
+        <div
+          data-last-scan
+          className={`absolute bottom-16 right-4 z-20 rounded-2xl px-3 py-1.5 text-sm
+            ${lastScan.label ? "bg-white/80 text-slate-600" : "bg-amber-100 text-amber-900"}`}
+        >
+          {lastScan.label ? (
+            <>
+              بطاقة <span className="font-semibold">«{lastScan.label}»</span>
+            </>
+          ) : (
+            <>
+              بطاقة غير معروفة — <span className="font-mono" dir="ltr">{lastScan.uid}</span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* مضيف اللوحة — React لا يلمس ما بداخله إطلاقاً، Pixi وحده يملكه */}
       <div ref={hostRef} className="w-full h-full flex items-center justify-center" />

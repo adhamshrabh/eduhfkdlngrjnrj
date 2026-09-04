@@ -10,7 +10,7 @@
     "dev": "npm run dev --workspace=@edu/web",
     "dev:studio": "npm run dev --workspace=@edu/studio",
     "build": "npm run build --workspace=@edu/web && npm run build --workspace=@edu/studio",
-    "test": "npm run test --workspace=@edu/engine && npm run test --workspace=@edu/studio",
+    "test": "npm run test --workspace=@edu/engine && npm run test --workspace=@edu/studio && npm run test --workspace=@edu/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "verify": "npm run typecheck && npm run test && npm run build"
   },

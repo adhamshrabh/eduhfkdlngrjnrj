@@ -18,7 +18,14 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { inputHintFor, readInputMode, readLineChoices, resolveSceneExit } from "./YaraBedScene";
+import {
+  inputHintFor,
+  readDevicePosition,
+  readInputMode,
+  readLineChoices,
+  resolveBranchAddress,
+  resolveSceneExit
+} from "./YaraBedScene";
 
 const source = readFileSync(resolve(__dirname, "YaraBedScene.ts"), "utf-8");
 
@@ -116,9 +123,31 @@ describe("choice input is device-agnostic", () => {
 
   it("matches a signal on the event type OR its payload", () => {
     // Which one carries the tag depends on the board's sketch, not the story.
-    const handler = /onHardwareEvent = \(payload: unknown\): void => \{[\s\S]*?\n  \};/.exec(source)?.[0] ?? "";
+    const handler = /export function readDevicePosition[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
     expect(handler).toContain("event.type");
     expect(handler).toContain("event.payload");
+  });
+
+  it("a signal with no position at all is ignored — heartbeat, card removed", () => {
+    expect(readDevicePosition({ type: "heartbeat" })).toBeNull();
+    expect(readDevicePosition({ type: "card_removed", payload: null })).toBeNull();
+    expect(readDevicePosition({})).toBeNull();
+    expect(readDevicePosition(null)).toBeNull();
+  });
+
+  it("reads the position from whichever field the board put it in", () => {
+    expect(readDevicePosition({ type: "2" })).toBe(2);
+    expect(readDevicePosition({ payload: 3 })).toBe(3);
+    expect(readDevicePosition({ type: "card_detected", payload: "1" })).toBe(1);
+  });
+
+  it("counts from 1, and zero is not a position", () => {
+    // `Number("")` و`Number(null)` صفرٌ صامت — لو مرّ لقرأه المحرّك
+    // «الخيار رقم صفر» وأخذ فرعاً لم تمسّه أي بطاقة.
+    expect(readDevicePosition({ type: "0" })).toBeNull();
+    expect(readDevicePosition({ type: "" })).toBeNull();
+    expect(readDevicePosition({ type: -1 })).toBeNull();
+    expect(readDevicePosition({ type: "1.5" })).toBeNull();
   });
 
   it("the keyboard picks the nth branch, without stealing the activity's keys", () => {
@@ -128,8 +157,31 @@ describe("choice input is device-agnostic", () => {
     expect(onKey).toContain("this.puzzle.handleKeyDown(payload)");
   });
 
+  it("a card reaches the ACTIVITY too, exactly as a keypress does", () => {
+    // العطل الذي أُصلح: المعالج كان يخرج فوراً حين لا فروع معلّقة، بينما
+    // `onKeyPressed` يمرّر إلى `this.puzzle`. فالمفتاح يصل «اختر الإجابة
+    // الصحيحة» والبطاقة لا تصله — رغم أن النشاط يُجاب بالموضع أصلاً.
+    const hardware = /onHardwareEvent = \(payload: unknown\): void => \{[\s\S]*?\n  \};/.exec(source)?.[0] ?? "";
+    expect(hardware).toContain("this.puzzle.handleKeyDown(");
+    // ولا يخرج قبل ذلك: الخروج المبكّر عند غياب الفروع هو العطل بعينه.
+    expect(hardware).not.toContain("if (this.pendingChoices.length === 0");
+  });
+
+  it("the branch path stays gated, the activity path deliberately is not", () => {
+    // `inputMode` يصف نقطة اختيار مضت؛ الاحتكام إليه أثناء نشاط كان
+    // سيجعل سؤالاً سابقاً على «لوحة المفاتيح» يُسكِت البطاقات بلا سبب.
+    const hardware = /onHardwareEvent = \(payload: unknown\): void => \{[\s\S]*?\n  \};/.exec(source)?.[0] ?? "";
+    const gate = hardware.indexOf('this.accepts("device")');
+    const activity = hardware.indexOf("this.puzzle.handleKeyDown(");
+    expect(gate).toBeGreaterThan(-1);
+    expect(activity).toBeGreaterThan(gate); // البوّابة على مسار الفروع وحده
+  });
+
   it("an intent for a branch that is not on screen is ignored, not an error", () => {
-    expect(takeChoice).toContain("const chosen = this.pendingChoices.find((c) => c.id === choiceId);");
+    // القرار انتقل إلى `resolveBranchAddress` النقيّة (تُختبر أعلاه مباشرةً)،
+    // فالحارس هنا على ما يبقى في المشهد: أنه يسألها، وأن لا نتيجة تعني
+    // تجاهلاً صامتاً لا خطأً.
+    expect(takeChoice).toContain("resolveBranchAddress(this.pendingChoices, choiceId)");
     expect(takeChoice).toContain("if (!chosen) return;");
   });
 
@@ -223,10 +275,12 @@ describe("devices select by position", () => {
   });
 
   it("a hardware event names a position, on the type or the payload", () => {
+    // القراءة نفسها انتقلت إلى `readDevicePosition` النقيّة — تُختبر
+    // بقيمها أعلاه بدل التفتيش عن نصّها هنا. ما يبقى حارساً على هذا
+    // المعالج أنه يترجم الموضع إلى فرعٍ بالترتيب، لا بأي عنوان آخر.
     expect(hardware).not.toBe("");
-    expect(hardware).toContain("event.type");
-    expect(hardware).toContain("event.payload");
-    expect(hardware).toContain("this.pendingChoices[index]");
+    expect(hardware).toContain("readDevicePosition(event)");
+    expect(hardware).toContain("this.pendingChoices[position - 1]");
   });
 
   it("a position with no branch is ignored, like every other stray intent", () => {
@@ -324,5 +378,47 @@ describe("resolveSceneExit — where a scene leads (v1.0.13 §3)", () => {
 
   it("an activity's onSolved override still wins over everything", () => {
     expect(resolveSceneExit({ id: "truth", endsStory: true }, order, "scene01")).toBe("scene01");
+  });
+});
+
+describe("resolveBranchAddress — البطاقة تختار فرعاً كما تفعل الإصبع", () => {
+  const branches = [
+    { id: "scene01_l1_c1", label: "نعم", nextScene: "s_yes" },
+    { id: "scene01_l1_c2", label: "لا", nextScene: "s_no" }
+  ];
+
+  it("يقبل المعرّف — الطريق القائم لأزرار الشاشة", () => {
+    expect(resolveBranchAddress(branches, "scene01_l1_c2")?.nextScene).toBe("s_no");
+  });
+
+  it("يقبل النصّ الظاهر — وهو الوحيد الذي تكتبه المعلّمة فيصلح لبطاقة", () => {
+    // المعرّفات مولَّدة (`scene01_l1_c1`) لا يكتبها مؤلّف، والموضع لا يعطي
+    // البطاقة معنىً ثابتاً عبر المشاهد. يبقى النصّ.
+    expect(resolveBranchAddress(branches, "نعم")?.nextScene).toBe("s_yes");
+  });
+
+  it("المعرّف يسبق النصّ حين يتصادمان — فريدٌ بالتعريف", () => {
+    const tricky = [
+      { id: "نعم", label: "لا", nextScene: "s_by_id" },
+      { id: "c2", label: "نعم", nextScene: "s_by_label" }
+    ];
+    expect(resolveBranchAddress(tricky, "نعم")?.nextScene).toBe("s_by_id");
+  });
+
+  it("نصّان متطابقان: يفوز الأول — كما تفعل قاعدة الاسم المستعار في النشاط", () => {
+    const twins = [
+      { id: "a", label: "نعم", nextScene: "s_first" },
+      { id: "b", label: "نعم", nextScene: "s_second" }
+    ];
+    expect(resolveBranchAddress(twins, "نعم")?.nextScene).toBe("s_first");
+  });
+
+  it("المطابقة حرفية — مسافةٌ زائدة لا تُبدّل الأدوار خلسةً", () => {
+    expect(resolveBranchAddress(branches, "نعم ")).toBeUndefined();
+  });
+
+  it("عنوان لا يخصّ شيئاً على الشاشة يُهمَل — مسحةٌ عابرة لا تكسر قصّة", () => {
+    expect(resolveBranchAddress(branches, "لا-أحد")).toBeUndefined();
+    expect(resolveBranchAddress([], "نعم")).toBeUndefined();
   });
 });

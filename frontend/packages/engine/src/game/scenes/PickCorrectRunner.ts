@@ -91,10 +91,24 @@ export class PickCorrectRunner {
   }
 
   /**
-   * Non-pointer input. Accepts the authored choice id, and also a
-   * 1-based position (`"2"`, `"choice_2"`) because that is how devices
-   * address a branch (Scene-Model-Specification-v1.0.10 §7.3) — a card
-   * reader names a position, never an id the author would have to invent.
+   * Non-pointer input. Three addresses, tried in order of how specific
+   * they are: the authored choice id, the option's asset ALIAS, then a
+   * 1-based position (`"2"`, `"choice_2"`).
+   *
+   * ── لماذا الاسم المستعار عنوانٌ ثالث ────────────────────────────────
+   *
+   * الموضع يكفي لصندوق زرّين، ولا يكفي لبطاقات مصوّرة: البطاقة نفسها تصير
+   * «الأول» في مشهد و«الثاني» في آخر، فلا معنى ثابتاً لها. والمعرّف يبدو
+   * الحلّ لكنه ليس كذلك — معرّفات خيارات هذا النشاط **مولَّدة** (`ch_…`،
+   * انظر `StoryDraft.addActivityChoice`)، والعقد يسمّيها «عنواناً لا سطح
+   * تأليف» (v1.0.10 §7.1). أي أنه لا يوجد نصّ يكتبه المؤلّف ويصلح للربط.
+   *
+   * الاسم المستعار هو ذلك النصّ، وهو موجود مسبقاً: كل خيار يشير إلى صورة
+   * باسم اختارته المعلّمة. فبطاقة «تفاحة» تطابق الخيار الذي يعرض صورة
+   * «تفاحة» — وهو ما تفكّر به المعلّمة حرفياً، بلا حقل جديد في العقد.
+   *
+   * والترتيب مقصود: المعرّف أولاً لأنه فريد بالتعريف، ثم الاسم المستعار،
+   * ثم الموضع أخيراً — فرقمٌ يصادف أن يكون اسماً مستعاراً لا يُقرأ موضعاً.
    *
    * An intent naming something not on screen is ignored, not reported:
    * a stray scan must never break a story a child is inside.
@@ -107,6 +121,15 @@ export class PickCorrectRunner {
     const byId = this.activity?.choices.find((c) => c.id === raw);
     if (byId) {
       this.pick(byId);
+      return;
+    }
+
+    // أول خيار يحمل هذا الاسم. تكرار الاسم في نشاط واحد يعني خيارين
+    // بالصورة نفسها — وهو سؤال لم تُكمِل المؤلّفة تحديده، لا حالة تستحقّ
+    // قاعدة ترجيح هنا.
+    const byAlias = this.activity?.choices.find((c) => c.alias === raw);
+    if (byAlias) {
+      this.pick(byAlias);
       return;
     }
 

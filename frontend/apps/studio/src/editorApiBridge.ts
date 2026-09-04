@@ -16,6 +16,8 @@
  * مباشرة ويُحذف هذا الملف بالكامل.
  */
 
+import { newStoryScaffold } from "./storyScaffold";
+
 const ACCESS_KEY = "edu.access";
 
 /**
@@ -40,9 +42,15 @@ interface JsonBody {
   [key: string]: unknown;
 }
 
-function authHeaders(): Record<string, string> {
+/**
+ * `json = false` لطلبات `FormData`: تعيين `Content-Type` يدوياً هناك يمحو
+ * حدّ الأجزاء (boundary) الذي يولّده المتصفّح، فيصل الجسم إلى Django غير
+ * قابل للتفكيك ولا يرى ملفاً إطلاقاً.
+ */
+function authHeaders(json = true): Record<string, string> {
   const token = localStorage.getItem(ACCESS_KEY);
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {};
+  if (json) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
@@ -182,16 +190,38 @@ async function handlePublish(request: Request): Promise<Response> {
   return jsonResponse({ ok: true, isPublished: saved.data?.is_published === true });
 }
 
+/**
+ * POST /__editor/create-story — تُنشئ القصّة على الخادم.
+ *
+ * السقالة تأتي من `storyScaffold.ts` لا من هنا. كانت مكتوبة في هذا الموضع
+ * بشكل مسطّح — `{ id, title, scenes: [] }` بلا كائن `story` — بينما تكتب
+ * `StudioApi.createStory` وثيقة كاملة في IndexedDB. النتيجة قصّتان بمعرّف
+ * واحد وشكلين، والفرق لا يظهر إلا على جهاز آخر: هناك لا نسخة محلية تحجب
+ * الشكل المسطّح، فتُسقط `StoryDraft.fromJson` القصّة باستثناء. التفاصيل
+ * الكاملة في رأس `storyScaffold.ts`.
+ */
 async function handleCreateStory(request: Request): Promise<Response> {
-  const payload = (await request.json()) as { id: string; title?: string };
+  const payload = (await request.json()) as {
+    id: string;
+    title?: string;
+    /** محتوى قائم يُرفع كما هو — مسار إصلاح قصّة بقيت في المتصفّح وحده.
+     *  غيابه هو الحالة العادية: قصّة جديدة تماماً. */
+    storyJson?: JsonBody;
+    layoutJson?: JsonBody;
+  };
+  const title = payload.title || payload.id;
+  const scaffold = newStoryScaffold(payload.id, title);
+  const storyJson = payload.storyJson ?? scaffold.storyJson;
+  const layoutJson = payload.layoutJson ?? scaffold.layoutJson;
+
   const res = await fetch("/api/stories/", {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({
       slug: payload.id,
-      title: payload.title || payload.id,
-      story_json: { id: payload.id, title: payload.title || payload.id, scenes: [] },
-      layout_json: {},
+      title,
+      story_json: storyJson,
+      layout_json: layoutJson,
     }),
   });
   if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّر إنشاء القصة.") }, res.status);
@@ -208,6 +238,50 @@ async function handleDeleteStory(request: Request): Promise<Response> {
   if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّر الحذف.") }, res.status);
   versionCache.delete(payload.id);
   return jsonResponse({ ok: true });
+}
+
+/**
+ * الرفع — يختار المسار من نوع المحتوى.
+ *
+ * `multipart/form-data` هو ما يرسله الاستوديو اليوم: الملفّ كما هو، بلا
+ * ترميز base64 ولا نسخة وسيطة. مسار JSON يبقى لأن الطريق `/__editor/
+ * import-asset` ما زال يقبله، ولأن حذفه يكسر أي نداء قديم بلا مقابل.
+ */
+async function handleUpload(request: Request): Promise<Response> {
+  const contentType = request.headers.get("content-type") ?? "";
+  return contentType.includes("multipart/form-data")
+    ? handleUploadMultipart(await request.formData())
+    : handleUploadBase64(request);
+}
+
+async function handleUploadMultipart(form: FormData): Promise<Response> {
+  const storyId = String(form.get("storyId") ?? "");
+  const fileName = String(form.get("fileName") ?? "asset");
+  const assetType = String(form.get("assetType") ?? "image");
+  const file = form.get("file");
+
+  if (!(file instanceof Blob)) {
+    return jsonResponse({ ok: false, error: "لم يصل ملف في الطلب." }, 400);
+  }
+
+  const alias = String(form.get("alias") ?? "") || fileName.replace(/\.[^.]+$/, "");
+  const kind = assetType === "audio" ? "audio" : "images";
+
+  const out = new FormData();
+  out.append("alias", alias);
+  out.append("kind", kind);
+  out.append("filename", fileName);
+  out.append("file", file, fileName);
+
+  const res = await fetch(`/api/stories/${encodeURIComponent(storyId)}/assets/`, {
+    method: "POST",
+    headers: authHeaders(false),
+    body: out,
+  });
+  if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّر رفع الملف.") }, res.status);
+
+  const body = (await res.json()) as { data?: { url?: string; asset_id?: string } };
+  return jsonResponse({ ok: true, path: body.data?.url ?? "", assetId: body.data?.asset_id ?? "" });
 }
 
 async function handleUploadBase64(request: Request): Promise<Response> {
@@ -248,16 +322,59 @@ async function handleUploadBase64(request: Request): Promise<Response> {
   return jsonResponse({ ok: true, path: body.data?.url ?? "", assetId: body.data?.asset_id ?? "" });
 }
 
+/**
+ * DELETE أصل — بالاسم المستعار، بعد ترجمته إلى `asset_id`.
+ *
+ * كان هذا الطريق يقرأ `assetId ?? alias`، والاستوديو لا يرسل أيّاً منهما:
+ * `StudioApi.deleteAsset` يرسل `path` وحده، لأن `asset_id` لا يصل الاستوديو
+ * أصلاً — الرفع لا يُعيده إليه. فكان `identifier` نصّاً فارغاً دائماً،
+ * والمسار الناتج `/assets//` يردّ عليه الخادم 404. أي أن حذف أي صورة كان
+ * يفشل دائماً، لا أحياناً.
+ *
+ * الترجمة هنا لا في الاستوديو: `asset_id` عنوانٌ يخصّ الخادم، وتسريبه إلى
+ * نموذج التأليف يعني حقلاً جديداً في `assets[]` لا يقرؤه المحرّك.
+ */
 async function handleDeleteAsset(request: Request): Promise<Response> {
-  const payload = (await request.json()) as { storyId: string; assetId?: string; alias?: string };
-  const identifier = payload.assetId ?? payload.alias ?? "";
-  const res = await fetch(
-    `/api/stories/${encodeURIComponent(payload.storyId)}/assets/${encodeURIComponent(identifier)}/`,
-    { method: "DELETE", headers: authHeaders() },
-  );
+  const payload = (await request.json()) as {
+    storyId: string;
+    assetId?: string;
+    alias?: string;
+    path?: string;
+  };
+  const base = `/api/stories/${encodeURIComponent(payload.storyId)}/assets/`;
+
+  let identifier = payload.assetId ?? "";
+  if (!identifier) {
+    const listRes = await fetch(base, { headers: authHeaders() });
+    if (!listRes.ok) {
+      return jsonResponse({ ok: false, error: await errorMessage(listRes, "تعذّر قراءة أصول القصة.") }, listRes.status);
+    }
+    const list = ((await listRes.json()) as { data?: Array<{ asset_id?: string; alias?: string; url?: string }> }).data ?? [];
+    // الاسم المستعار أولاً — هو مفتاح `assets[]` وفريد داخل القصّة
+    // (`uniq_story_alias`). واسم الملفّ سقوطٌ لأصل رُفع باسم مستعار مختلف.
+    const fileName = payload.path?.split("/").pop() ?? "";
+    const match =
+      list.find((a) => a.alias === payload.alias) ??
+      (fileName ? list.find((a) => typeof a.url === "string" && a.url.endsWith(fileName)) : undefined);
+    identifier = match?.asset_id ?? "";
+  }
+
+  if (!identifier) {
+    // لا نظير على الخادم — ملفّ رُفع بلا اتصال ولم يصل قطّ. لا شيء يُحذف
+    // هناك، وقد أُزيل من المتصفّح ومن `assets[]` بالفعل.
+    return jsonResponse({ ok: true });
+  }
+
+  const res = await fetch(`${base}${encodeURIComponent(identifier)}/`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
   if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّر حذف الأصل.") }, res.status);
   return jsonResponse({ ok: true });
 }
+
+/** الطرق التي قد تصلها حمولة `FormData` — انظر التعليق في `installEditorApiBridge`. */
+const UPLOAD_PREFIXES = ["/__editor/upload-asset", "/__editor/upload-base64", "/__editor/import-asset"];
 
 type Handler = (request: Request, url: URL) => Promise<Response>;
 
@@ -269,8 +386,9 @@ const ROUTES: Array<[string, Handler]> = [
   ["/__editor/save", (req) => handleSave(req)],
   ["/__editor/create-story", (req) => handleCreateStory(req)],
   ["/__editor/delete-story", (req) => handleDeleteStory(req)],
-  ["/__editor/upload-base64", (req) => handleUploadBase64(req)],
-  ["/__editor/import-asset", (req) => handleUploadBase64(req)],
+  ["/__editor/upload-asset", (req) => handleUpload(req)],
+  ["/__editor/upload-base64", (req) => handleUpload(req)],
+  ["/__editor/import-asset", (req) => handleUpload(req)],
   ["/__editor/delete-asset", (req) => handleDeleteAsset(req)],
 ];
 
@@ -294,6 +412,15 @@ export function installEditorApiBridge(): void {
     if (!route) return originalFetch(input, init);
 
     try {
+      // ── حمولة FormData تُمرَّر كما هي، بلا لفّها في `Request` ─────────────
+      //
+      // `new Request(url, { body: form })` يعيد تسلسل الجسم كاملاً، ثم
+      // `request.formData()` يعيد تفكيكه — أي نسخة ثانية وثالثة من ملفّ قد
+      // يكون عشرة ميغابايت، وهو النزف نفسه الذي انتقلنا إلى multipart
+      // للتخلّص منه. الحمولة هنا تصل الخادم بلا أي نسخة وسيطة.
+      if (init?.body instanceof FormData && UPLOAD_PREFIXES.some((p) => url.pathname.startsWith(p))) {
+        return await handleUploadMultipart(init.body);
+      }
       const request = input instanceof Request ? input : new Request(url.href, init);
       return await route[1](request, url);
     } catch (error) {
