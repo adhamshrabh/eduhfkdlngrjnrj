@@ -86,12 +86,41 @@ export interface PickCorrectActivity extends ActivityBase {
   wrongResponse?: { text?: string; audio?: string };
 }
 
-export type ActivityData = DragMatchActivity | PickCorrectActivity;
+/**
+ * «الجواب المباشر» (v1.0.20) — لا خيارات على الشاشة.
+ *
+ * الفرق الجوهري عن `pick-correct` ليس بصرياً بل دلالي: **فضاء الإجابة
+ * مفتوح**. هناك يُنتقى ممّا هو مرسوم، وهنا يُنتَج من رزمة بطاقات المعلّمة —
+ * فبطاقةٌ لا تطابق `answers` **إجابة خاطئة**، لا إشارةً تُهمَل. الطفل أخرج
+ * بطاقة، ويستحقّ ردّ الشخصية لا الصمت.
+ *
+ * وبطاقة لا يعرفها الجدول إطلاقاً تبقى مُهمَلة: رزمة المعلّمة هي فضاء
+ * الإجابة، لا كل ما في الغرفة.
+ */
+export interface CardAnswerActivity extends ActivityBase {
+  /** ما يُسأل. البوّابة لا تُفتح قبل انتهائه (v1.0.20 §3). */
+  question?: { text?: string; audio?: string };
+  /** الأسماء المستعارة التي تُحتسب صحيحة.
+   *
+   *  مصفوفة منذ النسخة الأولى عمداً: «أدخل بيضة» قد تقبل `egg` و`egg_small`،
+   *  وتوسيع حقل مفرد لاحقاً يعني نسخة عقد ثانية لحقلٍ لم يؤلّفه أحد بعد. */
+  answers: string[];
+  /** ردّ الشخصية على أي بطاقة أخرى — يصف ما جرى، ولا يحكم على الطفل. */
+  wrongResponse?: { text?: string; audio?: string };
+}
+
+export type ActivityData = DragMatchActivity | PickCorrectActivity | CardAnswerActivity;
 
 /** The id `ActivityRendererRegistry` knows this renderer by. */
 export const PICK_CORRECT_TYPE = "pick-correct";
+export const CARD_ANSWER_TYPE = "card-answer";
 
 /** Structural narrowing — see the note above on why not `type`. */
 export function isPickCorrect(activity: ActivityData): activity is PickCorrectActivity {
   return Array.isArray((activity as PickCorrectActivity).choices);
+}
+
+/** تضييق بنيوي — `answers` مصفوفة لا يحملها أي نوع آخر. */
+export function isCardAnswer(activity: ActivityData): activity is CardAnswerActivity {
+  return Array.isArray((activity as CardAnswerActivity).answers);
 }

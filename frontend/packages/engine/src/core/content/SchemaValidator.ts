@@ -415,7 +415,37 @@ function validateLine(
 /** Enforces the v1 rule (Scene-Model-Specification-v1.0.1.md §2): a Scene
  *  supports at most one Activity — `activity` must be a single object or
  *  null/absent, never an array. */
-function validateActivity(activity: unknown, sceneId: string, errors: string[]): void {
+/**
+ * «الجواب المباشر» (v1.0.20) — الجواب في يد الطفل لا على الشاشة.
+ *
+ * يُفحص ما تراه هذه الطبقة وحده: البنية. أمّا أن يشير `answers` إلى أصل
+ * مُعلَن، أو أن تكون هناك بطاقة مربوطة به، فلا سبيل إلى معرفتهما من مشهد
+ * واحد — يفحصهما الاستوديو، وهو الطبقة الوحيدة التي تملك `assets[]` وجدول
+ * البطاقات معاً، والوحيدة التي يمكن للمؤلّفة أن تُصلح فيها.
+ */
+function validateCardAnswer(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const answers = activity.answers;
+  if (!Array.isArray(answers) || answers.length === 0) {
+    // خطأ لا تحذير: نشاط بلا جواب صحيح لا يُحلّ أبداً. والمحرّك يتنازل
+    // ويمضي (لئلّا تتجمّد حصّة)، لكن الحفظ يجب أن يُمنع — الخطأ يُقال حيث
+    // يمكن إصلاحه.
+    errors.push(`Scene "${sceneId}": a "card-answer" activity needs a non-empty "answers" array (v1.0.20 §2).`);
+    return;
+  }
+  answers.forEach((answer, i) => {
+    if (!isNonEmptyString(answer)) {
+      errors.push(`Scene "${sceneId}": activity.answers[${i}] must be a non-empty asset alias (v1.0.20 §2.2).`);
+    }
+  });
+
+  // بلا سؤال تُفتح البوّابة فوراً (§3) — وهو تأليف صالح لكنه نادراً ما
+  // يُقصَد: نشاطٌ لا يسأل شيئاً ينتظر جواباً عن لا شيء.
+  if (activity.question === undefined) {
+    warnings.push(`Scene "${sceneId}": a "card-answer" activity with no "question" asks nothing, and accepts an answer immediately (v1.0.20 §3).`);
+  }
+}
+
+function validateActivity(activity: unknown, sceneId: string, errors: string[], warnings: string[]): void {
   if (activity === null || activity === undefined) return;
   if (Array.isArray(activity)) {
     errors.push(`Scene "${sceneId}": "activity" must be a single object, not an array — v1 supports exactly one activity per scene (see Scene-Model-Specification-v1.0.1.md §2).`);
@@ -427,6 +457,8 @@ function validateActivity(activity: unknown, sceneId: string, errors: string[]):
   }
   if (!isNonEmptyString(activity.type)) {
     errors.push(`Scene "${sceneId}": activity is missing a string "type".`);
+  } else if (activity.type === "card-answer") {
+    validateCardAnswer(activity, sceneId, errors, warnings);
   }
   // Lifecycle effects (Scene-Model-Specification-v1.0.4.md). Optional —
   // absent means the activity behaves exactly as it did before effects
@@ -514,7 +546,7 @@ function validateScene(
       errors.push(...validateEffect(scene.effects.onEnter, `Scene "${sceneId}": effects.onEnter`).errors);
     }
   }
-  validateActivity(scene.activity, sceneId, errors);
+  validateActivity(scene.activity, sceneId, errors, warnings);
   if (scene.nextScene !== undefined && scene.nextScene !== null && typeof scene.nextScene !== "string") {
     errors.push(`Scene "${sceneId}": "nextScene" must be a string or null.`);
   }

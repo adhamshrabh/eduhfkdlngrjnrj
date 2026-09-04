@@ -139,6 +139,13 @@ export interface DraftActivity {
   /** The character's reaction to a wrong pick — never a verdict on the
    *  child, so the mistake carries something to reason from. */
   wrongResponse?: { text?: string; audio?: string };
+  // ── card-answer (v1.0.20) ──
+  /** الأسماء المستعارة التي تُحتسب جواباً صحيحاً.
+   *
+   *  مصفوفة لا حقلاً مفرداً منذ النسخة الأولى (v1.0.20 §2.1): «أدخل بيضة»
+   *  قد تقبل `egg` و`egg_small`، وتوسيع مفردٍ لاحقاً يعني نسخة عقد ثانية
+   *  لحقلٍ لم يؤلّفه أحد بعد. */
+  answers?: string[];
   // ── shared ──
   onSolved?: DraftActivityOnSolved;
   /** Lifecycle effects (Scene-Model-Specification-v1.0.4.md §6.1). */
@@ -405,6 +412,9 @@ export class StoryDraft {
               y: typeof c.y === "number" ? c.y : undefined,
               scale: typeof c.scale === "number" ? c.scale : undefined
             }))
+        : undefined,
+      answers: Array.isArray(node.answers)
+        ? node.answers.filter((a): a is string => typeof a === "string" && a.length > 0)
         : undefined,
       wrongResponse: readActivityText(node.wrongResponse),
       onSolved,
@@ -1091,6 +1101,7 @@ export class StoryDraft {
     activity.type = type;
 
     if (type === "pick-correct" && !Array.isArray(activity.choices)) activity.choices = [];
+    if (type === "card-answer" && !Array.isArray(activity.answers)) activity.answers = [];
     if (type === "drag-match" && typeof activity.word !== "string") {
       activity.word = "";
       activity.letters = [];
@@ -1145,6 +1156,20 @@ export class StoryDraft {
     activity.choices = (activity.choices as Record<string, unknown>[]).filter(
       (c) => !(isPlainObject(c) && c.id === choiceId)
     );
+  }
+
+  /**
+   * أجوبة «الجواب المباشر» الصحيحة (v1.0.20).
+   *
+   * مصفوفة فارغة تُكتب كما هي لا تُحذَف: النشاط بلا جواب **خطأ يمنعه
+   * المُتحقِّق**، وحذف الحقل كان سيخفي الخطأ فيمرّ الحفظ ويتعثّر العرض.
+   * الغياب هنا يعني «نشاطٌ ليس من هذا النوع»، لا «نشاطٌ بلا جواب».
+   */
+  setActivityAnswers(sceneId: string, answers: string[]): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    // مكرَّرات الأسماء تُطوى: بطاقة واحدة لا تُحتسب جوابين.
+    node.activity.answers = [...new Set(answers.filter((a) => a))];
   }
 
   /** Sets the question or the wrong-answer response. An emptied field is

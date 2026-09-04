@@ -588,9 +588,18 @@ export class YaraBedScene extends Scene {
     // back to "drag-match" for stories with no activities at all. Adding a
     // new activity type never requires touching this scene: register a new
     // renderer in ActivityRendererRegistry and use its `type` in story.json.
+    // ⚠️ `this.activityHost` يُمرَّر هنا أيضاً، لا في `rendererFor` وحده.
+    //
+    // عطل قِيس: مُصيِّر «الجواب المباشر» يحتاج المضيف (لا يرسم، فيستعير عرض
+    // المشهد ومؤقّتاته). وهذا السطر يبني المُصيِّر الافتراضي **قبله**، فمرّ
+    // بلا مضيف ورمى — فتوقّف `enter()` عند هذه النقطة، ولم يُسنَد
+    // `idleMotion` بعدُ، فصار `update()` يرمي في كل إطار والمسرح يبقى
+    // فارغاً بلا سبب ظاهر: خطأُ الإقلاع يُبتلَع، ويُرى عَرَضُه وحده.
+    //
+    // الدرس: كل موضع يبني مُصيِّراً يجب أن يمرّر المصنع كاملاً. وهما اثنان.
     const activityType = this.scenes.find((s) => s.activity)?.activity?.type ?? "drag-match";
     const rendererFactory = ActivityRendererRegistry.resolveOrDefault(activityType, "drag-match");
-    this.puzzle = rendererFactory(this.root, this.eventBus, this.animation, this.layout, this.assets);
+    this.puzzle = rendererFactory(this.root, this.eventBus, this.animation, this.layout, this.assets, this.activityHost);
     this.renderersByType.set(activityType, this.puzzle);
     this.eventBus.on(EngineEvents.Input.KeyDown, this.onKeyDown);
     // Every non-pointer way of choosing arrives here (v1.0.8 §7.2).
@@ -1339,10 +1348,45 @@ export class YaraBedScene extends Scene {
     const factory = ActivityRendererRegistry.resolve(type);
     if (!factory) return this.puzzle;
 
-    const renderer = factory(this.root, this.eventBus, this.animation, this.layout, this.assets);
+    const renderer = factory(this.root, this.eventBus, this.animation, this.layout, this.assets, this.activityHost);
     this.renderersByType.set(type, renderer);
     return renderer;
   }
+
+  /**
+   * ما يحتاجه نشاطٌ لا يرسم شيئاً (v1.0.20).
+   *
+   * كلّه موجود في المشهد أصلاً: مؤقّتات `AnimationManager` — لا
+   * `setTimeout` — فتتوقّف مع إيقاف المحرّك حين يُغادر التبويب، ومدد
+   * المقاطع من `AudioManager`، وصندوق الحوار يعرض السؤال كما يعرض أي سطر.
+   *
+   * فلا آلية جديدة، ولا سطح ثانٍ للعرض: النشاط الذي لا يرسم يستعير عرض
+   * المشهد بدل أن يخترع لنفسه واحداً.
+   */
+  private readonly activityHost = {
+    clipSeconds: (alias: string | undefined): number | null => this.clipSeconds(alias),
+    readingTime: (text: string | undefined): number => readingTimeFor(text),
+    wait: (id: string, seconds: number, done: () => void): void => {
+      // صفرٌ يعني «الآن»، ومؤقّت بمدّة صفر قد لا يُطلَق في إطارٍ واحد.
+      if (seconds <= 0) {
+        done();
+        return;
+      }
+      this.animation.play(id, { x: 0 } as never, { duration: seconds, onComplete: done });
+    },
+    cancel: (id: string): void => this.animation.stop(id),
+    showQuestion: (text: string, audio?: string): void => {
+      this.dialogue.show();
+      this.dialogue.showLine("", text, audio);
+    },
+    showHint: (text: string): void => {
+      this.dialogue.show();
+      this.dialogue.showLine("", text);
+    },
+    clearHint: (): void => {
+      /* السطر التالي يستبدله؛ لا شيء يُمحى صراحةً. */
+    }
+  };
 
   /** Immediate feedback the instant a correct answer registers —
    *  distinct from onSolved, which fires after the completion sequence

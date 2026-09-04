@@ -2652,7 +2652,8 @@ export class StudioApp {
 
     const KNOWN_TYPES = [
       { value: "drag-match", label: "سحب ومطابقة" },
-      { value: "pick-correct", label: "اختيار الإجابة الصحيحة" }
+      { value: "pick-correct", label: "اختيار الإجابة الصحيحة" },
+      { value: "card-answer", label: "الجواب المباشر (بطاقة)" }
     ];
 
     if (!KNOWN_TYPES.some((t) => t.value === activity.type)) {
@@ -2682,6 +2683,11 @@ export class StudioApp {
 
     if (activity.type === "pick-correct") {
       wrap.appendChild(this.renderPickCorrectEditor(scene, activity));
+      return wrap;
+    }
+
+    if (activity.type === "card-answer") {
+      wrap.appendChild(this.renderCardAnswerEditor(scene, activity));
       return wrap;
     }
 
@@ -3393,6 +3399,157 @@ export class StudioApp {
    *    every activity already had. Duplicating them into this form would
    *    have created a second place to set one thing.
    */
+  /**
+   * «الجواب المباشر» (v1.0.20) — النموذج الذي تؤلّف به المعلّمة.
+   *
+   * ⚠️ ما لا يوجد هنا، وهو الأهمّ: **حقلٌ لرقم البطاقة**.
+   *
+   * المؤلّفة تختار **الأصل** الذي يعنيه الجواب؛ والربط `بطاقة ← اسم` يعيش
+   * في «الأجهزة». إدخال الرقم في `story.json` كان سيكسر أربعة أشياء دفعةً:
+   * تُفقد البطاقة فتتعطّل القصّة، ولا تصلح في غرفة أخرى، ولا تعمل باللمس،
+   * ويُخرَق §4 من العقد — المحتوى يشير منطقياً لا بعنوان مادّي.
+   *
+   * وهذا النشاط **لا يُجاب باللمس**، فالشارة هنا ليست تجميلاً: خيارٌ بلا
+   * بطاقة مربوطة يعني نشاطاً لا يستطيع الصفّ حلّه، ويجب أن تعرفه المؤلّفة
+   * وهي تؤلّف لا وهي واقفة أمام أطفالها.
+   */
+  private renderCardAnswerEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const answers = activity.answers ?? [];
+    const imageAssets = draft.assets.filter((a) => isImageAsset(a.src));
+    const backgrounds = draft.backgroundAliases;
+    const candidates = imageAssets.filter((a) => !backgrounds.has(a.alias));
+
+    // --- 1. السؤال -------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(
+      el("div", "s-item__meta", "لا يُقبل جواب قبل انتهاء السؤال — والطفل يرى «مرِّر بطاقتك» عند الفتح.")
+    );
+    wrap.appendChild(
+      textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "question", { text: v });
+        this.markEdited();
+      })
+    );
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    wrap.appendChild(
+      selectField(
+        "صوت السؤال",
+        activity.question?.audio ?? "",
+        [{ value: "", label: "بدون" }, ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))],
+        (value) => {
+          draft.updateActivityText(scene.id, "question", { audio: value });
+          this.markEdited();
+        }
+      )
+    );
+
+    // --- 2. الأجوبة الصحيحة ----------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · الجواب الصحيح"));
+
+    if (answers.length === 0) {
+      wrap.appendChild(status("bad", "لا جواب صحيح — لا يمكن حلّ النشاط. اختر أصلاً أدناه."));
+    } else if (this.cardLabels !== null && !answers.some((a) => this.cardLabels!.has(a))) {
+      // ⚠️ هذا النشاط **لا يُجاب باللمس** (v1.0.20 §4): لا خيارات على
+      // الشاشة تُلمَس. فجوابٌ بلا بطاقة مربوطة يعني نشاطاً لا يستطيع الصفّ
+      // حلّه — والمحرّك سيمضي بعد دقيقة كي لا تتجمّد الحصّة، أي أن الطفل
+      // لن يجيب أصلاً. يُقال هنا حيث يمكن الإصلاح، لا أمام الأطفال.
+      wrap.appendChild(
+        status(
+          "warn",
+          "لا بطاقة مربوطة بأي جواب — هذا النشاط لا يُجاب باللمس، فلن يستطيع الصفّ حلّه. اربط بطاقة من «الأجهزة» بالاسم نفسه."
+        )
+      );
+    }
+
+    for (const alias of answers) {
+      const row = el("div", "s-item");
+      const asset = imageAssets.find((a) => a.alias === alias);
+      if (asset) {
+        const thumb = el("img", "s-thumb") as HTMLImageElement;
+        thumb.src = this.assetUrl(asset.src);
+        thumb.alt = "";
+        row.appendChild(thumb);
+      }
+      row.appendChild(el("div", "s-item__name", alias));
+
+      // الشارة نفسها التي يعرضها «اختر الإجابة الصحيحة» — تعريف واحد.
+      const bound = this.cardLabels?.has(alias) ?? null;
+      if (bound !== null) {
+        row.appendChild(
+          tag(
+            bound ? "chain" : "warning",
+            bound ? "بطاقة" : "لا بطاقة",
+            `s-item__meta ${bound ? "" : "s-item__meta--warn"}`
+          )
+        );
+      }
+
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      remove.onclick = () => {
+        draft.setActivityAnswers(scene.id, answers.filter((a) => a !== alias));
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(remove);
+      wrap.appendChild(row);
+    }
+
+    if (candidates.length > 0) {
+      wrap.appendChild(
+        assetChooser(
+          "أضف جواباً صحيحاً",
+          candidates.filter((a) => !answers.includes(a.alias)).map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          undefined,
+          (alias) => {
+            if (!alias) return;
+            draft.setActivityAnswers(scene.id, [...answers, alias]);
+            this.markEdited();
+            this.render();
+          },
+          { triggerLabel: "اختر صورة الجواب" }
+        )
+      );
+    }
+
+    // أكثر من جواب مقبول: «أدخل بيضة» قد تقبل صورتين مختلفتين للبيضة.
+    if (answers.length > 1) {
+      wrap.appendChild(el("div", "s-item__meta", `${answers.length} أجوبة مقبولة — أيّها يحلّ النشاط.`));
+    }
+
+    // --- 3. ردّ الخطأ ----------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٤ · حين تكون البطاقة خاطئة"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "أي بطاقة معروفة غير الجواب تُعدّ إجابة خاطئة — بخلاف «اختر الإجابة الصحيحة» حيث تُهمَل."
+      )
+    );
+    wrap.appendChild(
+      textField("ردّ الشخصية", activity.wrongResponse?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField(
+        "صوت الردّ",
+        activity.wrongResponse?.audio ?? "",
+        [{ value: "", label: "بدون" }, ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))],
+        (value) => {
+          draft.updateActivityText(scene.id, "wrongResponse", { audio: value });
+          this.markEdited();
+        }
+      )
+    );
+
+    return wrap;
+  }
+
   private renderPickCorrectEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
     const draft = this.draft!;
     const wrap = el("div", "s-stack");

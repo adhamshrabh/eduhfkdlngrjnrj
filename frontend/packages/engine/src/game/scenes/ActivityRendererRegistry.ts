@@ -25,7 +25,8 @@ import type { AssetManager } from "@core/assets/AssetManager";
 import type { LayoutApplier } from "./LayoutApplier";
 import { PuzzleRunner } from "./PuzzleRunner";
 import { PickCorrectRunner } from "./PickCorrectRunner";
-import { PICK_CORRECT_TYPE, type ActivityData } from "./ActivityTypes";
+import { CardAnswerRunner, type CardAnswerHost } from "./CardAnswerRunner";
+import { CARD_ANSWER_TYPE, PICK_CORRECT_TYPE, type ActivityData } from "./ActivityTypes";
 
 /**
  * The public contract every activity renderer must satisfy — exactly the
@@ -54,7 +55,11 @@ export type ActivityRendererFactory = (
   eventBus: EventBus,
   animation: AnimationManager,
   layout: LayoutApplier,
-  assets: AssetManager
+  assets: AssetManager,
+  /** ما يحتاجه نشاطٌ لا يرسم شيئاً: مؤقّتات المحرّك، ومدد المقاطع،
+   *  والتلميح المعروض. أُلحق آخراً واختيارياً — فالمُصيِّرات القائمة
+   *  تتجاهل وسيطاً لا تُعلنه، ولا تتغيّر تسجيلة واحدة منها. */
+  host?: CardAnswerHost
 ) => ActivityRenderer;
 
 export class ActivityRendererRegistry {
@@ -99,4 +104,32 @@ ActivityRendererRegistry.register(
   PICK_CORRECT_TYPE,
   (container, eventBus, animation, layout, assets) =>
     new PickCorrectRunner(container, eventBus, animation, layout, assets)
+);
+
+/**
+ * «الجواب المباشر» (v1.0.20).
+ *
+ * يُسجَّل بلا `container`: لا يرسم شيئاً على المسرح — المشهد يعرض ما ألّفته
+ * المعلّمة، والسؤال يظهر في صندوق الحوار. وغياب `host` يعني مشهداً لم
+ * يُمرّره بعد، فيسقط على `PuzzleRunner` كما يفعل أي نوع بلا مُصيِّر
+ * (`rendererFor`) — لا يرمي وسط قصّة.
+ */
+ActivityRendererRegistry.register(
+  CARD_ANSWER_TYPE,
+  (_container, eventBus, _animation, _layout, _assets, host) => {
+    // ⚠️ لا يُرمى حين يغيب المضيف — درس مدفوع الثمن:
+    //
+    // الرمي هنا أوقف `enter()` في منتصفه، فلم يُسنَد `idleMotion`، فصار
+    // `update()` يرمي في كل إطار والمسرح يبقى فارغاً بلا رسالة تشرح.
+    // خطأُ إقلاعٍ يُبتلَع، ولا يُرى إلا عَرَضُه — وهو أسوأ شكل للعطل.
+    //
+    // القاعدة الثابتة: «المحرّك يُبقي قصّة الطفل قابلة للّعب». فمضيفٌ
+    // غائب يعني مشهداً لم يمرّره بعد، والسقوط على المُصيِّر الافتراضي
+    // (`resolveOrDefault`) يُبقي القصّة تعمل ويقول السبب في الطرفية.
+    if (!host) {
+      console.warn('[ActivityRendererRegistry] "card-answer" needs a scene host — falling back.');
+      return new PuzzleRunner(_container, eventBus, _animation, _layout);
+    }
+    return new CardAnswerRunner(eventBus, host);
+  }
 );
