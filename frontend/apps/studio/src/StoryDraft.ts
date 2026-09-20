@@ -125,6 +125,20 @@ export interface DraftActivityChoice {
   scale?: number;
 }
 
+/** خطوة ترتيبٍ كما يحرّرها الاستوديو (v1.0.22 §2.1، وv1.0.23 §2). */
+export interface DraftSequenceStepObject {
+  answer: string;
+  text?: string;
+  /** صورة الخطوة حين تُملأ بالبطاقة الصحيحة. الغياب = المعنى نفسه. */
+  image?: string;
+  /** موضع **الخانة** على المسرح — تُكتب بالسحب لا بالكتابة. */
+  x?: number;
+  y?: number;
+  scale?: number;
+}
+
+export type DraftSequenceStep = string | DraftSequenceStepObject;
+
 export interface DraftActivity {
   type: string;
   // ── drag-match ──
@@ -139,6 +153,8 @@ export interface DraftActivity {
   /** The character's reaction to a wrong pick — never a verdict on the
    *  child, so the mistake carries something to reason from. */
   wrongResponse?: { text?: string; audio?: string };
+  /** يُجاب بإطارٍ يتنقّل بأزرار الصندوق لا بزرٍّ لكل خيار (v1.0.24). */
+  navigate?: boolean;
   // ── card-answer (v1.0.20) ──
   /** الأسماء المستعارة التي تُحتسب جواباً صحيحاً.
    *
@@ -146,6 +162,14 @@ export interface DraftActivity {
    *  قد تقبل `egg` و`egg_small`، وتوسيع مفردٍ لاحقاً يعني نسخة عقد ثانية
    *  لحقلٍ لم يؤلّفه أحد بعد. */
   answers?: string[];
+  // ── sequence (v1.0.22، ورسمه في v1.0.23) ──
+  /** الترتيب الصحيح، بالمعاني التي تصل إليها البطاقات.
+   *
+   *  نصٌّ اختصارٌ لـ `{ answer, text }` (§2.1). يبقى نصّاً ما دامت الخطوة
+   *  بلا صورة ولا موضع؛ وأوّل صورةٍ أو سحبةٍ تحوّله إلى كائن.
+   *
+   *  ⚠️ التكرار **مقصود** هنا، بخلاف `answers`: «سرير» فيها «ر» مرّتين. */
+  steps?: DraftSequenceStep[];
   // ── shared ──
   onSolved?: DraftActivityOnSolved;
   /** Lifecycle effects (Scene-Model-Specification-v1.0.4.md §6.1). */
@@ -164,6 +188,8 @@ export interface DraftScene {
   nextScene: string | null;
   /** The story ends here regardless of array position (v1.0.13). */
   endsStory?: boolean;
+  /** كم يبقى المشهد بعد أن ينتهي (v1.0.21): ثوانٍ، أو `"tap"`. */
+  holdAfter?: number | "tap";
   /** Motion when the scene starts (v1.0.7 §12.5) — needs no activity. */
   effects?: { onEnter?: EffectDefinition };
 }
@@ -184,6 +210,27 @@ function readActivityText(node: unknown): { text?: string; audio?: string } | un
   const text = typeof node.text === "string" ? node.text : undefined;
   const audio = typeof node.audio === "string" ? node.audio : undefined;
   return text === undefined && audio === undefined ? undefined : { text, audio };
+}
+
+/**
+ * خطوة ترتيبٍ واحدة، أو لا شيء.
+ *
+ * تُعيد مصفوفةً لا قيمةً مفردة كي تُستعمل مع `flatMap`: الخطوة المشوَّهة
+ * تُسقَط بلا فراغٍ في مكانها — والفراغ في متتاليةٍ الموضعُ فيها معنى أسوأ
+ * من خطوةٍ ناقصة.
+ */
+function readStep(node: unknown): DraftSequenceStep[] {
+  if (typeof node === "string" && node) return [node];
+  if (!isPlainObject(node) || typeof node.answer !== "string" || !node.answer) return [];
+
+  const step: DraftSequenceStepObject = { answer: node.answer };
+  if (typeof node.text === "string") step.text = node.text;
+  if (typeof node.image === "string" && node.image) step.image = node.image;
+  for (const field of ["x", "y", "scale"] as const) {
+    const value = node[field];
+    if (typeof value === "number" && Number.isFinite(value)) step[field] = value;
+  }
+  return [step];
 }
 
 export class StoryDraft {
@@ -218,9 +265,11 @@ export class StoryDraft {
       throw new Error('story.json is missing its "story" object — cannot edit.');
     }
     if (!Array.isArray(story.scenes)) {
+      // رسالةٌ بالعربية تقول ما يمكن فعله: المعلّمة لا تعرف «StoryScene»
+      // ولا يعنيها الشكل — يعنيها أن أمامها قصّة عالقة وأن لها مخرجاً.
       throw new Error(
-        'This story has no "scenes" array. EduStudio edits the canonical Scene Model shape only; ' +
-          "legacy dialogue-tree stories (StoryScene) are not editable here."
+        "هذه قصّة بالشكل القديم (حوار متسلسل) ولا يحرّرها الاستوديو. " +
+          "يمكنك حذفها من زرّ «حذف القصة»، أو إنشاء قصّة جديدة بدلاً منها."
       );
     }
     return new StoryDraft(doc);
@@ -369,6 +418,12 @@ export class StoryDraft {
       activity: this.readActivity(node.activity),
       nextScene: typeof node.nextScene === "string" ? node.nextScene : null,
       endsStory: node.endsStory === true ? true : undefined,
+      holdAfter:
+        node.holdAfter === "tap"
+          ? "tap"
+          : typeof node.holdAfter === "number" && Number.isFinite(node.holdAfter) && node.holdAfter >= 0
+            ? node.holdAfter
+            : undefined,
       effects: isPlainObject(node.effects)
         ? { onEnter: node.effects.onEnter as EffectDefinition | undefined }
         : undefined
@@ -416,7 +471,9 @@ export class StoryDraft {
       answers: Array.isArray(node.answers)
         ? node.answers.filter((a): a is string => typeof a === "string" && a.length > 0)
         : undefined,
+      steps: Array.isArray(node.steps) ? node.steps.flatMap(readStep) : undefined,
       wrongResponse: readActivityText(node.wrongResponse),
+      navigate: node.navigate === true ? true : undefined,
       onSolved,
       // Passed through as-authored. Studio's UI edits one primitive per
       // hook, but the contract allows nested sequence/parallel — reading
@@ -448,6 +505,91 @@ export class StoryDraft {
     };
     this.sceneNodes().push(node);
     return this.readScene(node);
+  }
+
+  /**
+   * ينسخ مشهداً بكل ما فيه، ويضعه بعده مباشرةً.
+   *
+   * يُعيد `{ sceneId, elementIds }` — أزواج المعرّفات القديم/الجديد — كي
+   * ينسخ المستدعي مواضع العناصر في `layout.json`. هذا الملف لا يعرف
+   * التخطيط ولا يجوز أن يعرفه (الفصل نفسه الذي يحكم `setElementGroup`).
+   *
+   * ── ثلاثة أفخاخ صامتة، محسومة هنا ───────────────────────────────────
+   *
+   * **١. معرّفات العناصر تُولَّد من جديد.** `layout.json` مفتاحها معرّف
+   * العنصر **عالمياً** لا داخل مشهده. فنسخةٌ تحتفظ بالمعرّفات تشترك مع
+   * الأصل في المدخل نفسه: تسحب المعلّمة الطائر في النسخة فيتحرّك في الأصل
+   * أيضاً، بلا أي شيء يفسّر الحركتين. وينطبق ذلك على `groupId` — يُعاد
+   * توجيهه إلى المجموعة المنسوخة لا الأصلية.
+   *
+   * **٢. مخرج الأصل يُثبَّت قبل الإدراج.** المشهد بلا `nextScene` صريح
+   * يسقط على التالي في المصفوفة (§1). فإدراج النسخة بعده كان سيحوّل
+   * مساره إليها **بصمت** — والقصّة تتغيّر بفعل نسخٍ يُفترض ألّا يغيّر
+   * شيئاً. فيُكتب ما كان يُحلّ إليه صراحةً: مشهداً كان أو نهايةً.
+   *
+   * **٣. النسخة لا يشير إليها شيء.** وهذا مقصود لا نقص: نسخُ مشهد يجب
+   * ألّا يغيّر ما يعيشه الطفل. الاستوديو يحذّر أنها «لا يُصل إليها»، وهي
+   * الرسالة الصحيحة — على المؤلّفة أن تقرّر أين تضعها.
+   */
+  duplicateScene(sceneId: string): { sceneId: string; elementIds: Array<[string, string]> } | null {
+    const nodes = this.sceneNodes();
+    const index = nodes.findIndex((s) => s.id === sceneId);
+    if (index < 0) return null;
+    const source = nodes[index]!;
+
+    const taken = new Set(nodes.map((s) => String(s.id)));
+    let newId = `${sceneId}_copy`;
+    let suffix = 2;
+    while (taken.has(newId)) newId = `${sceneId}_copy${suffix++}`;
+
+    // ── ٢: تثبيت مخرج الأصل قبل أن يزحزحه الإدراج ──────────────────────
+    if (typeof source.nextScene !== "string" && source.endsStory !== true) {
+      const follower = nodes[index + 1];
+      if (follower) source.nextScene = follower.id;
+      else source.endsStory = true;   // كان آخر مشهد: نهايةٌ صارت صريحة
+    }
+
+    const copy = deepClone(source) as Record<string, unknown>;
+    copy.id = newId;
+    copy.name = `نسخة من ${source.name ?? sceneId}`;
+
+    // ── ١: معرّفات جديدة للعناصر، مع إعادة توجيه العضوية ────────────────
+    const elementIds: Array<[string, string]> = [];
+    const rename = new Map<string, string>();
+    if (Array.isArray(copy.elements)) {
+      for (const el of copy.elements as Record<string, unknown>[]) {
+        const oldId = String(el.id);
+        const fresh = `${oldId}_c${Date.now().toString(36).slice(-4)}${Math.floor(Math.random() * 100)}`;
+        rename.set(oldId, fresh);
+        el.id = fresh;
+        elementIds.push([oldId, fresh]);
+      }
+      for (const el of copy.elements as Record<string, unknown>[]) {
+        if (typeof el.groupId === "string" && rename.has(el.groupId)) el.groupId = rename.get(el.groupId);
+      }
+    }
+
+    // ── ٣: معرّفات السطور والفروع والخيارات ────────────────────────────
+    if (Array.isArray(copy.lines)) {
+      (copy.lines as Record<string, unknown>[]).forEach((line, i) => {
+        line.id = `${newId}_l${i + 1}`;
+        if (Array.isArray(line.choices)) {
+          (line.choices as Record<string, unknown>[]).forEach((c, ci) => {
+            c.id = `${newId}_l${i + 1}_c${ci + 1}`;
+            // `nextScene` يبقى كما هو: الفروع تقود حيث كانت تقود، وهو
+            // ما تتوقّعه من نسخة.
+          });
+        }
+      });
+    }
+    if (isPlainObject(copy.activity) && Array.isArray(copy.activity.choices)) {
+      (copy.activity.choices as Record<string, unknown>[]).forEach((c) => {
+        c.id = `ch_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
+      });
+    }
+
+    nodes.splice(index + 1, 0, copy);
+    return { sceneId: newId, elementIds };
   }
 
   /**
@@ -701,25 +843,79 @@ export class StoryDraft {
    * background, the story-wide default background, an element, a line's
    * voice-over, and an activity's reward or success sound.
    */
-  findAssetUsage(alias: string): string[] {
-    const used: string[] = [];
-    const story = this.storyNode();
-    if (story.backgroundAlias === alias) used.push("خلفية القصة الافتراضية");
+  /**
+   * كل موضع في القصّة يشير إلى أصلٍ باسمه — **ماشيةٌ واحدة**.
+   *
+   * ⚠️ لماذا واحدة: كان السؤالان («أين يُستعمل هذا؟» و«ماذا يطلب المحتوى
+   * ولا يجده؟») يُجابان بمسحين. والثاني لم يكن موجوداً أصلاً، والأول كان
+   * **ناقصاً**: لا يرى خيارات النشاط ولا أجوبته ولا أصواته. فحذف صورة
+   * خيارٍ كان يقول «غير مستخدمة» ويمضي بصمت، ثم يجد المُصيِّر النشاط غير
+   * قابل للحلّ فيتخطّاه — فيختفي السؤال من القصّة بلا أن يعلم أحد.
+   *
+   * مسحٌ واحد يعني أن الإجابتين لا تستطيعان أن تتباعدا: كل موضع يُضاف هنا
+   * يظهر في التحذير قبل الحذف **وفي كشف المراجع المعلّقة** معاً.
+   */
+  private walkAssetReferences(): Array<{ alias: string; where: string }> {
+    const refs: Array<{ alias: string; where: string }> = [];
+    const add = (alias: unknown, where: string): void => {
+      if (typeof alias === "string" && alias) refs.push({ alias, where });
+    };
+
+    add(this.storyNode().backgroundAlias, "خلفية القصة الافتراضية");
 
     for (const scene of this.scenes) {
       const where = scene.name ?? scene.id;
-      if (scene.background === alias) used.push(`خلفية «${where}»`);
+      add(scene.background, `خلفية «${where}»`);
+
       for (const element of scene.elements) {
-        if (element.alias === alias) used.push(`عنصر «${element.id}» في «${where}»`);
+        add(element.alias, `عنصر «${element.id}» في «${where}»`);
+        // استجابة اللمس (v1.0.11 §14): صوتٌ لا يظهر في أي قائمة ولا
+        // يُسمع إلا حين يلمس طفلٌ العنصر — فيُنسى بسهولة.
+        add(element.onTap?.audio, `صوت لمس «${element.id}» في «${where}»`);
       }
-      scene.lines.forEach((line, i) => {
-        if (line.audio === alias) used.push(`صوت السطر ${i + 1} في «${where}»`);
-      });
-      const onSolved = scene.activity?.onSolved;
-      if (onSolved?.showObject === alias) used.push(`مكافأة نشاط «${where}»`);
-      if (onSolved?.playAudio === alias) used.push(`صوت نجاح نشاط «${where}»`);
+
+      scene.lines.forEach((line, i) => add(line.audio, `صوت السطر ${i + 1} في «${where}»`));
+
+      const activity = scene.activity;
+      add(activity?.onSolved?.showObject, `مكافأة نشاط «${where}»`);
+      add(activity?.onSolved?.playAudio, `صوت نجاح نشاط «${where}»`);
+      add(activity?.question?.audio, `صوت سؤال نشاط «${where}»`);
+      add(activity?.wrongResponse?.audio, `صوت الخطأ في نشاط «${where}»`);
+      for (const choice of activity?.choices ?? []) add(choice.alias, `خيار في نشاط «${where}»`);
+      for (const answer of activity?.answers ?? []) add(answer, `جواب نشاط «${where}»`);
+      // ⚠️ `steps` (v1.0.22) **ليست مراجع أصول** عمداً: خطوةٌ حرفٌ يُعرض
+      // نصّاً، لا صورةٌ تُحمَّل. إدراجها هنا كان سيجعل كل حرف في كل كلمة
+      // «أصلاً مفقوداً» — تحذيرٌ لا يمكن إسكاته إلّا بإضافة صورةٍ لا يحتاجها
+      // أحد. وحين تُضاف `steps[].image` (§6) يُدرَج ذلك الحقل وحده.
     }
-    return used;
+    return refs;
+  }
+
+  /**
+   * كل موضع يستعمل هذا الاسم، بكلمات تصلح للعرض.
+   *
+   * حذفُ أصلٍ يشير إليه شيء لا يُخطئ — يترك مشهداً يطلب صورةً لم تعد
+   * موجودة، والمحرّك يجيب بألّا يعرض شيئاً. فالسؤال «أما زال مستعملاً؟»
+   * يجب أن يُجاب **قبل** الحذف لا بعده.
+   */
+  findAssetUsage(alias: string): string[] {
+    return this.walkAssetReferences().filter((r) => r.alias === alias).map((r) => r.where);
+  }
+
+  /**
+   * مراجع تطلب أصلاً غير معلَن في `assets[]`.
+   *
+   * ⚠️ ما يجعلها ضرورية: المُتحقِّق المجمَّد يفحص **البنية** لا المراجع —
+   * فقصّةٌ حُذفت صورة خيارها تبقى «صالحة ومطابقة للعقد» بينما سؤالها
+   * سيُتخطّى أمام الصف. هذا الكشف يجعل ذلك مرئياً في الاستوديو، حيث
+   * يمكن إصلاحه.
+   *
+   * والإصلاح غالباً إعادة رفع الملف **بالاسم نفسه**: المحتوى يشير بالاسم
+   * لا بالمسار (§4)، فيشفى المرجع وحده بلا إعادة ضبط شيء.
+   */
+  findMissingAssets(): Array<{ alias: string; where: string }> {
+    const declared = new Set(this.assets.map((a) => a.alias));
+    return this.walkAssetReferences().filter((r) => !declared.has(r.alias));
   }
 
   /** Removes an asset from `assets[]`. Returns its `src` so the caller can
@@ -759,6 +955,43 @@ export class StoryDraft {
     if (!line) return;
     if (!mode || mode === "any") delete line.input;
     else line.input = mode;
+  }
+
+  /**
+   * اسم المشهد كما تراه المؤلّفة.
+   *
+   * **عرضٌ خالص**: المحرّك لا يقرأ `name` إطلاقاً — يعنون المشاهد بـ`id`
+   * وحده (`nextScene`، `choices[].nextScene`، ترتيب المصفوفة). فتغييره لا
+   * يمسّ مساراً ولا يكسر إشارةً، ويظهر فوراً في كل موضع يعرضه: قائمة
+   * المشاهد، وصفحة السيناريو، والخريطة، وقوائم الوجهات، ورسائل التحذير.
+   *
+   * ولهذا لا يُلمَس `id`: هو العنوان، وتغييره يعني تتبّع كل مرجع إليه في
+   * القصّة — وهو ما لا مبرّر له حين يكفي اسمٌ للعرض.
+   *
+   * اسم فارغ يُحذف الحقل لا يُكتب `""`: الغياب يعني «سمِّه بمعرّفه»، وهو
+   * ما تفعله كل شاشة (`scene.name ?? scene.id`). ونصٌّ فارغ كان سيعرض
+   * فراغاً في اثني عشر موضعاً.
+   */
+  setSceneName(sceneId: string, name: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node) return;
+    const trimmed = name.trim();
+    if (trimmed) node.name = trimmed;
+    else delete node.name;
+  }
+
+  /**
+   * كم يبقى المشهد بعد أن ينتهي (v1.0.21).
+   *
+   * `null` يحذف الحقل ويعيد السلوك الافتراضي — وهو ثلاثة أرقام مختلفة
+   * بحسب مسار الخروج، ولهذا لا يُكتب صفراً: الصفر يعني «فوراً» صراحةً،
+   * والغياب يعني «كما كان».
+   */
+  setSceneHold(sceneId: string, hold: number | "tap" | null): void {
+    const node = this.sceneNode(sceneId);
+    if (!node) return;
+    if (hold === null) delete node.holdAfter;
+    else node.holdAfter = hold;
   }
 
   /** Set (or clear, with undefined) a scene's background alias. */
@@ -1102,6 +1335,7 @@ export class StoryDraft {
 
     if (type === "pick-correct" && !Array.isArray(activity.choices)) activity.choices = [];
     if (type === "card-answer" && !Array.isArray(activity.answers)) activity.answers = [];
+    if (type === "sequence" && !Array.isArray(activity.steps)) activity.steps = [];
     if (type === "drag-match" && typeof activity.word !== "string") {
       activity.word = "";
       activity.letters = [];
@@ -1170,6 +1404,66 @@ export class StoryDraft {
     if (!node || !isPlainObject(node.activity)) return;
     // مكرَّرات الأسماء تُطوى: بطاقة واحدة لا تُحتسب جوابين.
     node.activity.answers = [...new Set(answers.filter((a) => a))];
+  }
+
+  /**
+   * «يُجاب بالإطار وأزرار الصندوق» (v1.0.24).
+   *
+   * ⚠️ الإطفاء **يحذف الحقل** ولا يكتب `false`: غيابه هو ما يعنيه العقد
+   * بـ«كما كان»، و`false` صريحةٌ تقول الشيء نفسه بضجيج — وتجعل كل مشهدٍ
+   * مرّ من هذه الشاشة يختلف عن مثيله الذي لم يمرّ، بلا فرقٍ في السلوك.
+   */
+  setActivityNavigate(sceneId: string, on: boolean): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    if (on) node.activity.navigate = true;
+    else delete node.activity.navigate;
+  }
+
+  /**
+   * ترتيب «الترتيب» (v1.0.22).
+   *
+   * ⚠️ **لا تُطوى المكرَّرات هنا**، بخلاف `setActivityAnswers` فوقها مباشرة:
+   * «سرير» فيها «ر» مرّتين، وطيّها يُنقص الكلمة حرفاً بلا أن يقول أحد شيئاً.
+   * الفرق أن `answers` **مجموعة** أجوبةٍ مقبولة، و`steps` **متتالية** —
+   * والموضع فيها معنى.
+   */
+  setActivitySteps(sceneId: string, steps: DraftSequenceStep[]): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    // ⚠️ الخطوات **كائنات كاملة** لا معانيَ مجرّدة: إعادة الترتيب تنقل
+    // الخطوة بصورتها وموضعها. كتابةُ المعاني وحدها كانت تمحو ما ألّفته
+    // المعلّمة من صورٍ ومواضع في كل ضغطة على ↑.
+    node.activity.steps = steps.filter((s) => (typeof s === "string" ? s : s.answer));
+  }
+
+  /**
+   * تعديل خطوة واحدة بموضعها — صورتها أو مكانها على المسرح (v1.0.23).
+   *
+   * ⚠️ بالموضع لا بالمعنى: «سرير» فيها «ر» مرّتان، ولكلٍّ منهما خانتها
+   * وصورتها. والتعديل بالمعنى كان سيصيب الاثنتين.
+   *
+   * والخطوة النصّية تصير كائناً هنا — وهو المكان الوحيد الذي يحدث فيه ذلك:
+   * النصّ اختصارٌ لخطوةٍ بلا شيءٍ إضافي، وأوّل إضافةٍ تُنهي الاختصار.
+   */
+  updateActivityStep(sceneId: string, index: number, patch: Partial<DraftSequenceStepObject>): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const steps = (node.activity as Record<string, unknown>).steps;
+    if (!Array.isArray(steps)) return;
+
+    const current = steps[index];
+    if (current === undefined) return;
+    const step: Record<string, unknown> = isPlainObject(current)
+      ? current
+      : (steps[index] = { answer: String(current) });
+
+    for (const [key, value] of Object.entries(patch)) {
+      // الحقل المُفرَّغ يُحذف بدل أن يبقى `""` أو `undefined`: الغياب يعني
+      // «استعمل المعنى»، والفراغ لا يعني شيئاً.
+      if (value === undefined || value === "") delete step[key];
+      else step[key] = value;
+    }
   }
 
   /** Sets the question or the wrong-answer response. An emptied field is

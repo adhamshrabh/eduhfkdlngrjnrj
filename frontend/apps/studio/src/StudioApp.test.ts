@@ -41,6 +41,7 @@ vi.mock("./StudioApi", () => ({
     // حالة النشر تُجلب بعد فتح القصّة لا أثناءه، فالافتراضي هنا «غير معروفة»
     // — وهو ما يُخفي زرّ النشر ويُبقي كل اختبار قائم على سلوكه السابق.
     isPublished: vi.fn(async () => null),
+    storyMeta: vi.fn(async () => null),
     setPublished: vi.fn(async () => ({ ok: true }))
   }
 }));
@@ -3795,7 +3796,9 @@ describe("StudioApp — النشر", () => {
     vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
-    vi.mocked(StudioApi.isPublished).mockResolvedValue(published);
+    vi.mocked(StudioApi.storyMeta).mockResolvedValue(
+      published === null ? null : { isPublished: published, canEdit: true }
+    );
     vi.mocked(StudioApi.setPublished).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
       ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
@@ -3859,5 +3862,676 @@ describe("StudioApp — النشر", () => {
       await Promise.resolve();
       expect(vi.mocked(StudioApi.setPublished)).not.toHaveBeenCalled();
     }
+  });
+});
+
+/**
+ * قصّة تخصّ معلّمة أخرى.
+ *
+ * ⚠️ العطل المقيس: القائمة تعرض «قصصها + كل منشور»، فتظهر قصص غيرها بلا
+ * ما يميّزها — حتى تضغط «حذف» فيردّ الخادم «لا تملكين صلاحية تعديل هذا
+ * العنصر». رسالةٌ صحيحة تصل **بعد** الفعل، وتبدو عطلاً لا قاعدةَ ملكية.
+ */
+
+/**
+ * قصّة تخصّ معلّمة أخرى.
+ *
+ * ⚠️ العطل المقيس: القائمة تعرض «قصصها + كل منشور»، فتظهر قصص غيرها بلا
+ * ما يميّزها — حتى تضغط «حذف» فيردّ الخادم «لا تملكين صلاحية تعديل هذا
+ * العنصر». رسالةٌ صحيحة تصل **بعد** الفعل، وتبدو عطلاً لا قاعدةَ ملكية.
+ */
+describe("StudioApp — قصّة لا تملكها المعلّمة", () => {
+  let host: HTMLDivElement;
+
+  async function mountWith(canEdit: boolean | null): Promise<void> {
+    vi.clearAllMocks();
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b"]);
+    vi.mocked(StudioApi.loadStory).mockResolvedValue(storyFixture());
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.storyMeta).mockResolvedValue(
+      canEdit === null ? null : { isPublished: true, canEdit }
+    );
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+    host = document.createElement("div");
+    await new StudioApp(host).start();
+    // حالة الصلاحية تصل بعد فتح القصّة — عمداً: معلومةٌ مساعدة يجب ألّا
+    // تؤخّر الوصول إلى المحتوى.
+    await vi.waitFor(() => {
+      if (vi.mocked(StudioApi.storyMeta).mock.calls.length === 0) throw new Error("meta not requested");
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  const btn = (label: string): HTMLButtonElement | undefined =>
+    [...host.querySelectorAll("button")].find((b) => b.textContent?.includes(label)) as HTMLButtonElement | undefined;
+
+  it("تُعطَّل أفعال التعديل وتقول السبب", async () => {
+    await mountWith(false);
+
+    expect(btn("حذف القصة")!.disabled).toBe(true);
+    expect(btn("حفظ")!.disabled).toBe(true);
+    expect(btn("حذف القصة")!.title).toContain("معلّمة أخرى");
+    expect(host.textContent).toContain("قصّة معلّمة أخرى");
+  });
+
+  it("قصّتها هي تبقى قابلة للتعديل", async () => {
+    await mountWith(true);
+    expect(btn("حذف القصة")!.disabled).toBe(false);
+    expect(host.textContent).not.toContain("قصّة معلّمة أخرى");
+  });
+
+  it("«لم يُعرَف بعد» لا يمنع — تأخّر شبكة ليس رفضاً", async () => {
+    // منعُ فعلٍ مسموح بسبب بطء الشبكة أسوأ من السماح بفعلٍ يرفضه الخادم
+    // برسالة واضحة.
+    await mountWith(null);
+    expect(btn("حذف القصة")!.disabled).toBe(false);
+  });
+});
+
+/**
+ * قصّة لا تُفتح — بشكلٍ قديم أو تالف.
+ *
+ * ⚠️ عطلان مقيسان، والثاني أخطر:
+ *
+ * ١. زرّ الحذف كان مشروطاً بمسودّة محمَّلة، فقصّةٌ يرفضها
+ *    `StoryDraft.fromJson` تبقى **عالقة في القائمة بلا طريقة لإزالتها**.
+ * ٢. وبعد الفشل كان `draft` يظلّ على القصّة **السابقة**، وترتدّ القائمة
+ *    إليها — فالضغط على «حذف» يستهدف قصّةً أخرى.
+ */
+describe("StudioApp — قصّة يرفضها المحرّر", () => {
+  let host: HTMLDivElement;
+
+  const legacy = () => ({
+    id: "animals_story",
+    title: "الحيوانات",
+    story: { id: "s", title: "t", scene: "StoryScene", dialogue: { id: "d", start: "l1", lines: [] } }
+  });
+
+  async function mountThenOpen(): Promise<void> {
+    vi.clearAllMocks();
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b", "animals_story"]);
+    vi.mocked(StudioApi.loadStory).mockImplementation(async (id: string) =>
+      id === "animals_story" ? legacy() : storyFixture()
+    );
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.storyMeta).mockResolvedValue({ isPublished: false, canEdit: true });
+    vi.mocked(StudioApi.deleteStory).mockResolvedValue({ ok: true });
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+    host = document.createElement("div");
+    await new StudioApp(host).start();   // يفتح "b" أولاً
+
+    const select = host.querySelector("select") as HTMLSelectElement;
+    select.value = "animals_story";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => {
+      if (!host.textContent?.includes("الشكل القديم")) throw new Error("no message yet");
+    });
+  }
+
+  const btn = (label: string): HTMLButtonElement | undefined =>
+    [...host.querySelectorAll("button")].find((b) => b.textContent?.includes(label)) as HTMLButtonElement | undefined;
+
+  it("تشرح السبب بالعربية وتدلّ على المخرج", async () => {
+    await mountThenOpen();
+    expect(host.textContent).toContain("حذف القصة");
+  });
+
+  it("الحذف يبقى متاحاً — وإلّا بقيت عالقة في القائمة إلى الأبد", async () => {
+    await mountThenOpen();
+    expect(btn("حذف القصة")!.disabled).toBe(false);
+  });
+
+  it("القائمة تعرض المختارة لا التي نجح تحميلها", async () => {
+    await mountThenOpen();
+    expect((host.querySelector("select") as HTMLSelectElement).value).toBe("animals_story");
+  });
+
+  it("الحذف يستهدف المختارة — لا القصّة السابقة", async () => {
+    // هذا هو العطل الأخطر: كان يحذف "b" وهي مفتوحة قبلها.
+    await mountThenOpen();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(window, "prompt").mockReturnValue("animals_story");
+
+    btn("حذف القصة")!.click();
+    await vi.waitFor(() => {
+      if (vi.mocked(StudioApi.deleteStory).mock.calls.length === 0) throw new Error("not called");
+    });
+    expect(vi.mocked(StudioApi.deleteStory).mock.calls[0]![0]).toBe("animals_story");
+  });
+});
+
+/**
+ * `?story=<slug>` — القصّة المطلوبة في الرابط.
+ *
+ * ⚠️ فجوة مقيسة: بطاقة كل قصّة في المنصّة تحمل «تحرير» يفتح
+ * `/studio/?story=<slug>`، والاستوديو لم يكن يقرأ المعامل — فيفتح أوّل
+ * قصّة دائماً. الضغط على «تحرير» فوق قصّة بعينها يفتح قصّةً أخرى، فتحرّر
+ * المعلّمة ما لم تقصده.
+ */
+describe("StudioApp — ?story= في الرابط", () => {
+  async function startWith(query: string): Promise<HTMLDivElement> {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", query ? `/studio/?story=${query}` : "/studio/");
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b", "eggs", "birds"]);
+    vi.mocked(StudioApi.loadStory).mockResolvedValue(storyFixture());
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.storyMeta).mockResolvedValue({ isPublished: false, canEdit: true });
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+    const host = document.createElement("div");
+    await new StudioApp(host).start();
+    return host;
+  }
+
+  it("يفتح القصّة المطلوبة لا الأولى", async () => {
+    await startWith("birds");
+    expect(vi.mocked(StudioApi.loadStory).mock.calls[0]![0]).toBe("birds");
+  });
+
+  it("بلا معامل يفتح الأولى — كما كان", async () => {
+    await startWith("");
+    expect(vi.mocked(StudioApi.loadStory).mock.calls[0]![0]).toBe("b");
+  });
+
+  it("معرّف لا وجود له يسقط على الأولى — رابطٌ قديم يجب ألّا يوقف الاستوديو", async () => {
+    await startWith("قصة-محذوفة");
+    expect(vi.mocked(StudioApi.loadStory).mock.calls[0]![0]).toBe("b");
+  });
+});
+
+/**
+ * «الترتيب» (v1.0.22) — الاستوديو يحرّر متتالية، لا مجموعة.
+ *
+ * ⚠️ ما تحرسه هذه الاختبارات قبل كل شيء: **التكرار والموضع**. «سرير» فيها
+ * «ر» مرّتان، وأي طيٍّ للمكرَّرات أو حذفٍ بالقيمة يُنقص الكلمة حرفاً بلا
+ * أن يقول أحد شيئاً — والمؤلّفة لا ترى العطل إلا أمام أطفالها.
+ */
+describe("StudioApp — نشاط الترتيب", () => {
+  let host: HTMLDivElement;
+
+  async function mountWith(steps: unknown, labels: string[] | null = null): Promise<void> {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "/studio/");
+    const story = storyFixture();
+    ((story.story as any).scenes as any[])[0].activity = {
+      type: "sequence",
+      question: { text: "رتّب حروف كلمة سرير" },
+      steps
+    };
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b"]);
+    vi.mocked(StudioApi.loadStory).mockResolvedValue(story);
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+
+    // جدول البطاقات يصل من «الأجهزة» عبر الشبكة — بلا خادم تبقى المجموعة
+    // فارغة، وهو ما يجعل «لا بطاقة مربوطة» الحالة الافتراضية هنا.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: labels !== null,
+        json: async () => ({
+          data: { results: [{ cards: (labels ?? []).map((label) => ({ label })) }] }
+        })
+      }))
+    );
+
+    host = document.createElement("div");
+    await new StudioApp(host).start();
+    await vi.waitFor(() => {
+      if (vi.mocked(SceneCanvas.mount).mock.calls.length === 0) throw new Error("not mounted yet");
+    });
+    tabButton(host, "النشاط").click();
+  }
+
+  /** صفوف الترتيب وحدها — تُميَّز بزرّ التحريك الذي لا يوجد في غيرها. */
+  function stepRows(): HTMLElement[] {
+    return Array.from(host.querySelectorAll(".s-item")).filter((row) =>
+      Array.from(row.querySelectorAll("button")).some((b) => b.textContent === "↑")
+    ) as HTMLElement[];
+  }
+
+  function stepNames(): string[] {
+    return stepRows().map((row) => row.querySelector(".s-item__name")!.textContent!);
+  }
+
+  function rowButton(row: HTMLElement, text: string): HTMLButtonElement {
+    const btn = Array.from(row.querySelectorAll("button")).find((b) => b.textContent === text);
+    if (!btn) throw new Error(`no "${text}" in row`);
+    return btn as HTMLButtonElement;
+  }
+
+  async function savedSteps(): Promise<unknown> {
+    findButton(host, "حفظ").click();
+    await vi.waitFor(() => expect(StudioApi.saveStory).toHaveBeenCalled());
+    const [, storyJson] = vi.mocked(StudioApi.saveStory).mock.calls.at(-1)!;
+    return (((storyJson as any).story as any).scenes as any[])[0].activity.steps;
+  }
+
+  it("يعرض خطوة لكل موضع، بالترتيب المؤلَّف", async () => {
+    await mountWith(["س", "ر", "ي", "ر"]);
+    expect(stepNames()).toEqual(["س", "ر", "ي", "ر"]);
+  });
+
+  it("يعرض ما سيراه الطفل: فراغات بعدد الخطوات، والكلمة المكتملة", async () => {
+    await mountWith(["س", "ر", "ي", "ر"]);
+    expect(host.textContent).toContain("▢ ▢ ▢ ▢");
+    expect(host.textContent).toContain("س ر ي ر");
+  });
+
+  it("↑ يبدّل خطوتين — والتكرار يبقى تكراراً", async () => {
+    await mountWith(["س", "ر", "ي", "ر"]);
+    rowButton(stepRows()[2]!, "↑").click();
+    expect(stepNames()).toEqual(["س", "ي", "ر", "ر"]);
+    expect(await savedSteps()).toEqual(["س", "ي", "ر", "ر"]);
+  });
+
+  it("الحذف بالموضع لا بالقيمة — «ر» الثانية تبقى", async () => {
+    // ⚠️ الحذف بالقيمة كان سيمحو «ر» الاثنتين معاً، فتصير الكلمة «سي».
+    await mountWith(["س", "ر", "ي", "ر"]);
+    rowButton(stepRows()[1]!, "حذف").click();
+    expect(stepNames()).toEqual(["س", "ي", "ر"]);
+  });
+
+  it("أوّل خطوة لا تصعد وآخرها لا تنزل", async () => {
+    await mountWith(["س", "ر"]);
+    expect(rowButton(stepRows()[0]!, "↑").disabled).toBe(true);
+    expect(rowButton(stepRows()[1]!, "↓").disabled).toBe(true);
+  });
+
+  it("«اقسمها خطوات» تكتب الكلمة حروفاً — وهي الحالة التي وُجد النشاط لأجلها", async () => {
+    await mountWith([]);
+    const wordInput = Array.from(host.querySelectorAll("input")).find(
+      (i) => (i as HTMLInputElement).placeholder.includes("كلمة")
+    ) as HTMLInputElement;
+    wordInput.value = "سرير";
+    findButton(host, "اقسمها خطوات").click();
+
+    expect(stepNames()).toEqual(["س", "ر", "ي", "ر"]);
+    expect(await savedSteps()).toEqual(["س", "ر", "ي", "ر"]);
+  });
+
+  it("«أضف خطوة» تُلحق بالنهاية", async () => {
+    await mountWith(["س", "ر"]);
+    const addInput = Array.from(host.querySelectorAll("input")).find(
+      (i) => (i as HTMLInputElement).placeholder.includes("معنى البطاقة")
+    ) as HTMLInputElement;
+    addInput.value = "ي";
+    findButton(host, "أضف خطوة").click();
+    expect(stepNames()).toEqual(["س", "ر", "ي"]);
+  });
+
+  it("خطوة واحدة تُمنع بوضوح — لا يُترك الخطأ للمُتحقِّق وحده", async () => {
+    await mountWith(["س"]);
+    expect(host.textContent).toContain("خطوة واحدة ليست ترتيباً");
+  });
+
+  it("بلا بطاقة مربوطة بأي خطوة: تحذير — فالنشاط لا يُجاب باللمس", async () => {
+    await mountWith(["س", "ر"], []);
+    await vi.waitFor(() => {
+      if (!host.textContent!.includes("لا بطاقة مربوطة")) throw new Error("no warning yet");
+    });
+  });
+
+  it("كلمة فيها حرف مكرّر ولا بطاقة لها: يبقى التحذير القاطع", async () => {
+    // ⚠️ فجوة مقيسة في المتصفّح: «سرير» أربع خطوات بثلاثة معانٍ،
+    // فمقارنة عدد غير المربوط (٣) بعدد الخطوات (٤) كانت تُظهر
+    // التحذير الجزئيَ كأنّ بعضها مربوط — والحقيقة أنّ لا شيء منها كذلك.
+    await mountWith(["س", "ر", "ي", "ر"], []);
+    await vi.waitFor(() => {
+      if (!host.textContent!.includes("لا بطاقة مربوطة بأي خطوة")) throw new Error("no warning yet");
+    });
+  });
+
+  it("يسمّي الخطوات غير المربوطة وحدها حين تكون البقيّة مربوطة", async () => {
+    await mountWith(["س", "ر"], ["س"]);
+    await vi.waitFor(() => {
+      if (!host.textContent!.includes("بلا بطاقة: ر")) throw new Error("no partial warning yet");
+    });
+    expect(host.textContent).not.toContain("لا بطاقة مربوطة بأي خطوة");
+  });
+
+  it("الشكل الكائني يُعرض بنصّه ويُحفظ كما أُلّف", async () => {
+    await mountWith([{ answer: "seen", text: "س" }, "ر"]);
+    expect(stepNames()).toEqual(["س", "ر"]);
+    expect(await savedSteps()).toEqual([{ answer: "seen", text: "س" }, "ر"]);
+  });
+});
+
+/**
+ * ✕ على كل صورة داخل شبكة «+ إضافة عنصر».
+ *
+ * هذه الشبكة هي الموضع الذي تُرى فيه **كل** صور القصّة دفعةً واحدة، فهي حيث
+ * تُكتشف الصورة التي رُفعت خطأً. وزرّ الحذف هنا يوفّر رحلةً إلى مكتبة الأصول
+ * ثم بحثاً عن الاسم نفسه — مع الحارس نفسه: يُسأل قبل الحذف، ويُسرَد أين
+ * يُستعمل الأصل إن كان مستعملاً.
+ */
+describe("StudioApp — حذف صورة من شبكة إضافة عنصر", () => {
+  let host: HTMLDivElement;
+
+  /** قصّة فيها صورة ثالثة لا يستعملها شيء — وهي الحالة التي وُجد الزرّ لأجلها. */
+  function storyWithSpareImage(): Record<string, unknown> {
+    const story = storyFixture();
+    ((story.story as any).assets as any[]).push({ alias: "junk", src: "assets/images/junk.png" });
+    return story;
+  }
+
+  async function mount(story?: Record<string, unknown>): Promise<void> {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "/studio/");
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b"]);
+    vi.mocked(StudioApi.loadStory).mockResolvedValue(story ?? storyWithSpareImage());
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(StudioApi.deleteAsset).mockResolvedValue({ ok: true });
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+    host = document.createElement("div");
+    await new StudioApp(host).start();
+    await vi.waitFor(() => {
+      if (vi.mocked(SceneCanvas.mount).mock.calls.length === 0) throw new Error("not mounted yet");
+    });
+  }
+
+  /** يفتح الشبكة المطويّة خلف «+ إضافة عنصر». */
+  function openAddElement(): void {
+    findButton(host, "+ إضافة عنصر▾").click();
+  }
+
+  function removeButton(alias: string): HTMLButtonElement {
+    const btn = Array.from(host.querySelectorAll(".s-asset-card__x")).find(
+      (b) => b.getAttribute("aria-label")?.includes(alias)
+    );
+    if (!btn) throw new Error(`no ✕ for "${alias}"`);
+    return btn as HTMLButtonElement;
+  }
+
+  it("كل صورة في الشبكة تحمل ✕", async () => {
+    await mount();
+    openAddElement();
+    expect(host.querySelectorAll(".s-asset-card__x")).toHaveLength(2);
+  });
+
+  it("يسأل قبل الحذف، ولا يفعل شيئاً عند الرفض", async () => {
+    await mount();
+    openAddElement();
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    removeButton("junk").click();
+    expect(StudioApi.deleteAsset).not.toHaveBeenCalled();
+  });
+
+  it("يحذف الصورة غير المستعملة بعد التأكيد", async () => {
+    await mount();
+    openAddElement();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    removeButton("junk").click();
+
+    await vi.waitFor(() =>
+      expect(StudioApi.deleteAsset).toHaveBeenCalledWith("b", "assets/images/junk.png", "junk")
+    );
+  });
+
+  it("يسرد أين تُستعمل الصورة قبل حذفها — لا يختفي شيء «لا يؤثر» وهو مؤثّر", async () => {
+    await mount();
+    openAddElement();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    removeButton("body").click();
+
+    const message = confirmSpy.mock.calls[0]![0] as string;
+    expect(message).toContain("ما زال مستخدمًا");
+    expect(message).toContain("خلفية");
+  });
+
+  it("الشبكة تبقى مفتوحة بعد الحذف — والتنظيف عمليّة متتابعة", async () => {
+    // ⚠️ الحذف يُعيد الرسم كاملاً، والشبكة كانت تُبنى مطويّة في كل مرّة:
+    // من تُنظّف عشر صور كانت تفتحها عشر مرّات.
+    await mount();
+    openAddElement();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    removeButton("junk").click();
+
+    await vi.waitFor(() => {
+      if (host.querySelectorAll(".s-asset-card__x").length !== 1) throw new Error("not deleted yet");
+    });
+    expect(host.querySelector(".s-chooser__panel--open")).not.toBeNull();
+  });
+
+  it("اختيار صورة ما زال يضيف عنصراً — و ✕ لا تختار", async () => {
+    await mount();
+    openAddElement();
+    // داخل الشبكة المفتوحة وحدها: منتقي الخلفية يعرض «junk» أيضاً.
+    const panel = host.querySelector(".s-chooser__panel--open") as HTMLElement;
+    const card = Array.from(panel.querySelectorAll(".s-asset-card")).find(
+      (c) => c.textContent === "junk"
+    ) as HTMLElement;
+    card.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    findButton(host, "حفظ").click();
+    await vi.waitFor(() => expect(StudioApi.saveStory).toHaveBeenCalled());
+    const [, storyJson] = vi.mocked(StudioApi.saveStory).mock.calls.at(-1)!;
+    const aliases = ((((storyJson as any).story as any).scenes as any[])[0].elements as any[]).map(
+      (e) => e.alias
+    );
+    expect(aliases).toContain("junk");
+  });
+
+  it("بقيّة المنتقيات بلا ✕ — تُفتح للاختيار لا للحذف", async () => {
+    await mount();
+    // منتقي الخلفية في التبويب نفسه، مفتوحاً: لا زرّ حذف في شبكته.
+    findButton(host, "body▾").click();
+    const grids = Array.from(host.querySelectorAll(".s-chooser__panel--open"));
+    expect(grids.length).toBeGreaterThan(0);
+    for (const grid of grids) expect(grid.querySelectorAll(".s-asset-card__x")).toHaveLength(0);
+  });
+});
+
+/**
+ * «الترتيب» على المسرح (v1.0.23) — الخانة تُوضع بالسحب، لا بحقلَي إحداثيات.
+ */
+describe("StudioApp — أين تظهر كل بطاقة", () => {
+  let host: HTMLDivElement;
+
+  async function mount(steps: unknown): Promise<void> {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "/studio/");
+    const story = storyFixture();
+    ((story.story as any).assets as any[]).push(
+      { alias: "branch", src: "assets/images/branch.png" },
+      { alias: "nest", src: "assets/images/nest.png" }
+    );
+    ((story.story as any).scenes as any[])[0].activity = {
+      type: "sequence",
+      question: { text: "رتّب" },
+      steps
+    };
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b"]);
+    vi.mocked(StudioApi.loadStory).mockResolvedValue(story);
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+    host = document.createElement("div");
+    await new StudioApp(host).start();
+    await vi.waitFor(() => {
+      if (vi.mocked(SceneCanvas.mount).mock.calls.length === 0) throw new Error("not mounted yet");
+    });
+    tabButton(host, "النشاط").click();
+  }
+
+  async function savedSteps(): Promise<any[]> {
+    findButton(host, "حفظ").click();
+    await vi.waitFor(() => expect(StudioApi.saveStory).toHaveBeenCalled());
+    const [, storyJson] = vi.mocked(StudioApi.saveStory).mock.calls.at(-1)!;
+    return (((storyJson as any).story as any).scenes as any[])[0].activity.steps;
+  }
+
+  it("كل خطوة لها صورة تصل المسرح قابلةً للسحب", () => {
+    // القناة نفسها التي تحمل خيارات «اختر الإجابة الصحيحة»: كلاهما صورةٌ
+    // موضعها في حمولة النشاط لا في `layout.json`.
+    const ids = lastCanvasOptions().choices.map((c: any) => c.id);
+    expect(ids).toEqual(["step:0", "step:1"]);
+  });
+
+  it("الموضع المؤلَّف يصل المسرح كما هو", () => {
+    const placed = lastCanvasOptions().choices[0];
+    expect([placed.x, placed.y, placed.scale]).toEqual([460, 700, 0.5]);
+  });
+
+  it("خطوة بلا صورة لا تُرسَل — لا سبرايت بلا قوام", () => {
+    expect(lastCanvasOptions().choices).toHaveLength(2);
+  });
+
+  it("سحب الخانة يكتب موضعها في النشاط لا في التخطيط", async () => {
+    lastCanvasOptions().onChoiceMoved("step:1", 880, 640);
+    const steps = await savedSteps();
+    expect(steps[1]).toMatchObject({ answer: "nest", x: 880, y: 640 });
+
+    // ولا يظهر لها أثرٌ في `layout.json`: موضع الخانة يخصّ النشاط، و«أين
+    // عناصر المشهد» يجب أن يبقى معنى التخطيط الوحيد.
+    const [, layoutJson] = vi.mocked(StudioApi.saveLayout).mock.calls.at(-1)!;
+    const ids = ((layoutJson as any).characters as any[]).map((c) => c.id);
+    expect(ids.some((id: string) => id.startsWith("step:"))).toBe(false);
+  });
+
+  it("«ر» المكرّرة: السحب بالموضع لا بالمعنى", async () => {
+    // العنوان `step:<الموضع>` لأنّ الخطوة لا معرّف لها — موضعها هويّتها.
+    lastCanvasOptions().onChoiceMoved("step:0", 300, 500);
+    const steps = await savedSteps();
+    expect(steps[0]).toMatchObject({ x: 300, y: 500 });
+    expect(steps[1]).not.toMatchObject({ x: 300 });
+  });
+
+  it("تختار صورةً غير المعنى حين يختلف الاسمان", async () => {
+    const triggers = Array.from(host.querySelectorAll(".s-chooser")).filter((t) =>
+      t.textContent?.includes("تلقائي")
+    ) as HTMLButtonElement[];
+    expect(triggers.length).toBe(2);
+
+    triggers[1]!.click();
+    const panel = host.querySelector(".s-chooser__panel--open") as HTMLElement;
+    const card = Array.from(panel.querySelectorAll(".s-asset-card")).find(
+      (c) => c.textContent === "branch"
+    ) as HTMLElement;
+    card.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    const steps = await savedSteps();
+    expect(steps[1]).toMatchObject({ answer: "nest", image: "branch" });
+  });
+
+  it("«تلقائي» يقول أي صورة ستُستعمل بلا اختيار", () => {
+    const labels = Array.from(host.querySelectorAll(".s-chooser"))
+      .map((t) => t.textContent ?? "")
+      .filter((t) => t.includes("تلقائي"));
+    expect(labels[0]).toContain("branch");
+  });
+
+  beforeEach(async () => {
+    await mount([{ answer: "branch", x: 460, y: 700, scale: 0.5 }, { answer: "nest" }]);
+  });
+});
+
+/**
+ * «كيف يُجاب» (v1.0.24) — مربّع اختيار واحد، وغيابه هو كل مشهدٍ مؤلَّف اليوم.
+ */
+describe("StudioApp — يُجاب بالإطار وأزرار الصندوق", () => {
+  let host: HTMLDivElement;
+
+  async function mount(activity: unknown, labels: string[] | null = null): Promise<void> {
+    vi.clearAllMocks();
+    window.history.replaceState(null, "", "/studio/");
+    const story = storyFixture();
+    ((story.story as any).assets as any[]).push({ alias: "alef", src: "assets/images/alef.png" });
+    ((story.story as any).scenes as any[])[0].activity = activity;
+    vi.mocked(StudioApi.listStories).mockResolvedValue(["b"]);
+    vi.mocked(StudioApi.loadStory).mockResolvedValue(story);
+    vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
+    vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
+    vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: labels !== null,
+        json: async () => ({ data: { results: [{ cards: (labels ?? []).map((label) => ({ label })) }] } })
+      }))
+    );
+    host = document.createElement("div");
+    await new StudioApp(host).start();
+    await vi.waitFor(() => {
+      if (vi.mocked(SceneCanvas.mount).mock.calls.length === 0) throw new Error("not mounted yet");
+    });
+    tabButton(host, "النشاط").click();
+  }
+
+  const pick = (over: Record<string, unknown> = {}) => ({
+    type: "pick-correct",
+    question: { text: "ابحث عن حرف الألف" },
+    choices: [{ id: "c1", alias: "alef", correct: true }, { id: "c2", alias: "body" }],
+    ...over
+  });
+
+  function navBox(): HTMLInputElement {
+    const field = Array.from(host.querySelectorAll(".s-field")).find((f) =>
+      f.textContent?.includes("يُجاب بالإطار")
+    );
+    if (!field) throw new Error("no navigate checkbox");
+    return field.querySelector("input") as HTMLInputElement;
+  }
+
+  async function savedActivity(): Promise<any> {
+    findButton(host, "حفظ").click();
+    await vi.waitFor(() => expect(StudioApi.saveStory).toHaveBeenCalled());
+    const [, storyJson] = vi.mocked(StudioApi.saveStory).mock.calls.at(-1)!;
+    return (((storyJson as any).story as any).scenes as any[])[0].activity;
+  }
+
+  it("المربّع مُطفأ لكل مشهدٍ مؤلَّف اليوم", async () => {
+    await mount(pick());
+    expect(navBox().checked).toBe(false);
+  });
+
+  it("تأشيره يكتب `navigate: true`", async () => {
+    await mount(pick());
+    setChecked(navBox(), true);
+    expect(await savedActivity()).toMatchObject({ navigate: true });
+  });
+
+  it("⚠️ إطفاؤه يحذف الحقل ولا يكتب `false`", async () => {
+    await mount(pick({ navigate: true }));
+    expect(navBox().checked).toBe(true);
+    setChecked(navBox(), false);
+    expect("navigate" in (await savedActivity())).toBe(false);
+  });
+
+  it("يحذّر حين لا صندوق مربوط — تحذيرٌ لا خطأ", async () => {
+    await mount(pick({ navigate: true }), []);
+    await vi.waitFor(() => {
+      if (!host.textContent!.includes("لا صندوق مربوط")) throw new Error("no warning yet");
+    });
+  });
+
+  it("ولا يحذّر حين يوجد ربط", async () => {
+    await mount(pick({ navigate: true }), ["alef"]);
+    await vi.waitFor(() => {
+      if (vi.mocked(StudioApi.loadStory).mock.calls.length === 0) throw new Error("not loaded");
+    });
+    expect(host.textContent).not.toContain("لا صندوق مربوط");
+  });
+
+  it("المربّع لا يظهر في «الجواب المباشر» — الإطار يخصّ الخيارات المعروضة", async () => {
+    await mount({ type: "card-answer", question: { text: "?" }, answers: ["alef"] });
+    expect(() => navBox()).toThrow();
   });
 });

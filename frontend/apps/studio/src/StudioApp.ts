@@ -35,7 +35,7 @@ import {
   type PrimitiveEffectType,
   authoredSpan
 } from "@core/effects";
-import { StoryDraft, type DraftActivity, type DraftChoice, type DraftElement, type DraftLine, type DraftScene } from "./StoryDraft";
+import { StoryDraft, type DraftActivity, type DraftChoice, type DraftElement, type DraftLine, type DraftScene, type DraftSequenceStep, type DraftSequenceStepObject } from "./StoryDraft";
 import { buildStoryMap, rowOf } from "./StoryMap";
 import { fromSteps, stepLabel, toSteps, type EffectStep } from "./EffectSteps";
 import { localToWorldTransform, type Transform2D } from "@core/content/GroupTransform";
@@ -217,6 +217,18 @@ export class StudioApp {
 
   private storyIds: string[] = [];
   private draft: StoryDraft | null = null;
+  /**
+   * القصّة **المختارة** — تُضبط عند الاختيار، نجح الفتح أم فشل.
+   *
+   * ⚠️ درس مدفوع الثمن: كانت الهوية تُقرأ من `draft.storyId` وحده. فقصّةٌ
+   * بشكل قديم (`dialogue` بلا `scenes`) يرفضها `StoryDraft.fromJson`،
+   * فيبقى `draft` على القصّة **السابقة** — وترتدّ القائمة إليها بصمت.
+   *
+   * والنتيجة عطلان: قصّةٌ لا تُفتح **لا يمكن حذفها** (زرّ الحذف مشروط
+   * بمسودّة محمَّلة، فتصير مسدودةً في القائمة إلى الأبد)، والأخطر أن
+   * الضغط على «حذف» بعد فشلٍ كان يستهدف القصّة السابقة لا المختارة.
+   */
+  private selectedStoryId: string | null = null;
   private layoutDraft: LayoutDraft | null = null;
   private selectedSceneId: string | null = null;
 
@@ -254,6 +266,18 @@ export class StudioApp {
   /** Whether the open story is published. `null` = not determined (no
    *  session or no server), which hides the control rather than guessing. */
   private published: boolean | null = null;
+  /**
+   * هل تملك المعلّمة تعديل القصّة المفتوحة؟
+   *
+   * ⚠️ سببه عطل تجربة مقيس: قائمة الاستوديو تعرض **قصصها + كل منشور**،
+   * فتظهر فيها قصص معلّمات أخرى بلا ما يميّزها — حتى تضغط «حذف» فيردّ
+   * الخادم «لا تملكين صلاحية تعديل هذا العنصر». رسالةٌ صحيحة تصل **بعد**
+   * الفعل، وتبدو عطلاً في المنصّة لا قاعدةَ ملكية.
+   *
+   * `null` = لم يُعرَف بعد؛ تبقى الأزرار كما هي حتى يصل الجواب، فلا
+   * يُمنَع فعلٌ مسموح بسبب تأخّر شبكة.
+   */
+  private canEdit: boolean | null = null;
 
   private busy = false;
 
@@ -303,6 +327,10 @@ export class StudioApp {
    */
   private cardLabels: Set<string> | null = null;
 
+  /** هل شبكة «+ إضافة عنصر» مفتوحة؟ على المثيل لا داخل الشبكة، كي تنجو من
+   *  إعادة الرسم التي يُحدثها حذف أصلٍ من داخلها (`renderAddElement`). */
+  private addElementOpen = false;
+
   /** The in-progress microphone recording, if any. Kept on the instance
    *  so it survives the panel re-renders that start/stop trigger. */
   private recorder: AudioRecorder | null = null;
@@ -350,10 +378,21 @@ export class StudioApp {
     window.addEventListener("focus", () => void this.refreshCardLabels());
 
     await this.refreshStoryList();
-    // Open the first story automatically so the app never starts on an
-    // empty screen when content already exists.
-    if (this.storyIds.length > 0) {
-      await this.openStory(this.storyIds[0]!);
+
+    // ── القصّة المطلوبة في الرابط ────────────────────────────────────────
+    //
+    // ⚠️ فجوة مقيسة: بطاقة كل قصّة في المنصّة تحمل زرّ «تحرير» يفتح
+    // `‎/studio/?story=<slug>`، والاستوديو **لم يكن يقرأ المعامل إطلاقاً** —
+    // فيفتح أوّل قصّة في القائمة دائماً. أي أن الضغط على «تحرير» فوق قصّة
+    // بعينها يفتح قصّةً أخرى، فتحرّر المعلّمة ما لم تقصده.
+    //
+    // ومعرّفٌ لا وجود له يسقط على الأولى بدل أن يترك شاشة فارغة: رابطٌ
+    // قديم لقصّة حُذفت يجب أن يُدخل الاستوديو، لا أن يوقفه.
+    const requested = new URL(window.location.href).searchParams.get("story");
+    const opening = requested && this.storyIds.includes(requested) ? requested : this.storyIds[0];
+
+    if (opening) {
+      await this.openStory(opening);
     } else {
       this.render();
     }
@@ -388,11 +427,17 @@ export class StudioApp {
 
   private async openStory(storyId: string): Promise<void> {
     const previousStoryId = this.draft?.storyId ?? null;
+    // قبل أي شيء قد يرمي: القائمة يجب أن تعرض ما اختارته المعلّمة، لا ما
+    // نجح تحميله.
+    this.selectedStoryId = storyId;
     await this.withBusy(async () => {
       const [storyRaw, layoutRaw] = await Promise.all([
         StudioApi.loadStory(storyId),
         StudioApi.loadLayout(storyId)
       ]);
+      // تُخلى أولاً: لو رمى السطر التالي لبقيت القصّة السابقة معروضةً
+      // تحت اسم القصّة المختارة — وهو ما جعل «حذف» يستهدف الخطأ.
+      this.draft = null;
       this.draft = StoryDraft.fromJson(storyRaw);
       this.layoutDraft = layoutRaw ? LayoutDraft.fromJson(layoutRaw) : LayoutDraft.createEmpty();
 
@@ -419,10 +464,12 @@ export class StudioApp {
     // platform API must not delay — or block — getting to the content.
     // Until it arrives the control stays hidden, which is the honest state.
     this.published = null;
-    void StudioApi.isPublished(storyId).then((state) => {
+    this.canEdit = null;
+    void StudioApi.storyMeta(storyId).then((meta) => {
       // A second story may have been opened while this was in flight.
       if (this.draft?.storyId !== storyId) return;
-      this.published = state;
+      this.published = meta?.isPublished ?? null;
+      this.canEdit = meta?.canEdit ?? null;
       this.render();
     });
   }
@@ -477,10 +524,11 @@ export class StudioApp {
    * it is the only place that asks twice.
    */
   private async deleteStory(): Promise<void> {
-    const draft = this.draft;
-    if (!draft) return;
-    const storyId = draft.storyId;
-    const title = draft.title || storyId;
+    // المختارة لا المحمَّلة: قصّةٌ بشكلٍ قديم لا تُفتح، ولو اشترطنا مسودّة
+    // لبقيت مسدودةً في القائمة بلا طريقة لإزالتها.
+    const storyId = this.selectedStoryId ?? this.draft?.storyId;
+    if (!storyId) return;
+    const title = (this.draft?.storyId === storyId ? this.draft.title : "") || storyId;
 
     const ok = window.confirm(
       `حذف القصة «${title}» (${storyId})؟
@@ -509,6 +557,7 @@ export class StudioApp {
       // exists would let the next render read from a dead document.
       this.draft = null;
       this.layoutDraft = null;
+      this.selectedStoryId = null;
       this.selectedSceneId = null;
       this.selectedElementId = null;
       this.activeTab = "scene";
@@ -779,7 +828,7 @@ export class StudioApp {
 
     const storySelect = selectField(
       "القصة",
-      this.draft?.storyId ?? "",
+      this.selectedStoryId ?? this.draft?.storyId ?? "",
       this.storyIds.length > 0
         ? this.storyIds.map((id) => ({ value: id, label: id }))
         : [{ value: "", label: "لا توجد قصص" }],
@@ -791,10 +840,20 @@ export class StudioApp {
 
     const newBtn = button("قصة جديدة", () => void this.createStory(), "ghost", "plus");
     const deleteBtn = button("حذف القصة", () => void this.deleteStory(), "danger", "trash");
-    deleteBtn.disabled = !this.draft || this.busy;
-    deleteBtn.title = this.draft ? "يحذف القصة ومحتواها نهائيًا" : "افتح قصة أولًا";
+    // `false` صراحةً لا `!canEdit`: القيمة `null` تعني «لم يُعرَف بعد»،
+    // ومنعُ فعلٍ مسموح بسبب تأخّر شبكة أسوأ من السماح بفعلٍ يرفضه الخادم
+    // برسالة واضحة.
+    const readOnly = this.canEdit === false;
+    const notMine = "هذه القصة تخصّ معلّمة أخرى — تُقرأ وتُعاين، ولا تُعدَّل.";
+
+    // بالمختارة لا بالمحمَّلة: القصّة التي لا تُفتح هي بالضبط التي تحتاج
+    // الحذف، ومنعُه عنها يجعلها عالقةً في القائمة إلى الأبد.
+    const hasSelection = Boolean(this.selectedStoryId ?? this.draft);
+    deleteBtn.disabled = !hasSelection || this.busy || readOnly;
+    deleteBtn.title = !hasSelection ? "اختر قصة أولًا" : readOnly ? notMine : "يحذف القصة ومحتواها نهائيًا";
     const saveBtn = button("حفظ", () => void this.save(), "primary", "save");
-    saveBtn.disabled = !this.draft || this.busy;
+    saveBtn.disabled = !this.draft || this.busy || readOnly;
+    if (readOnly) saveBtn.title = notMine;
 
     const canPreview = Boolean(this.draft) && !this.dirty && this.isContentValid() && !this.busy;
     const previewBtn = button("معاينة في المحرّك", () => this.preview(), "default", "play");
@@ -830,7 +889,7 @@ export class StudioApp {
       // وإضافة رسمة لكل فعل جديد هي ما يجعل المجموعات تتضخّم بلا اتّساق.
       this.published ? "down" : "up"
     );
-    publishBtn.disabled = !this.draft || this.busy || this.published === null;
+    publishBtn.disabled = !this.draft || this.busy || this.published === null || readOnly;
     publishBtn.title =
       this.published === null
         ? "حالة النشر غير معروفة"
@@ -846,6 +905,11 @@ export class StudioApp {
     actions.append(mapBtn, publishBtn, saveBtn, previewBtn);
     const storyGroup = el("div", "s-bar__group");
     storyGroup.append(storySelect, newBtn, deleteBtn);
+    if (readOnly) {
+      // تُقال قبل الفعل لا بعده: زرٌّ معطّل بلا سبب يبدو عطلاً، وسببٌ
+      // مكتوب يجعل القاعدة مفهومة من أول نظرة.
+      storyGroup.appendChild(tag("warning", "قصّة معلّمة أخرى — للقراءة", "s-item__meta s-item__meta--warn"));
+    }
 
     return bar(title, storyGroup, spacer(), actions);
   }
@@ -862,7 +926,42 @@ export class StudioApp {
       // reading "scene_1786087420310", and a story of ten scenes is a
       // list of strings without it.
       item.appendChild(this.thumbnailFor(scene, 64));
+      // ── إعادة التسمية في مكانها ──────────────────────────────────────
+      //
+      // القائمة هي حيث تُرى الأسماء كلّها، فهي حيث يُتوقَّع تغييرها. البديل
+      // — تحديد المشهد ثم فتح تبويب «المشهد» — ثلاث خطوات لتغيير كلمة.
+      //
+      // نقرتان لا نقرة: النقرة الواحدة تُحدّد المشهد (وهو الفعل الأشيع)،
+      // وجعلُها تفتح حقلاً كان سيحوّل كل تصفّح إلى تحرير غير مقصود.
       const name = el("div", "s-item__name", scene.name ?? scene.id);
+      name.title = "نقرتان لإعادة التسمية";
+      name.ondblclick = () => {
+        const input = el("input", "s-item__rename") as HTMLInputElement;
+        input.value = scene.name ?? "";
+        input.placeholder = scene.id;
+
+        let settled = false;
+        const commit = (save: boolean): void => {
+          if (settled) return;
+          settled = true;
+          if (save) {
+            draft.setSceneName(scene.id, input.value);
+            this.markEdited();
+          }
+          this.render();
+        };
+
+        input.onkeydown = (e) => {
+          // Escape يتراجع: تغييرُ اسمٍ بالخطأ يجب أن يكون له مخرج بلا حفظ.
+          if (e.key === "Enter") commit(true);
+          else if (e.key === "Escape") commit(false);
+        };
+        input.onblur = () => commit(true);
+
+        name.replaceWith(input);
+        input.focus();
+        input.select();
+      };
       item.appendChild(name);
       if (index === 0) {
         // v1.0.3 §1: the first scene IS the entry point — surfaced here so
@@ -912,6 +1011,33 @@ export class StudioApp {
       });
       openBtn.disabled = scene.id === this.selectedSceneId;
       item.appendChild(openBtn);
+
+      // ── نسخ المشهد ───────────────────────────────────────────────────
+      //
+      // درسٌ ينسخ مشهده خمس مرّات ليغيّر السؤال في كلٍّ منها هو أشيع شكل
+      // للدرس، وإعادةُ بناء الخلفية والعناصر والمواضع في كل مرّة هي أطول
+      // ما تفعله المعلّمة بلا داعٍ.
+      //
+      // والنسخ **لا يغيّر ما يعيشه الطفل**: مخرج الأصل يُثبَّت قبل
+      // الإدراج، ولا شيء يشير إلى النسخة بعد. فالاستوديو يحذّر أنها «لا
+      // يُصل إليها» — وهي الرسالة الصحيحة، لا نقصٌ في النسخ.
+      const copyBtn = button("نسخ", () => {
+        const result = draft.duplicateScene(scene.id);
+        if (!result) return;
+        // مواضع العناصر تُنسَخ هنا لا في `StoryDraft`: ذاك لا يعرف
+        // التخطيط ولا يجوز أن يعرفه — الفصل نفسه الذي يحكم المجموعات.
+        for (const [oldId, newId] of result.elementIds) {
+          this.layoutDraft?.copyPosition(oldId, newId);
+        }
+        this.selectedSceneId = result.sceneId;
+        this.selectedElementId = null;
+        this.activeTab = "scene";
+        this.markEdited();
+        this.notice = { tone: "ok", text: "نُسخ المشهد. لا يصل إليه الطفل بعد — حدّد وجهةً إليه من مشهد سابق." };
+        this.render();
+      }, "ghost");
+      copyBtn.title = "ينسخ المشهد بعناصره ومواضعها وحواره ونشاطه";
+      item.appendChild(copyBtn);
 
       // scenes[0] is never deletable — see removeScene()'s doc for why
       // (changing the entry point is reordering's job, not delete's).
@@ -1413,6 +1539,24 @@ export class StudioApp {
     const wrap = el("div", "s-stack");
 
     const imageAssets = draft.assets.filter((a) => isImageAsset(a.src));
+
+    // ── اسم المشهد ────────────────────────────────────────────────────
+    //
+    // عرضٌ خالص: المحرّك لا يقرأ `name` إطلاقاً — يعنون المشاهد بـ`id`.
+    // فتغييره لا يكسر مساراً، ويظهر فوراً في اثني عشر موضعاً يعرضه: قائمة
+    // المشاهد، وصفحة السيناريو، والخريطة، وقوائم الوجهات، والتحذيرات.
+    //
+    // ولا يُعاد الرسم عند كل حرف — يستدعي ذلك هدمَ المسرح وإعادةَ بناء
+    // لوحة PixiJS ويسرق التركيز من الحقل. يُحدَّث الاسم في القائمة عند
+    // مغادرة الحقل، وهو حين تنتهي الكتابة فعلاً.
+    const nameField = textField("اسم المشهد", scene.name ?? "", (v) => {
+      draft.setSceneName(scene.id, v);
+      this.markEdited();
+    });
+    const nameInput = nameField.querySelector("input") as HTMLInputElement;
+    nameInput.placeholder = scene.id;
+    nameInput.onblur = () => this.render();
+    wrap.appendChild(nameField);
 
     // ---------- 1. how the scene looks -------------------------------
     wrap.appendChild(el("div", "s-field__label", "١ · الخلفية"));
@@ -2108,6 +2252,42 @@ export class StudioApp {
       );
     }
 
+    // ── الوقفة قبل المغادرة (v1.0.21) ────────────────────────────────
+    //
+    // توضع هنا لا في تبويب «المشهد»: هذه الصفحة تُقرأ بترتيب ما يعيشه
+    // الطفل، والوقفة آخر ما يعيشه فيه — فمكانها قبل «إلى أين يذهب».
+    //
+    // «حتى تضغط المعلّمة» ليس ترفاً: من تشرح فكرة لا تعرف أتستغرق عشرين
+    // ثانية أم تسعين، وتأخيرٌ ثابت تخمينٌ خاطئ في أحد الاتجاهين دائماً.
+    side.appendChild(el("div", "s-field__label", "الوقفة بعد انتهاء المشهد"));
+    const HOLD_OPTIONS = [
+      { value: "", label: "تلقائي" },
+      { value: "0", label: "بلا وقفة — فوراً" },
+      { value: "3", label: "٣ ثوانٍ" },
+      { value: "5", label: "٥ ثوانٍ" },
+      { value: "8", label: "٨ ثوانٍ" },
+      { value: "tap", label: "حتى تضغط المعلّمة" }
+    ];
+    const currentHold =
+      scene.holdAfter === "tap" ? "tap" : scene.holdAfter === undefined ? "" : String(scene.holdAfter);
+    // قيمةٌ مؤلَّفة خارج القائمة (٤ مثلاً، كُتبت بيد) تبقى معروضة بدل أن
+    // تُدهَس بأقرب خيار — النموذج لا يصحّح ما لم يطلب أحد تصحيحه.
+    if (currentHold && !HOLD_OPTIONS.some((o) => o.value === currentHold)) {
+      HOLD_OPTIONS.push({ value: currentHold, label: `${currentHold} ثانية` });
+    }
+    side.appendChild(
+      selectField("", currentHold, HOLD_OPTIONS, (value) => {
+        draft.setSceneHold(scene.id, value === "" ? null : value === "tap" ? "tap" : Number(value));
+        this.markEdited();
+        this.render();
+      })
+    );
+    if (scene.holdAfter === "tap") {
+      side.appendChild(
+        status("info", "سيظهر «اضغط للمتابعة» وينتظر المشهد — بلا حدّ زمني. أي لمسة أو مفتاح أو بطاقة تُنهيه.")
+      );
+    }
+
     side.appendChild(el("div", "s-field__label", "بعد هذا المشهد"));
     const otherScenes = draft.scenes.filter((s) => s.id !== scene.id);
     const fallback = draft.getSequentialNextScene(scene.id);
@@ -2653,7 +2833,8 @@ export class StudioApp {
     const KNOWN_TYPES = [
       { value: "drag-match", label: "سحب ومطابقة" },
       { value: "pick-correct", label: "اختيار الإجابة الصحيحة" },
-      { value: "card-answer", label: "الجواب المباشر (بطاقة)" }
+      { value: "card-answer", label: "الجواب المباشر (بطاقة)" },
+      { value: "sequence", label: "الترتيب (بطاقات بالتتابع)" }
     ];
 
     if (!KNOWN_TYPES.some((t) => t.value === activity.type)) {
@@ -2688,6 +2869,11 @@ export class StudioApp {
 
     if (activity.type === "card-answer") {
       wrap.appendChild(this.renderCardAnswerEditor(scene, activity));
+      return wrap;
+    }
+
+    if (activity.type === "sequence") {
+      wrap.appendChild(this.renderSequenceEditor(scene, activity));
       return wrap;
     }
 
@@ -3550,6 +3736,250 @@ export class StudioApp {
     return wrap;
   }
 
+  /**
+   * «الترتيب» (v1.0.22) — المؤلّفة تكتب الكلمة، والاستوديو يقسمها خطوات.
+   *
+   * ⚠️ ما لا يوجد هنا، كما في «الجواب المباشر»: **حقلٌ لرقم البطاقة**.
+   * الخطوة **معنى**، والربط `بطاقة ← معنى` يعيش في «الأجهزة» — فتصلح
+   * الكلمة نفسها في غرفةٍ برزمة بطاقات أخرى.
+   *
+   * والترتيب **متتالية لا مجموعة**: الموضع معنى، والتكرار مقصود («سرير»
+   * فيها «ر» مرّتان). فلا شيء هنا يطوي مكرَّراً ولا يرتّب تلقائياً.
+   */
+  private renderSequenceEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    const audioOptions = [
+      { value: "", label: "بدون" },
+      ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
+    ];
+    const backgrounds = draft.backgroundAliases;
+    const images = draft.assets.filter((a) => isImageAsset(a.src) && !backgrounds.has(a.alias));
+
+    // النصّ اختصارٌ لخطوةٍ بلا صورة ولا موضع؛ وأوّل إضافةٍ تحوّله إلى كائن.
+    const steps = activity.steps ?? [];
+    const answerOf = (s: DraftSequenceStep) => (typeof s === "string" ? s : s.answer);
+    const shownOf = (s: DraftSequenceStep) => (typeof s === "string" ? s : (s.text ?? s.answer));
+    const imageOf = (s: DraftSequenceStep) => (typeof s === "string" ? undefined : s.image);
+    const answers = steps.map(answerOf);
+
+    // ⚠️ الخطوات تُنقل **كاملةً**: إعادة الترتيب تحمل معها الصورة والموضع.
+    // النقل بالمعاني وحدها كان يمحو ما ألّفته المعلّمة في كل ضغطة على ↑.
+    const commit = (next: DraftSequenceStep[]) => {
+      draft.setActivitySteps(scene.id, next);
+      this.markEdited();
+      this.render();
+    };
+
+    // --- 1. السؤال -------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(
+      el("div", "s-item__meta", "الطفل يرى فراغاً لكل خطوة، ويملؤها بالبطاقات واحدةً بعد أخرى.")
+    );
+    wrap.appendChild(
+      textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "question", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت السؤال", activity.question?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "question", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // --- 2. الترتيب ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · الترتيب الصحيح"));
+
+    if (steps.length < 2) {
+      wrap.appendChild(status("bad", "خطوة واحدة ليست ترتيباً — أضف خطوتين على الأقل، أو اكتب كلمة أدناه."));
+    } else {
+      // ما سيراه الطفل قبل أن يضع شيئاً، وما يُفترض أن يبنيه — سطرٌ واحد
+      // يُغني عن تشغيل المعاينة للتأكّد من أن الكلمة صحيحة.
+      wrap.appendChild(el("div", "s-item__meta", `يبدأ بـ ${"▢ ".repeat(steps.length).trim()} وينتهي بـ ${steps.map(shownOf).join(" ")}`));
+    }
+
+    // ⚠️ هذا النشاط **لا يُجاب باللمس** (v1.0.20 §4 موروثةً): لا شيء مرسوم
+    // يُلمَس. فخطوةٌ بلا بطاقة مربوطة تعني ترتيباً لا يستطيع الصفّ إكماله —
+    // يُقال هنا حيث يمكن الإصلاح، لا أمام الأطفال.
+    if (this.cardLabels !== null && steps.length > 0) {
+      // ⚠️ المقارنة مع **المتميّزة** لا مع `answers`: «سرير» أربع خطوات
+      // بثلاثة معانٍ، فمقارنة ٣ بـ٤ كانت تجعل «لا بطاقة إطلاقاً» تظهر
+      // كأنّ بعضها مربوط — وهي الحالة الوحيدة التي يجب أن تُقال بوضوح.
+      const distinct = [...new Set(answers)];
+      const unbound = distinct.filter((a) => !this.cardLabels!.has(a));
+      if (unbound.length === distinct.length) {
+        wrap.appendChild(
+          status(
+            "warn",
+            "لا بطاقة مربوطة بأي خطوة — هذا النشاط لا يُجاب باللمس، فلن يستطيع الصفّ حلّه. اربط بطاقات من «الأجهزة» بالأسماء نفسها."
+          )
+        );
+      } else if (unbound.length > 0) {
+        wrap.appendChild(
+          status("warn", `بلا بطاقة: ${unbound.join("، ")} — الترتيب لا يكتمل بدونها.`)
+        );
+      }
+    }
+
+    steps.forEach((step, i) => {
+      const row = el("div", "s-item");
+      row.appendChild(el("div", "s-item__meta", `${i + 1}`));
+      row.appendChild(el("div", "s-item__name", shownOf(step)));
+
+      const bound = this.cardLabels?.has(answerOf(step)) ?? null;
+      if (bound !== null) {
+        row.appendChild(
+          tag(
+            bound ? "chain" : "warning",
+            bound ? "بطاقة" : "لا بطاقة",
+            `s-item__meta ${bound ? "" : "s-item__meta--warn"}`
+          )
+        );
+      }
+
+      // أزرار لا سحب: السحب يحتاج هدف إفلات ومؤشّر إدراج، وهذه قائمة من
+      // أربعة عناصر تُصحَّح بنقرة.
+      const move = (delta: number) => {
+        const next = [...steps];
+        const to = i + delta;
+        if (to < 0 || to >= next.length) return;
+        [next[i], next[to]] = [next[to]!, next[i]!];
+        commit(next);
+      };
+      const up = el("button", "s-btn") as HTMLButtonElement;
+      up.type = "button";
+      up.textContent = "↑";
+      up.disabled = i === 0;
+      up.onclick = () => move(-1);
+      row.appendChild(up);
+
+      const down = el("button", "s-btn") as HTMLButtonElement;
+      down.type = "button";
+      down.textContent = "↓";
+      down.disabled = i === steps.length - 1;
+      down.onclick = () => move(1);
+      row.appendChild(down);
+
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      // بالموضع لا بالقيمة: «ر» في «سرير» مرّتان، والحذف بالقيمة كان
+      // سيمحو الاثنتين.
+      remove.onclick = () => commit(steps.filter((_, j) => j !== i));
+      row.appendChild(remove);
+
+      wrap.appendChild(row);
+
+      // ── صورة الخطوة (v1.0.23 §2.1) ────────────────────────────────
+      //
+      // نادراً ما تُختار: المعنى اسمُ أصلٍ في بقيّة النموذج، فخطوةٌ جوابها
+      // `egg` ترسم أصل `egg` بلا تأليف. ولهذا يُعرض «تلقائي» أوّلاً، ولا
+      // تُملأ إلا حين يختلف اسم الصورة عن معنى البطاقة.
+      const auto = answerOf(step);
+      const autoLabel = images.some((a) => a.alias === auto)
+        ? `تلقائي — صورة «${auto}»`
+        : "تلقائي — لا صورة بهذا الاسم";
+      wrap.appendChild(
+        assetChooser(
+          "",
+          images.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          imageOf(step),
+          (alias) => {
+            draft.updateActivityStep(scene.id, i, { image: alias ?? "" });
+            this.markEdited();
+            this.render();
+          },
+          { allowNone: true, noneLabel: autoLabel, triggerLabel: autoLabel }
+        )
+      );
+    });
+
+    if (steps.length > 0) {
+      wrap.appendChild(
+        el("div", "s-item__meta", "اسحب كل خانة على المسرح لتحديد مكانها. بلا سحب تُنشر في صفٍّ متوسّط.")
+      );
+    }
+
+    // --- 3. الإضافة ------------------------------------------------
+    const addRow = el("div", "s-item");
+    const addInput = el("input", "s-input") as HTMLInputElement;
+    addInput.type = "text";
+    addInput.placeholder = "معنى البطاقة — حرف أو اسم";
+    const addStep = () => {
+      const value = addInput.value.trim();
+      if (!value) return;
+      commit([...steps, value]);
+    };
+    addInput.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter") {
+        e.preventDefault();
+        addStep();
+      }
+    });
+    addRow.appendChild(addInput);
+    const addBtn = el("button", "s-btn") as HTMLButtonElement;
+    addBtn.type = "button";
+    addBtn.textContent = "أضف خطوة";
+    addBtn.onclick = addStep;
+    addRow.appendChild(addBtn);
+    wrap.appendChild(addRow);
+
+    // كتابة «سرير» أسرع من إضافة أربع خطوات، وهي الحالة التي وُجد النشاط
+    // لأجلها. تستبدل الترتيب كلّه — فهي أداة بدء لا تعديل.
+    const wordRow = el("div", "s-item");
+    const wordInput = el("input", "s-input") as HTMLInputElement;
+    wordInput.type = "text";
+    wordInput.placeholder = "أو اكتب كلمة: سرير";
+    const fillFromWord = () => {
+      // [...word] لا word.split("") — الثاني يقطع الحروف خارج النطاق
+      // الأساسي نصفين، فيصير الإيموجي أو الحرف المركَّب خطوتين مكسورتين.
+      const letters = [...wordInput.value.trim()].filter((c) => c.trim());
+      if (letters.length < 2) return;
+      commit(letters);
+    };
+    wordInput.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter") {
+        e.preventDefault();
+        fillFromWord();
+      }
+    });
+    wordRow.appendChild(wordInput);
+    const wordBtn = el("button", "s-btn") as HTMLButtonElement;
+    wordBtn.type = "button";
+    wordBtn.textContent = "اقسمها خطوات";
+    wordBtn.onclick = fillFromWord;
+    wordRow.appendChild(wordBtn);
+    wrap.appendChild(wordRow);
+    wrap.appendChild(el("div", "s-item__meta", "تستبدل الترتيب الحالي بحروف الكلمة."));
+
+    // --- 4. ردّ الخطأ ----------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٤ · حين يكون الترتيب خاطئاً"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "لا حكم قبل امتلاء آخر فراغ — ثم تُفرَّغ الفراغات ويعيد الطفل المحاولة. المحاولات غير محدودة."
+      )
+    );
+    wrap.appendChild(
+      textField("ردّ الشخصية", activity.wrongResponse?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت الردّ", activity.wrongResponse?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    return wrap;
+  }
+
   private renderPickCorrectEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
     const draft = this.draft!;
     const wrap = el("div", "s-stack");
@@ -3577,7 +4007,36 @@ export class StudioApp {
     );
 
     // ---------- the options ----------
-    wrap.appendChild(el("div", "s-field__label", "٣ · الخيارات"));
+    // ── كيف يُجاب (v1.0.24) ──────────────────────────────────────────
+    //
+    // مؤلَّف لا تلقائي، لأنه **يغيّر معنى الزرّ**: بغيره يختار الزرّ ٣ الخيارَ
+    // الثالث؛ وبه يحرّك الإطار يميناً. وإطارٌ يظهر من تلقائه كان سيعيد
+    // تعريف كل زرّ في كل مشهدٍ قائم عند أوّل ضغطة — ولَما استطاع الاستوديو
+    // أن يحذّر منه، إذ لا يعرف أنه سيظهر.
+    wrap.appendChild(el("div", "s-field__label", "٣ · كيف يُجاب"));
+    wrap.appendChild(
+      checkboxField(
+        "يُجاب بالإطار وأزرار الصندوق",
+        activity.navigate === true,
+        (checked) => {
+          draft.setActivityNavigate(scene.id, checked);
+          this.markEdited();
+          this.render();
+        },
+        "إطارٌ يتنقّل بين الخيارات بالاتجاهات الأربعة، والزرّ الخامس يؤكّد — فخمسة أزرار تكفي لاثني عشر خياراً. واللمس والبطاقة يبقيان يعملان."
+      )
+    );
+
+    // ⚠️ تحذيرٌ لا خطأ: قد يكون الصندوق على الطاولة بلا توصيل الآن.
+    // و`cardLabels` تُخبر عن **وجود صندوق مربوط أصلاً** — فبلا أي ربط لا
+    // شيء يمرّر اتجاهاً، ويبقى النشاط قابلاً للّعب باللمس وحده.
+    if (activity.navigate === true && this.cardLabels !== null && this.cardLabels.size === 0) {
+      wrap.appendChild(
+        status("warn", "لا صندوق مربوط بعد — الإطار سيظهر لكن لا شيء يحرّكه إلّا لوحة المفاتيح. اربطي الصندوق من «الأجهزة».")
+      );
+    }
+
+    wrap.appendChild(el("div", "s-field__label", "٤ · الخيارات"));
     const choices = activity.choices ?? [];
 
     // A switched-on activity with nothing to pick used to be invisible
@@ -3680,7 +4139,7 @@ export class StudioApp {
     );
 
     // ---------- the wrong answer ----------
-    wrap.appendChild(el("div", "s-field__label", "٤ · عند الاختيار الخاطئ"));
+    wrap.appendChild(el("div", "s-field__label", "٥ · عند الاختيار الخاطئ"));
     wrap.appendChild(
       textField("ردّ الشخصية", activity.wrongResponse?.text ?? "", (v) => {
         draft.updateActivityText(scene.id, "wrongResponse", { text: v });
@@ -3703,7 +4162,7 @@ export class StudioApp {
     );
 
     // ---------- what comes after ----------
-    wrap.appendChild(el("div", "s-field__label", "٥ · بعد الإجابة الصحيحة"));
+    wrap.appendChild(el("div", "s-field__label", "٦ · بعد الإجابة الصحيحة"));
     wrap.appendChild(
       status(
         "info",
@@ -3818,6 +4277,22 @@ export class StudioApp {
       if (src) choices.push({ id: choice.id, url: this.assetUrl(src), x: choice.x, y: choice.y, scale: choice.scale });
     }
 
+    // ── خانات «الترتيب» (v1.0.23 §2.3) ───────────────────────────────
+    //
+    // تُمرَّر عبر القناة نفسها التي تحمل خيارات «اختر الإجابة الصحيحة»: كلاهما
+    // صورةٌ موضعها في حمولة النشاط لا في `layout.json`، والسحب واحد. فلا
+    // تحتاج `SceneCanvas` سطراً جديداً، ولا المعلّمة إيماءةً ثانية تتعلّمها.
+    //
+    // والعنوان `step:<الموضع>` لأنّ الخطوة لا معرّف لها — موضعها هو هويّتها،
+    // و«سرير» فيها «ر» مرّتان لا يميّزهما إلا الموضع.
+    activity?.steps?.forEach((step, i) => {
+      const alias = typeof step === "string" ? step : (step.image ?? step.answer);
+      const src = assetsByAlias.get(alias);
+      if (!src) return;
+      const where: Partial<DraftSequenceStepObject> = typeof step === "string" ? {} : step;
+      choices.push({ id: `step:${i}`, url: this.assetUrl(src), x: where.x, y: where.y, scale: where.scale });
+    });
+
     try {
       const canvas = await SceneCanvas.mount(host, {
         backgroundUrl: backgroundSrc ? this.assetUrl(backgroundSrc) : undefined,
@@ -3829,7 +4304,11 @@ export class StudioApp {
         // layout.json — so this writes through the draft's activity
         // methods, not through layoutDraft.
         onChoiceMoved: (id, x, y) => {
-          draft.updateActivityChoice(scene.id, id, { x, y });
+          // خانةُ ترتيبٍ أم خيار؟ البادئة تفصلهما — والوجهة تختلف: الخطوة
+          // تُعنون بموضعها في المصفوفة، والخيار بمعرّفه.
+          const step = /^step:(\d+)$/.exec(id);
+          if (step) draft.updateActivityStep(scene.id, Number(step[1]), { x, y });
+          else draft.updateActivityChoice(scene.id, id, { x, y });
           this.markEdited();
           this.renderPropertiesBody();
         },
@@ -3893,6 +4372,18 @@ export class StudioApp {
    * "which picture". The type is a property of the element, so it's edited
    * where every other property of it is edited (the Element tab), instead
    * of being asked for before the element exists.
+   *
+   * ── ولماذا ✕ هنا وحدها ────────────────────────────────────────────────
+   *
+   * هذه هي الشبكة التي تُفتح لتُرى فيها **كل** صور القصّة دفعةً واحدة، فهي
+   * الموضع الذي تُكتشف فيه الصورة التي رُفعت خطأً أو لم تعد تُفيد. وزرّ
+   * الحذف هنا يوفّر رحلةً إلى مكتبة الأصول ثم بحثاً عن الاسم نفسه.
+   *
+   * وبقيّة المنتقيات لا تحمله عمداً: تُفتح للاختيار — خلفيةً أو خياراً أو
+   * جواباً — وزرّ حذفٍ بجوار زرّ اختيارٍ يُضغط كثيراً خطأٌ ينتظر وقوعه.
+   *
+   * والأمان ليس في إخفاء الزرّ بل في `deleteAsset`: يسرد كل موضع يستعمل
+   * الأصل ويسأل قبل أن يحذف، فلا يختفي شيء «لا يؤثر» وهو مؤثّر.
    */
   private renderAddElement(sceneId: string, imageAssets: { alias: string; src: string }[]): HTMLElement {
     const draft = this.draft!;
@@ -3908,7 +4399,13 @@ export class StudioApp {
         this.selectElement(id);
         this.render();
       },
-      { triggerLabel: "+ إضافة عنصر" }
+      {
+        triggerLabel: "+ إضافة عنصر",
+        onDelete: (alias) => void this.deleteAsset(alias),
+        // الحذف يُعيد الرسم كاملاً؛ بلا هذا تُطوى الشبكة بعد كل صورة.
+        open: this.addElementOpen,
+        onToggle: (open) => { this.addElementOpen = open; }
+      }
     );
   }
 
@@ -3931,7 +4428,42 @@ export class StudioApp {
     if (!story || !layout) return el("div");
 
     const issues = [...story.issues, ...layout.issues];
-    if (issues.length === 0) return status("ok", "المحتوى صالح ومطابق للعقد.");
+
+    // ── مراجع تطلب أصلاً لم يعد معلَناً ───────────────────────────────
+    //
+    // ⚠️ المُتحقِّق المجمَّد يفحص **البنية** لا المراجع. فقصّةٌ حُذفت صورة
+    // خيارها كانت تُعرض «صالحة ومطابقة للعقد» — بينما سؤالها سيُتخطّى أمام
+    // الصف: المُصيِّر يجد النشاط غير قابل للحلّ فيُبلِغ الحلّ ويمضي.
+    //
+    // ولهذا لا يمرّ هذا الكشف عبر `SchemaValidator`: ليس خرقاً للعقد بل
+    // مرجعاً معلّقاً، وموضعه الطبيعي حيث يمكن إصلاحه — هنا.
+    const missing = this.draft?.findMissingAssets() ?? [];
+
+    if (issues.length === 0 && missing.length === 0) {
+      return status("ok", "المحتوى صالح ومطابق للعقد.");
+    }
+
+    if (issues.length === 0) {
+      // ⚠️ الرسالتان مختلفتان ولا تحجب إحداهما الأخرى: العقد **مطابق**
+      // فعلاً — البنية سليمة — والمرجع المعلّق مشكلة من نوع آخر. دمجهما في
+      // «غير صالح» كان سيقول للمؤلّفة إن قصّتها تخالف العقد وهي لا تخالفه،
+      // فتبحث عن خطأ بنيوي لا وجود له.
+      const wrap = status(
+        "warn",
+        `المحتوى صالح ومطابق للعقد — مع ${missing.length} مرجع إلى أصل غير موجود.`
+      );
+      const list = el("div", "s-issues");
+      for (const ref of missing) {
+        const row = el("div", "s-issue s-issue--warn");
+        row.appendChild(el("span", "s-issue__where", ref.where));
+        row.appendChild(
+          el("span", "s-issue__text", `يطلب «${ref.alias}» — أعيدي رفع الملف بالاسم نفسه، أو غيّري المرجع.`)
+        );
+        list.appendChild(row);
+      }
+      wrap.appendChild(list);
+      return wrap;
+    }
 
     const errors = issues.filter((i) => i.severity === "error");
     const worst = errors.length > 0 ? "bad" : "warn";
@@ -3974,6 +4506,15 @@ export class StudioApp {
           this.goToScene(issue.sceneId!);
         });
       }
+      list.appendChild(row);
+    }
+
+    for (const ref of missing) {
+      const row = el("div", "s-issue s-issue--warn");
+      row.appendChild(el("span", "s-issue__where", ref.where));
+      row.appendChild(
+        el("span", "s-issue__text", `يطلب «${ref.alias}» — أعيدي رفع الملف بالاسم نفسه، أو غيّري المرجع.`)
+      );
       list.appendChild(row);
     }
 

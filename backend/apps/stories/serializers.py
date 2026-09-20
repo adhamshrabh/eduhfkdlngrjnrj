@@ -23,17 +23,36 @@ class StoryListSerializer(serializers.ModelSerializer):
     owner_name = serializers.CharField(source="owner.full_name", read_only=True)
     scene_count = serializers.IntegerField(read_only=True)
     asset_count = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     class Meta:
         model = Story
         fields = [
             "slug", "title", "description", "is_published",
-            "owner", "owner_name", "scene_count", "asset_count",
+            "owner", "owner_name", "can_edit", "scene_count", "asset_count",
             "version", "updated_at",
         ]
 
     def get_asset_count(self, obj: Story) -> int:
         return obj.assets.count()
+
+    def get_can_edit(self, obj: Story) -> bool:
+        """
+        هل يستطيع صاحب الطلب تعديل هذه القصّة؟
+
+        ⚠️ سببه عطل تجربة مقيس: المعلّمة ترى **قصصها + كل منشور**، فتظهر في
+        استوديوها قصص معلّمات أخرى. ولا شيء يميّزها — حتى تضغط «حذف» أو
+        «حفظ» فيردّ الخادم «لا تملكين صلاحية تعديل هذا العنصر». رسالةٌ
+        صحيحة تصل **بعد** الفعل، وتبدو عطلاً في المنصّة لا قاعدةَ ملكية.
+        
+        يُحسَب هنا لا في العميل: نفس المنطق الذي يحكم به `IsOwnerOrAdmin`،
+        فلا تستطيع الواجهة أن تَعِد بما يرفضه الخادم — ولا العكس.
+        """
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not (user and user.is_authenticated):
+            return False
+        return bool(user.is_admin_role or obj.owner_id == user.id)
 
 
 class StoryDetailSerializer(StoryListSerializer):

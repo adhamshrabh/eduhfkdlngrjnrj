@@ -28,6 +28,17 @@ export interface AssetPickerOptions {
   /** Adds a leading "none" card (e.g. "بدون خلفية") that selects `undefined`. */
   allowNone?: boolean;
   noneLabel?: string;
+  /**
+   * حين يُمرَّر، تحمل كل بطاقة زرّ حذف صغيراً (✕).
+   *
+   * ⚠️ اختياري عمداً، ولا يُفعَّل إلا حيث تُقصَد الإدارة. هذه الشبكة تُفتح
+   * كثيراً لمجرّد **الاختيار** — خلفيةً، أو صورة خيار، أو جواباً — وزرّ حذفٍ
+   * على مسافة بكسلات من زرّ اختيارٍ يُضغط عشرات المرّات هو خطأٌ ينتظر وقوعه.
+   *
+   * المسؤولية عن التحذير قبل الحذف تبقى عند المستدعي (`StudioApp.deleteAsset`
+   * يسرد أين يُستعمل الأصل ويسأل)، فالبطاقة لا تعرف شيئاً عن القصّة.
+   */
+  onDelete?: (alias: string) => void;
 }
 
 export function assetPicker(
@@ -72,7 +83,33 @@ export function assetPicker(
     card.addEventListener("click", () => selectCard(item.alias, card));
     if (selectedAlias === item.alias) card.classList.add("s-asset-card--selected");
     cards.push(card);
-    grid.appendChild(card);
+
+    if (!options.onDelete) {
+      grid.appendChild(card);
+      continue;
+    }
+
+    // ── لماذا غلافٌ بدل زرٍّ داخل زرّ ────────────────────────────────
+    //
+    // البطاقة `<button>`، وزرٌّ داخل زرّ ليس HTML صالحاً — تفكّكه المتصفّحات
+    // بطرقٍ مختلفة، فيصير سلوك النقر رهناً بالمتصفّح. والغلاف يُبقي البطاقة
+    // زرّاً حقيقياً بلوحة مفاتيحه ودلالته، ويضع ✕ فوقها بموضعٍ مطلق.
+    //
+    // ولا يُلَفّ إلا حين يوجد حذف: كل منتقٍ آخر يبقى كما كان بالضبط.
+    const slot = el("div", "s-asset-slot");
+    slot.appendChild(card);
+
+    const remove = el("button", "s-asset-card__x", "✕") as HTMLButtonElement;
+    remove.type = "button";
+    remove.title = `حذف «${item.alias}»`;
+    remove.setAttribute("aria-label", `حذف «${item.alias}»`);
+    remove.addEventListener("click", (e) => {
+      // النقر على ✕ ليس اختياراً: بلا هذا يُضاف العنصر ثم يُحذف أصله.
+      e.stopPropagation();
+      options.onDelete?.(item.alias);
+    });
+    slot.appendChild(remove);
+    grid.appendChild(slot);
   }
 
   wrap.appendChild(grid);
@@ -86,6 +123,15 @@ export interface AssetChooserOptions extends AssetPickerOptions {
   /** Called after a choice; the grid has already closed. Lets the caller
    *  do a full re-render without the picker reopening. */
   onClose?: () => void;
+  /**
+   * الحالة المطويّة عند البناء، ومن يتذكّرها.
+   *
+   * ⚠️ وُجد هذان لأجل الحذف: `deleteAsset` يُعيد الرسم كاملاً، فتُبنى الشبكة
+   * من جديد **مطويّة** — والمؤلّفة التي تُنظّف عشرة أصول تفتحها عشر مرّات.
+   * فالطيّ صار حالةً يملكها المستدعي، لا سرّاً داخل هذا الملف.
+   */
+  open?: boolean;
+  onToggle?: (open: boolean) => void;
 }
 
 /**
@@ -140,11 +186,18 @@ export function assetChooser(
   function close(): void {
     picker.classList.remove("s-chooser__panel--open");
     trigger.setAttribute("aria-expanded", "false");
+    options.onToggle?.(false);
+  }
+
+  if (options.open) {
+    picker.classList.add("s-chooser__panel--open");
+    trigger.setAttribute("aria-expanded", "true");
   }
 
   trigger.addEventListener("click", () => {
     const open = picker.classList.toggle("s-chooser__panel--open");
     trigger.setAttribute("aria-expanded", String(open));
+    options.onToggle?.(open);
   });
 
   wrap.appendChild(trigger);

@@ -167,6 +167,23 @@ export class LayoutDraft {
     });
   }
 
+  /**
+   * ينسخ موضع عنصر إلى معرّف جديد.
+   *
+   * ⚠️ ضروري لنسخ المشهد، لا تحسينٌ له: `characters[]` مفتاحها **معرّف
+   * العنصر عالمياً** لا داخل مشهده. فنسخةٌ تحتفظ بمعرّفات الأصل تشترك معه
+   * في المدخل نفسه — تسحب المعلّمة الطائر في النسخة فيتحرّك في الأصل
+   * أيضاً، بصمت، ولا شيء على الشاشة يربط الحركتين.
+   *
+   * ولا شيء يُنسَخ إن لم يكن للأصل موضع محفوظ: غيابه يعني «وزّعه المحرّك
+   * تلقائياً»، وهو ما ستفعله النسخة كذلك.
+   */
+  copyPosition(fromId: string, toId: string): void {
+    const source = this.characterNodes().find((c) => c.id === fromId);
+    if (!source) return;
+    this.characterNodes().push({ ...deepClone(source), id: toId });
+  }
+
   toJson(): Record<string, unknown> {
     const out = deepClone(this.doc);
     out.schemaVersion = SCHEMA_VERSION;

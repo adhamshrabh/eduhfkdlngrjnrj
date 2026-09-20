@@ -89,6 +89,17 @@ export class StudioApi {
    * because showing "مسودة" for a published story would invite an author
    * to publish something that already is.
    */
+  static async storyMeta(storyId: string): Promise<{ isPublished: boolean; canEdit: boolean } | null> {
+    try {
+      const res = await fetch(`/__editor/story-meta?storyId=${encodeURIComponent(storyId)}`);
+      const data = (await res.json()) as { ok?: boolean; isPublished?: boolean; canEdit?: boolean };
+      if (!res.ok || data.ok !== true) return null;
+      return { isPublished: data.isPublished === true, canEdit: data.canEdit !== false };
+    } catch {
+      return null;
+    }
+  }
+
   static async isPublished(storyId: string): Promise<boolean | null> {
     try {
       const res = await fetch(`/__editor/story-meta?storyId=${encodeURIComponent(storyId)}`);

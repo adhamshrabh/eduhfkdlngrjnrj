@@ -158,9 +158,17 @@ async function handleStoryMeta(url: URL): Promise<Response> {
   const res = await fetch(`/api/stories/${encodeURIComponent(storyId)}/`, { headers: authHeaders() });
   if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّرت القراءة.") }, res.status);
 
-  const body = (await res.json()) as { data?: { is_published?: boolean; version?: number } };
+  const body = (await res.json()) as {
+    data?: { is_published?: boolean; version?: number; can_edit?: boolean };
+  };
   versionCache.set(storyId, body.data?.version ?? 1);
-  return jsonResponse({ ok: true, isPublished: body.data?.is_published === true });
+  // `can_edit` يُحسب على الخادم بنفس منطق `IsOwnerOrAdmin` — فلا تَعِد
+  // الواجهة بما يرفضه، ولا تمنع ما يسمح به.
+  return jsonResponse({
+    ok: true,
+    isPublished: body.data?.is_published === true,
+    canEdit: body.data?.can_edit !== false,
+  });
 }
 
 /**

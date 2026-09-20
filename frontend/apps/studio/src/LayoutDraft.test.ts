@@ -253,3 +253,42 @@ describe("LayoutDraft — reparenting preserves size and angle too", () => {
     expect(draft.getPosition("beak")!.zIndex).toBe(3);
   });
 });
+
+describe("LayoutDraft.copyPosition — نسخ المشهد يحتاجه", () => {
+  const base = () => ({
+    schemaVersion: "1.0",
+    design: { width: 1920, height: 1080 },
+    characters: [{ id: "bird_77", x: 400, y: 700, scale: 0.5, anchorX: 0.5, anchorY: 1, rotation: -0.03 }]
+  });
+
+  it("ينسخ الموضع كاملاً إلى معرّف جديد", () => {
+    const layout = LayoutDraft.fromJson(base());
+    layout.copyPosition("bird_77", "bird_77_c1");
+
+    const copy = layout.getPosition("bird_77_c1")!;
+    expect(copy).toMatchObject({ x: 400, y: 700, scale: 0.5, rotation: -0.03 });
+  });
+
+  it("النسختان مستقلّتان — وهذا هو سبب وجود الدالّة", () => {
+    // ⚠️ `characters[]` مفتاحها معرّف العنصر **عالمياً**. لولا معرّف جديد
+    // لتحرّك الطائر في المشهدين معاً بلا تفسير.
+    const layout = LayoutDraft.fromJson(base());
+    layout.copyPosition("bird_77", "bird_77_c1");
+    layout.setPosition("bird_77_c1", { x: 900, y: 300 });
+
+    expect(layout.getPosition("bird_77")!.x).toBe(400);
+    expect(layout.getPosition("bird_77_c1")!.x).toBe(900);
+  });
+
+  it("عنصر بلا موضع محفوظ لا يُنسَخ — يوزّعه المحرّك كما يوزّع الأصل", () => {
+    const layout = LayoutDraft.fromJson(base());
+    layout.copyPosition("لا-موضع-له", "copy");
+    expect(layout.getPosition("copy")).toBeUndefined();
+  });
+
+  it("النتيجة تبقى مطابقة للعقد", () => {
+    const layout = LayoutDraft.fromJson(base());
+    layout.copyPosition("bird_77", "bird_77_c1");
+    expect(layout.validate().valid).toBe(true);
+  });
+});

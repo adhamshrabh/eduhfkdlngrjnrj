@@ -95,13 +95,16 @@ describe("StoryDraft — construction", () => {
   });
 
   it("fromJson() rejects a legacy dialogue-tree story with an explanatory error", () => {
+    // الرسالة بالعربية وتقول **ما يمكن فعله**: المعلّمة لا تعرف
+    // «StoryScene» ولا يعنيها الشكل — يعنيها أن أمامها قصّة عالقة وأن
+    // لها مخرجاً (الحذف من الشريط، وهو متاح حتى لقصّة لا تُفتح).
     expect(() =>
       StoryDraft.fromJson({
         id: "animals_story",
         title: "Animals",
         story: { id: "s", title: "t", scene: "StoryScene", dialogue: { id: "d", start: "l1", lines: [] } }
       })
-    ).toThrow(/scenes/i);
+    ).toThrow(/حذف القصة/);
   });
 
   it("fromJson() rejects a document with no story object", () => {
@@ -1307,3 +1310,510 @@ describe("StoryDraft — generic groups (v1.0.17)", () => {
   });
 });
 
+
+/**
+ * نسخ المشهد.
+ *
+ * ثلاثة أفخاخ صامتة تجعل نسخاً ساذجاً أسوأ من عدمه — كلٌّ منها يغيّر
+ * القصّة أو يربط النسخة بالأصل بلا أن يرى أحد السبب.
+ */
+describe("StoryDraft.duplicateScene", () => {
+  /** القالب يعيد `Record<string, unknown>` — هذا يضيّقه للتحرير وحده. */
+  type RawScenes = { story: { scenes: Array<Record<string, unknown>> } };
+  const scenesOf = (raw: Record<string, unknown>) => (raw as unknown as RawScenes).story.scenes;
+
+  function withElements() {
+    const raw = realisticStory();
+    scenesOf(raw)[0]!.elements = [
+      { id: "grp_1", type: "group" },
+      { id: "bird_77", alias: "bird", groupId: "grp_1" }
+    ];
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("يضع النسخة بعد الأصل مباشرةً", () => {
+    const draft = withElements();
+    const result = draft.duplicateScene("scene01");
+    expect(draft.scenes.map((s) => s.id)).toEqual(["scene01", result!.sceneId, "scene02"]);
+  });
+
+  // ── الفخّ ١: معرّفات العناصر ───────────────────────────────────────
+  it("يولّد معرّفات جديدة للعناصر — وإلّا تشاركت النسخة والأصل مواضعهما", () => {
+    // `layout.json` مفتاحها معرّف العنصر **عالمياً**. بمعرّفات مشتركة
+    // تسحب المعلّمة الطائر في النسخة فيتحرّك في الأصل، بلا تفسير.
+    const draft = withElements();
+    const result = draft.duplicateScene("scene01")!;
+    const copy = draft.getScene(result.sceneId)!;
+
+    const originalIds = draft.getScene("scene01")!.elements.map((e) => e.id);
+    for (const el of copy.elements) {
+      expect(originalIds).not.toContain(el.id);
+    }
+    expect(result.elementIds.map(([oldId]) => oldId)).toEqual(originalIds);
+  });
+
+  it("يعيد توجيه groupId إلى المجموعة المنسوخة لا الأصلية", () => {
+    const draft = withElements();
+    const copy = draft.getScene(draft.duplicateScene("scene01")!.sceneId)!;
+    const group = copy.elements.find((e) => e.type === "group")!;
+    const member = copy.elements.find((e) => e.alias === "bird")!;
+    expect(member.groupId).toBe(group.id);
+    expect(member.groupId).not.toBe("grp_1");
+  });
+
+  // ── الفخّ ٢: السقوط التتابعي ──────────────────────────────────────
+  it("يثبّت مخرج الأصل قبل الإدراج — النسخ لا يغيّر ما يعيشه الطفل", () => {
+    // `scene02` بلا `nextScene` صريح: كان آخر مشهد فتنتهي القصّة عنده.
+    // بلا التثبيت يصير يسقط على نسخته.
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.duplicateScene("scene02");
+    expect(draft.getScene("scene02")!.endsStory).toBe(true);
+  });
+
+  it("مشهدٌ يسقط على تاليه يحتفظ بوجهته حرفياً", () => {
+    const raw = realisticStory();
+    scenesOf(raw)[0]!.nextScene = null;   // كان يسقط على scene02
+    const draft = StoryDraft.fromJson(raw);
+
+    draft.duplicateScene("scene01");
+    expect(draft.getScene("scene01")!.nextScene).toBe("scene02");
+  });
+
+  it("مخرجٌ صريح لا يُمسّ", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.duplicateScene("scene01");
+    expect(draft.getScene("scene01")!.nextScene).toBe("scene02");
+  });
+
+  // ── الفخّ ٣: المعرّفات الداخلية ────────────────────────────────────
+  it("يولّد معرّفات جديدة للسطور", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    const copy = draft.getScene(draft.duplicateScene("scene01")!.sceneId)!;
+    expect(copy.lines[0]!.id).not.toBe("scene01_l1");
+    expect(copy.lines[0]!.text).toBe("مرحباً!");   // المحتوى كما هو
+  });
+
+  it("ينسخ النشاط بكل حقوله", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    const copy = draft.getScene(draft.duplicateScene("scene02")!.sceneId)!;
+    expect(copy.activity?.word).toBe("دمية");
+    expect(copy.activity?.onSolved?.nextScene).toBe("scene03");
+  });
+
+  it("الفروع تقود حيث كانت تقود — وهو ما يُتوقَّع من نسخة", () => {
+    const raw = realisticStory();
+    (scenesOf(raw)[0]!.lines as Array<Record<string, unknown>>)[0]!.choices = [
+      { id: "scene01_l1_c1", label: "نعم", nextScene: "scene02" }
+    ];
+    const draft = StoryDraft.fromJson(raw);
+    const copy = draft.getScene(draft.duplicateScene("scene01")!.sceneId)!;
+
+    expect(copy.lines[0]!.choices![0]!.nextScene).toBe("scene02");
+    expect(copy.lines[0]!.choices![0]!.id).not.toBe("scene01_l1_c1");
+  });
+
+  it("معرّف النسخة فريد ولو نُسخ المشهد مرّتين", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    const first = draft.duplicateScene("scene01")!.sceneId;
+    const second = draft.duplicateScene("scene01")!.sceneId;
+    expect(first).not.toBe(second);
+    expect(draft.scenes).toHaveLength(4);
+  });
+
+  it("لا شيء يشير إلى النسخة — الاستوديو يحذّر، والمؤلّفة تقرّر", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    const copyId = draft.duplicateScene("scene01")!.sceneId;
+    expect(draft.getUnreachableSceneIds()).toContain(copyId);
+  });
+
+  it("معرّف لا وجود له يُعيد null بلا رمي", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    expect(draft.duplicateScene("لا-أحد")).toBeNull();
+  });
+
+  it("النسخة تبقى مطابقة للعقد", () => {
+    const draft = withElements();
+    draft.duplicateScene("scene01");
+    expect(draft.validate().valid).toBe(true);
+  });
+});
+
+describe("StoryDraft.setSceneName", () => {
+  it("يغيّر الاسم المعروض", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneName("scene01", "لقاء الطائر");
+    expect(draft.getScene("scene01")!.name).toBe("لقاء الطائر");
+  });
+
+  it("لا يمسّ المعرّف ولا أي مسار يشير إليه", () => {
+    // `name` عرضٌ خالص — المحرّك يعنون المشاهد بـ`id` وحده.
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneName("scene01", "اسم جديد تماماً");
+
+    expect(draft.getScene("scene01")).toBeDefined();
+    expect(draft.getScene("scene02")).toBeDefined();
+    // scene01 كان يشير إلى scene02 — الإشارة سليمة
+    expect(draft.getScene("scene01")!.nextScene).toBe("scene02");
+    expect(draft.validate().valid).toBe(true);
+  });
+
+  it("يقلّم المسافات", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneName("scene01", "   لقاء الطائر   ");
+    expect(draft.getScene("scene01")!.name).toBe("لقاء الطائر");
+  });
+
+  it("اسم فارغ يحذف الحقل — فتعود الشاشات إلى المعرّف لا إلى فراغ", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneName("scene01", "   ");
+    expect(draft.getScene("scene01")!.name).toBeUndefined();
+  });
+
+  it("النسخة تُسمّى بحرّية، والأصل لا يتأثّر", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    const copyId = draft.duplicateScene("scene01")!.sceneId;
+
+    draft.setSceneName(copyId, "السؤال الثاني");
+
+    expect(draft.getScene(copyId)!.name).toBe("السؤال الثاني");
+    expect(draft.getScene("scene01")!.name).toBe("المشهد 1");
+  });
+
+  it("معرّف لا وجود له لا يرمي", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    expect(() => draft.setSceneName("لا-أحد", "س")).not.toThrow();
+  });
+});
+
+describe("StoryDraft.setSceneHold — الوقفة بعد انتهاء المشهد (v1.0.21)", () => {
+  it("يكتب ثوانيَ", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneHold("scene01", 5);
+    expect(draft.getScene("scene01")!.holdAfter).toBe(5);
+  });
+
+  it("يكتب «tap» لوقفة تُنهيها المعلّمة", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneHold("scene01", "tap");
+    expect(draft.getScene("scene01")!.holdAfter).toBe("tap");
+  });
+
+  it("`null` يحذف الحقل ويعيد الافتراضي", () => {
+    // الصفر يعني «فوراً» صراحةً، والغياب يعني «كما كان» — وهما مختلفان.
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneHold("scene01", 5);
+    draft.setSceneHold("scene01", null);
+    expect(draft.getScene("scene01")!.holdAfter).toBeUndefined();
+  });
+
+  it("صفرٌ يُكتب ولا يُحذف — «فوراً» قرارٌ لا غياب", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneHold("scene01", 0);
+    expect(draft.getScene("scene01")!.holdAfter).toBe(0);
+  });
+
+  it("النتيجة تبقى مطابقة للعقد", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setSceneHold("scene01", "tap");
+    draft.setSceneHold("scene02", 4);
+    expect(draft.validate().valid).toBe(true);
+  });
+
+  it("قيمة تالفة في المحتوى تُقرأ غياباً — لا تنتقل إلى النموذج", () => {
+    const raw = realisticStory();
+    (raw as unknown as { story: { scenes: Array<Record<string, unknown>> } }).story.scenes[0]!.holdAfter = -2;
+    const draft = StoryDraft.fromJson(raw);
+    expect(draft.getScene("scene01")!.holdAfter).toBeUndefined();
+  });
+});
+
+describe("StoryDraft.findAssetUsage — حذف صورة مستعملة", () => {
+  /** قصّة بنشاطَين يشيران إلى الأصول بأسمائها. */
+  function withActivities() {
+    const raw = realisticStory();
+    const scenes = (raw as unknown as { story: { scenes: Array<Record<string, unknown>> } }).story.scenes;
+    scenes[0]!.activity = {
+      type: "pick-correct",
+      question: { audio: "ask_clip" },
+      choices: [
+        { id: "c1", alias: "nest", correct: true },
+        { id: "c2", alias: "stone" }
+      ],
+      wrongResponse: { audio: "no_clip" }
+    };
+    scenes[1]!.activity = { type: "card-answer", answers: ["egg", "egg_small"] };
+    scenes[0]!.elements = [{ id: "bird_1", alias: "bird", onTap: { audio: "chirp" } }];
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("خيار نشاط يُحتسب استعمالاً — وكان يُحذف بصمت", () => {
+    // ⚠️ الفجوة المقيسة: حذف صورة خيار كان يقول «غير مستخدمة»، ثم يجد
+    // المُصيِّر النشاط غير قابل للحلّ فيتخطّاه — فيختفي السؤال من القصّة
+    // بلا أن يعلم أحد.
+    expect(withActivities().findAssetUsage("nest")).toHaveLength(1);
+    expect(withActivities().findAssetUsage("stone")).toHaveLength(1);
+  });
+
+  it("جواب «الجواب المباشر» يُحتسب — كلّ جواب على حدة", () => {
+    expect(withActivities().findAssetUsage("egg")).toHaveLength(1);
+    expect(withActivities().findAssetUsage("egg_small")).toHaveLength(1);
+  });
+
+  it("أصوات النشاط تُحتسب — السؤال وردّ الخطأ", () => {
+    expect(withActivities().findAssetUsage("ask_clip")).toHaveLength(1);
+    expect(withActivities().findAssetUsage("no_clip")).toHaveLength(1);
+  });
+
+  it("صوت لمس العنصر يُحتسب — لا يظهر في قائمة ولا يُسمع إلا باللمس", () => {
+    expect(withActivities().findAssetUsage("chirp")).toHaveLength(1);
+  });
+
+  it("أصلٌ غير مستعمل يبقى غير مستعمل", () => {
+    expect(withActivities().findAssetUsage("لا-أحد-يستعملني")).toEqual([]);
+  });
+
+  it("إعادة الرفع بالاسم نفسه تُصلح كل المراجع", () => {
+    // المحتوى يشير بالاسم لا بالمسار (§4)، فالمرجع يشفى وحده.
+    const draft = withActivities();
+    draft.removeAsset("nest");
+    expect(draft.assets.some((a) => a.alias === "nest")).toBe(false);
+
+    const restored = draft.addAsset("nest", "assets/images/nest.png");
+    expect(restored).toBe("nest");
+    expect(draft.findAssetUsage("nest")).toHaveLength(1);   // الخيار ما زال يشير إليه
+  });
+
+  it("إعادة الرفع باسم آخر تترك المرجع معلّقاً — والاسم هو ما يهمّ", () => {
+    const draft = withActivities();
+    draft.removeAsset("nest");
+    draft.addAsset("nest2", "assets/images/nest.png");
+
+    // الخيار ما زال يطلب «nest» الذي لم يعد معلَناً.
+    expect(draft.assets.some((a) => a.alias === "nest")).toBe(false);
+    expect(draft.findAssetUsage("nest")).toHaveLength(1);
+  });
+});
+
+describe("StoryDraft.findMissingAssets — بعد حذف صورة مستعملة", () => {
+  /**
+   * القالب المشترك يشير إلى أصوات ومكافآت غير معلَنة في `assets[]` — وهو
+   * واقعيّ (كُتب بيد قبل هذا الكشف)، لكنه يُخفي ما نقيسه هنا. فتُعلَن كلّها
+   * كي يبقى المتغيّر الوحيد هو ما نحذفه.
+   */
+  function used() {
+    const raw = realisticStory();
+    const story = (raw as unknown as {
+      story: { assets: Array<Record<string, string>>; scenes: Array<Record<string, unknown>> };
+    }).story;
+    story.assets.push(
+      { alias: "yara-welcome", src: "assets/audio/welcome.mp3" },
+      { alias: "doll", src: "assets/images/doll2.png" },
+      { alias: "yara-success", src: "assets/audio/success.mp3" }
+    );
+    story.scenes[0]!.background = "yara-bg";
+    story.scenes[0]!.elements = [{ id: "doll_1", alias: "yara-doll" }];
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("قصّة سليمة: لا مراجع معلّقة", () => {
+    expect(used().findMissingAssets()).toEqual([]);
+  });
+
+  it("حذف صورة مستعملة يُظهر المرجع — وهو ما كان يختفي بصمت", () => {
+    // ⚠️ المُتحقِّق المجمَّد يفحص البنية لا المراجع، فكانت اللوحة تقول
+    // «صالح ومطابق للعقد» بينما المشهد يطلب ملفاً غير موجود.
+    const draft = used();
+    draft.removeAsset("yara-doll");
+
+    const missing = draft.findMissingAssets();
+    expect(missing).toHaveLength(1);
+    expect(missing[0]!.alias).toBe("yara-doll");
+    expect(missing[0]!.where).toContain("doll_1");
+  });
+
+  it("العقد يبقى «صالحاً» — ولهذا وُجد هذا الكشف", () => {
+    const draft = used();
+    draft.removeAsset("yara-doll");
+    expect(draft.validate().valid).toBe(true);   // البنية سليمة
+    expect(draft.findMissingAssets()).toHaveLength(1);   // والمرجع معلّق
+  });
+
+  it("إعادة الرفع بالاسم نفسه تُنهي التعليق", () => {
+    const draft = used();
+    draft.removeAsset("yara-doll");
+    draft.addAsset("yara-doll", "assets/images/doll.png");
+    expect(draft.findMissingAssets()).toEqual([]);
+  });
+
+  it("يكشف كل موضع على حدة — لا مرّة واحدة لكل اسم", () => {
+    const draft = used();
+    draft.removeAsset("yara-bg");   // خلفية القصّة **وخلفية المشهد**
+    expect(draft.findMissingAssets().length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+/**
+ * «الترتيب» (v1.0.22) — متتالية لا مجموعة، والموضع فيها معنى.
+ */
+describe("StoryDraft — نشاط الترتيب", () => {
+  function withSequence(steps: unknown) {
+    const raw = realisticStory();
+    const scenes = (raw as unknown as { story: { scenes: Array<Record<string, unknown>> } }).story.scenes;
+    scenes[0]!.activity = { type: "sequence", question: { text: "رتّب" }, steps };
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("يقرأ الخطوات النصّية كما هي", () => {
+    expect(withSequence(["س", "ر", "ي", "ر"]).getScene("scene01")!.activity!.steps)
+      .toEqual(["س", "ر", "ي", "ر"]);
+  });
+
+  it("يقرأ الشكل الكائني بلا أن يحوّله — تأليفٌ كُتب بغير هذه الواجهة يبقى", () => {
+    expect(withSequence([{ answer: "seen", text: "س" }, "ر"]).getScene("scene01")!.activity!.steps)
+      .toEqual([{ answer: "seen", text: "س" }, "ر"]);
+  });
+
+  it("يُسقط خطوة مشوَّهة بلا أن يترك فراغاً مكانها", () => {
+    expect(withSequence(["س", "", { text: "ر" }, 7, "ي"]).getScene("scene01")!.activity!.steps)
+      .toEqual(["س", "ي"]);
+  });
+
+  it("`setActivitySteps` يحفظ التكرار — «سرير» فيها «ر» مرّتان", () => {
+    // ⚠️ الفرق عن `setActivityAnswers` التي تطوي المكرَّرات: طيُّها هنا
+    // كان يُنقص الكلمة حرفاً بلا أن يقول أحد شيئاً.
+    const draft = withSequence([]);
+    draft.setActivitySteps("scene01", ["س", "ر", "ي", "ر"]);
+    expect(draft.getScene("scene01")!.activity!.steps).toEqual(["س", "ر", "ي", "ر"]);
+  });
+
+  it("`setActivityType` يهيّئ `steps` فارغةً — فالمُتحقِّق يقول الخطأ لا الواجهة", () => {
+    const raw = realisticStory();
+    const scenes = (raw as unknown as { story: { scenes: Array<Record<string, unknown>> } }).story.scenes;
+    scenes[0]!.activity = { type: "drag-match", word: "قط", letters: ["ق", "ط"], missingIndex: 0 };
+    const draft = StoryDraft.fromJson(raw);
+
+    draft.setActivityType("scene01", "sequence");
+    expect(draft.getScene("scene01")!.activity!.steps).toEqual([]);
+    // ولا يُتلف ما ألّفته المؤلّفة للنوع السابق.
+    expect(draft.getScene("scene01")!.activity!.word).toBe("قط");
+  });
+
+  it("الخطوة ليست مرجع أصل — وإلّا صار كل حرف «صورة مفقودة»", () => {
+    // خطوةٌ حرفٌ يُعرض نصّاً لا صورةٌ تُحمَّل (v1.0.22 §2).
+    const draft = withSequence(["س", "ر", "ي", "ر"]);
+    expect(draft.findAssetUsage("س")).toEqual([]);
+    expect(draft.findMissingAssets().map((m) => m.alias)).not.toContain("س");
+  });
+});
+
+/**
+ * «الترتيب» على المسرح (v1.0.23) — صورةٌ لكل خطوة وموضعٌ لكل خانة.
+ */
+describe("StoryDraft — صورة الخطوة وموضعها", () => {
+  function withSteps(steps: unknown) {
+    const raw = realisticStory();
+    const scenes = (raw as unknown as { story: { scenes: Array<Record<string, unknown>> } }).story.scenes;
+    scenes[0]!.activity = { type: "sequence", question: { text: "رتّب" }, steps };
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("يقرأ الصورة والموضع كما أُلّفا", () => {
+    const draft = withSteps([{ answer: "branch", image: "branch_pic", x: 460, y: 700, scale: 0.5 }, "nest"]);
+    expect(draft.getScene("scene01")!.activity!.steps![0]).toEqual({
+      answer: "branch",
+      image: "branch_pic",
+      x: 460,
+      y: 700,
+      scale: 0.5
+    });
+  });
+
+  it("يتجاهل موضعاً ليس رقماً بدل أن يمرّره إلى المحرّك", () => {
+    const draft = withSteps([{ answer: "a", x: "460", y: Number.NaN }, "b"]);
+    expect(draft.getScene("scene01")!.activity!.steps![0]).toEqual({ answer: "a" });
+  });
+
+  it("`updateActivityStep` يحوّل الخطوة النصّية إلى كائن عند أوّل إضافة", () => {
+    const draft = withSteps(["س", "ر"]);
+    draft.updateActivityStep("scene01", 0, { x: 500, y: 700 });
+    expect(draft.getScene("scene01")!.activity!.steps).toEqual([{ answer: "س", x: 500, y: 700 }, "ر"]);
+  });
+
+  it("يعدّل بالموضع لا بالمعنى — «ر» المكرّرة لها خانتان", () => {
+    // ⚠️ التعديل بالمعنى كان سيصيب الاثنتين معاً.
+    const draft = withSteps(["س", "ر", "ي", "ر"]);
+    draft.updateActivityStep("scene01", 1, { x: 700 });
+    expect(draft.getScene("scene01")!.activity!.steps).toEqual(["س", { answer: "ر", x: 700 }, "ي", "ر"]);
+  });
+
+  it("الحقل المُفرَّغ يُحذف — الغياب يعني «استعمل المعنى»", () => {
+    const draft = withSteps([{ answer: "egg", image: "egg_pic" }, "b"]);
+    draft.updateActivityStep("scene01", 0, { image: "" });
+    expect(draft.getScene("scene01")!.activity!.steps![0]).toEqual({ answer: "egg" });
+  });
+
+  it("⚠️ إعادة الترتيب تحمل الصورة والموضع معها", () => {
+    // الفجوة التي أوجدت `setActivitySteps(DraftSequenceStep[])`: كتابة
+    // المعاني وحدها كانت تمحو كل صورةٍ وموضعٍ في كل ضغطة على ↑.
+    const draft = withSteps([
+      { answer: "a", image: "a_pic", x: 100 },
+      { answer: "b", image: "b_pic", x: 200 }
+    ]);
+    const steps = draft.getScene("scene01")!.activity!.steps!;
+    draft.setActivitySteps("scene01", [steps[1]!, steps[0]!]);
+
+    expect(draft.getScene("scene01")!.activity!.steps).toEqual([
+      { answer: "b", image: "b_pic", x: 200 },
+      { answer: "a", image: "a_pic", x: 100 }
+    ]);
+  });
+
+  it("خطوة لا وجود لها لا تُنشئ شيئاً", () => {
+    const draft = withSteps(["س", "ر"]);
+    draft.updateActivityStep("scene01", 9, { x: 1 });
+    expect(draft.getScene("scene01")!.activity!.steps).toEqual(["س", "ر"]);
+  });
+});
+
+/** «يُجاب بالإطار وأزرار الصندوق» (v1.0.24). */
+describe("StoryDraft — طريقة الإجابة في «اختر الإجابة الصحيحة»", () => {
+  function withPick(over: Record<string, unknown> = {}) {
+    const raw = realisticStory();
+    const scenes = (raw as unknown as { story: { scenes: Array<Record<string, unknown>> } }).story.scenes;
+    scenes[0]!.activity = {
+      type: "pick-correct",
+      question: { text: "ابحث عن الألف" },
+      choices: [{ id: "c1", alias: "nest", correct: true }, { id: "c2", alias: "stone" }],
+      ...over
+    };
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("غيابه هو الحالة الطبيعية", () => {
+    expect(withPick().getScene("scene01")!.activity!.navigate).toBeUndefined();
+  });
+
+  it("يقرأ `true` كما أُلّف", () => {
+    expect(withPick({ navigate: true }).getScene("scene01")!.activity!.navigate).toBe(true);
+  });
+
+  it("التشغيل يكتب `true`", () => {
+    const draft = withPick();
+    draft.setActivityNavigate("scene01", true);
+    expect(draft.getScene("scene01")!.activity!.navigate).toBe(true);
+  });
+
+  it("⚠️ الإطفاء يحذف الحقل ولا يكتب `false`", () => {
+    // `false` صريحةٌ تقول ما يقوله الغياب، وتجعل كل مشهدٍ مرّ من الشاشة
+    // يختلف عن مثيله الذي لم يمرّ بلا فرقٍ في السلوك.
+    const draft = withPick({ navigate: true });
+    draft.setActivityNavigate("scene01", false);
+
+    const saved = (((draft.toJson() as any).story as any).scenes as any[])[0].activity;
+    expect("navigate" in saved).toBe(false);
+  });
+
+  it("قيمةٌ ليست منطقية تُقرأ غياباً — ولا تُمرَّر إلى المحرّك", () => {
+    expect(withPick({ navigate: "true" }).getScene("scene01")!.activity!.navigate).toBeUndefined();
+  });
+});

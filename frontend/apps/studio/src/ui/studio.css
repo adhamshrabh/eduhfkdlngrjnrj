@@ -596,6 +596,21 @@ body::after {
   box-shadow: inset 3px 0 0 var(--s-accent);
 }
 
+/* حقل إعادة التسمية في مكانه — يرث مقاس الاسم وثقله كي لا يقفز الصفّ
+   حين يُستبدل النصّ به. القفزة تُفقد المؤلّفة موضعها في قائمة من عشرة. */
+.s-item__rename {
+  font-size: 12.5px;
+  font-weight: 700;
+  font-family: inherit;
+  flex: 1;
+  min-width: 5.5rem;
+  padding: 2px 6px;
+  border: 1px solid var(--s-primary, #7f77dd);
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+}
+
 .s-item__name {
   font-size: 12.5px;
   font-weight: 700;
@@ -911,6 +926,52 @@ body::after {
   color: var(--s-ink-faint);
   text-align: center;
   padding: 4px;
+}
+
+/* ---------- الحذف من داخل الشبكة ---------- */
+
+/* غلافٌ يأخذ موضع البطاقة في الشبكة ليحمل ✕ فوقها — فتبقى
+   البطاقة زرّاً حقيقياً بدل زرّ داخل زرّ. لا يوجد إلا حيث يُطلب الحذف. */
+.s-asset-slot {
+  position: relative;
+  display: flex;
+}
+
+.s-asset-slot > .s-asset-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-asset-card__x {
+  position: absolute;
+  inset-inline-end: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  line-height: 1;
+  font-size: 11px;
+  font-family: inherit;
+  border: 1px solid var(--s-border);
+  border-radius: 50%;
+  background: var(--s-surface);
+  color: var(--s-ink-faint);
+  cursor: pointer;
+  /* مرئيٌ دائماً لكن خافت: الشبكة تُفتح للإضافة لا للحذف،
+     لكن زرّاً لا يظهر إلا بمرور المؤشّر لا يُكتشَف — ولا يوجد أصلاً على
+     شاشة لمس. والمؤلّفة معلّمة، لا من يجرّب التمرير بحثاً عن أزرار مخبأة. */
+  opacity: 0.5;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.s-asset-slot:hover .s-asset-card__x,
+.s-asset-card__x:focus-visible {
+  opacity: 1;
+}
+
+.s-asset-card__x:hover {
+  border-color: var(--s-bad);
+  color: var(--s-bad);
 }
 
 .s-asset-card__label {
