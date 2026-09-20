@@ -40,8 +40,11 @@ services:
     volumes:
       - ./frontend:/app/frontend:ro   # ليقرأ Django ملفات dist المبنية
       - media:/app/media
+    # ⚠️ محليّ عمداً، والباب هو المنهي العكسي (انظر `deploy/`). المنفذ العامّ
+    # يعني عنوان http، و http يعني أن المتصفّح يحذف `navigator.serial` فلا
+    # تُقرأ بطاقة واحدة. لا HTTPS = لا بطاقات.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     command: >
       sh -c "python manage.py migrate --noinput &&
              python manage.py collectstatic --noinput &&

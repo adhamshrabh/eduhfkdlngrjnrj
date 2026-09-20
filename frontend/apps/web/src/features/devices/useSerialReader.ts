@@ -14,8 +14,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { LineBuffer, readSignal, type ReaderSignal } from "./protocol";
+import { serialApi, serialBlock, type SerialPortLike } from "./webSerial";
 
-export type SerialStatus = "unsupported" | "idle" | "connecting" | "connected" | "busy" | "error";
+export type SerialStatus =
+  | "unsupported"
+  | "insecure"
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "busy"
+  | "error";
 
 interface UseSerialReaderResult {
   status: SerialStatus;
@@ -32,24 +40,10 @@ interface UseSerialReaderResult {
 /** سرعة الصندوق، مثبّتة في `firmware/platformio.ini`. */
 const BAUD_RATE = 115200;
 
-interface SerialPortLike {
-  open(options: { baudRate: number }): Promise<void>;
-  close(): Promise<void>;
-  readable: ReadableStream<Uint8Array> | null;
-}
-
-interface SerialLike {
-  getPorts(): Promise<SerialPortLike[]>;
-  requestPort(): Promise<SerialPortLike>;
-}
-
-function serialApi(): SerialLike | null {
-  const nav = navigator as unknown as { serial?: SerialLike };
-  return nav.serial ?? null;
-}
-
 export function useSerialReader(enabled: boolean): UseSerialReaderResult {
-  const [status, setStatus] = useState<SerialStatus>(() => (serialApi() ? "idle" : "unsupported"));
+  // سببُ الحجب جزءٌ من الحالة لا حاشية: «غير مدعوم» و«غير آمن» يعطّلان الزرّ
+  // نفسه، لكن أوّلهما يُصلَح بمتصفّح والثاني بشهادة على الخادم.
+  const [status, setStatus] = useState<SerialStatus>(() => serialBlock() ?? "idle");
   const [signals, setSignals] = useState<ReaderSignal[]>([]);
   /** آخر بطاقة، بحالة مستقلّة عن سجلّ الإشارات — انظر `useCardReader`
    *  للعطل الذي فرض ذلك: النبضات كانت تدفع البطاقة خارج السجلّ فيختفي

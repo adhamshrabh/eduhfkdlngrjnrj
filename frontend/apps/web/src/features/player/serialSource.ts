@@ -19,6 +19,12 @@
 import { EngineEvents, type BootstrappedApp } from "@edu/engine";
 
 import { LineBuffer, readSignal } from "../devices/protocol";
+import {
+  SERIAL_BLOCK_TEXT,
+  serialApi,
+  serialBlock,
+  type SerialPortLike,
+} from "../devices/webSerial";
 
 /** مثبّتة في `firmware/platformio.ini`. */
 const BAUD_RATE = 115200;
@@ -34,20 +40,6 @@ const BAUD_RATE = 115200;
  * العتاد طوال الحصّة.
  */
 const RETRY_DELAYS_MS = [2000, 4000];
-
-interface SerialPortLike {
-  open(options: { baudRate: number }): Promise<void>;
-  close(): Promise<void>;
-  readable: ReadableStream<Uint8Array> | null;
-}
-
-interface SerialLike {
-  getPorts(): Promise<SerialPortLike[]>;
-}
-
-function serialApi(): SerialLike | null {
-  return (navigator as unknown as { serial?: SerialLike }).serial ?? null;
-}
 
 /**
  * سطر تشخيص واحد لكل وصلة في السلسلة.
@@ -71,7 +63,10 @@ export type ButtonRoles = () => ReadonlyMap<number, string>;
 export function attachSerialSource(app: BootstrappedApp, roles?: ButtonRoles): () => void {
   const api = serialApi();
   if (!api) {
-    log("هذا المتصفّح لا يدعم Web Serial — افتحي المنصّة في Chrome أو Edge.");
+    // ⚠️ السطر الوحيد الذي سيُقرأ حين «لا تُقرأ البطاقة في القصّة»: صفحة
+    // العرض تصمت بالتصميم، فليقل السجلّ أيّ العطلين هو — متصفّحٌ ناقص، أم
+    // صفحةٌ على http حُذفت منها الواجهة أصلاً.
+    log(SERIAL_BLOCK_TEXT[serialBlock() ?? "unsupported"]);
     return () => {};
   }
 

@@ -20,6 +20,7 @@ import { useToast } from "@/lib/toast";
 
 import { useCardReader } from "./useCardReader";
 import { useSerialReader } from "./useSerialReader";
+import { SERIAL_BLOCK_TEXT, type SerialBlock } from "./webSerial";
 
 interface DeviceCard {
   id: number;
@@ -68,6 +69,8 @@ function usbLabel(status: string): string {
   if (status === "connecting") return "يتّصل…";
   if (status === "error") return "تعذّر الفتح";
   if (status === "unsupported") return "غير مدعوم";
+  // ليست «غير مدعوم»: القارئ والمتصفّح سليمان، والناقص شهادة على الخادم.
+  if (status === "insecure") return "يحتاج HTTPS";
   return "غير متّصل";
 }
 
@@ -96,6 +99,9 @@ export function DevicesPage(): JSX.Element {
   const serial = useSerialReader(overUsb && Boolean(selected));
 
   const connected = overUsb ? serial.status === "connected" : wifi.status === "connected";
+  /** سبب حجب المنفذ إن وُجد — يخفي زرّ التوصيل ويشرح لماذا في آنٍ واحد. */
+  const usbBlock: SerialBlock | null =
+    serial.status === "insecure" || serial.status === "unsupported" ? serial.status : null;
   const lastCard = overUsb ? serial.lastCard : wifi.lastCard;
   const lastPosition = overUsb ? serial.lastPosition : wifi.lastPosition;
   const signals = overUsb ? serial.signals : wifi.signals;
@@ -265,7 +271,7 @@ export function DevicesPage(): JSX.Element {
                 {/* المتصفّح يشترط ضغطة مستخدم لفتح حوار اختيار المنفذ —
                     لا يمكن فتحه تلقائياً. لكن `getPorts()` يعيد منفذاً سبق
                     الإذن به، فالضغطة مرّة واحدة لا كل صباح. */}
-                {overUsb && !connected && serial.status !== "unsupported" && (
+                {overUsb && !connected && !usbBlock && (
                   <Button onClick={() => void serial.connect()}>
                     <Plug size={16} /> توصيل عبر USB
                   </Button>
@@ -294,10 +300,8 @@ export function DevicesPage(): JSX.Element {
             {overUsb && serial.error && (
               <div className="px-4 pb-4 text-label text-amber-700">{serial.error}</div>
             )}
-            {overUsb && serial.status === "unsupported" && (
-              <div className="px-4 pb-4 text-label text-slate-500">
-                هذا المتصفّح لا يدعم قراءة المنفذ. افتحي المنصّة في Chrome أو Edge.
-              </div>
+            {overUsb && usbBlock && (
+              <div className="px-4 pb-4 text-label text-slate-500">{SERIAL_BLOCK_TEXT[usbBlock]}</div>
             )}
           </Card>
 

@@ -38,11 +38,34 @@ npm run dev:studio     # الاستوديو → http://localhost:5174
 ```bash
 export DJANGO_SECRET_KEY="قيمة-عشوائية-طويلة"
 export POSTGRES_PASSWORD="كلمة-مرور-قوية"
-export DJANGO_ALLOWED_HOSTS="rawda.example.com"
+export DJANGO_ALLOWED_HOSTS="srv1714868.hstgr.cloud"
 docker compose up -d
 ```
 
-خدمة واحدة على المنفذ 8000 تخدم كل شيء: الواجهة والاستوديو والواجهة البرمجية ولوحة Django.
+خدمة واحدة تخدم كل شيء: الواجهة والاستوديو والواجهة البرمجية ولوحة Django. وهي تستمع على `127.0.0.1:8000` لا على الشبكة — الباب منهٍ عكسي.
+
+### HTTPS ليس خياراً هنا
+
+قارئ البطاقات يمرّ عبر Web Serial، والمتصفّح يحذف `navigator.serial` كلّياً في «السياق غير الآمن». قياسٌ على خادم الروضة، بالمتصفّح نفسه:
+
+| العنوان | `isSecureContext` | `navigator.serial` |
+| --- | --- | --- |
+| `http://187.127.118.191:8888` | `false` | `undefined` |
+| `https://srv1714868.hstgr.cloud` | `true` | `object` |
+
+فالفرق ليس في المتصفّح ولا في الكبل: هو العنوان وحده. ونشرُ المنصّة على منفذٍ عارٍ ولو «مؤقّتاً» يعني صفّاً بلا بطاقات.
+
+**الخادم الحالي فيه nginx وشهادة Let's Encrypt صالحة** على `srv1714868.hstgr.cloud`، فلا يلزم إصدار شهادة:
+
+```bash
+sudo cp deploy/nginx-rawda.conf /etc/nginx/conf.d/rawda.conf
+grep -rl srv1714868.hstgr.cloud /etc/nginx/   # عطّلي كتلة «Coming Soon» القديمة
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+ثم أغلقي المنفذ 8888 من الجدار الناري: بابٌ ثانٍ بـ http يعني معلّمةً تفتحه بالخطأ فلا تعمل بطاقاتها.
+
+على خادمٍ جديد بلا nginx، `deploy/Caddyfile` يقوم بالدور نفسه بشهادة تلقائية (ويكفي اسم `nip.io` بلا شراء نطاق).
 
 ---
 
