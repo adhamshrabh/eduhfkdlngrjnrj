@@ -2834,7 +2834,11 @@ export class StudioApp {
       { value: "drag-match", label: "سحب ومطابقة" },
       { value: "pick-correct", label: "اختيار الإجابة الصحيحة" },
       { value: "card-answer", label: "الجواب المباشر (بطاقة)" },
-      { value: "sequence", label: "الترتيب (بطاقات بالتتابع)" }
+      { value: "sequence", label: "الترتيب (بطاقات بالتتابع)" },
+      { value: "jigsaw", label: "الأحجية (تركيب صورة)" },
+      { value: "sort", label: "الفرز (سلال ومعايير)" },
+      { value: "find", label: "ابحث وقُل أين (مواضع في المشهد)" },
+      { value: "all-respond", label: "كل الأيدي (يجيب الصفّ كلّه)" }
     ];
 
     if (!KNOWN_TYPES.some((t) => t.value === activity.type)) {
@@ -2874,6 +2878,26 @@ export class StudioApp {
 
     if (activity.type === "sequence") {
       wrap.appendChild(this.renderSequenceEditor(scene, activity));
+      return wrap;
+    }
+
+    if (activity.type === "jigsaw") {
+      wrap.appendChild(this.renderJigsawEditor(scene, activity));
+      return wrap;
+    }
+
+    if (activity.type === "sort") {
+      wrap.appendChild(this.renderSortEditor(scene, activity));
+      return wrap;
+    }
+
+    if (activity.type === "find") {
+      wrap.appendChild(this.renderFindEditor(scene, activity));
+      return wrap;
+    }
+
+    if (activity.type === "all-respond") {
+      wrap.appendChild(this.renderAllRespondEditor(scene, activity));
       return wrap;
     }
 
@@ -3746,6 +3770,762 @@ export class StudioApp {
    * والترتيب **متتالية لا مجموعة**: الموضع معنى، والتكرار مقصود («سرير»
    * فيها «ر» مرّتان). فلا شيء هنا يطوي مكرَّراً ولا يرتّب تلقائياً.
    */
+  /**
+   * محرّر «الأحجية» (v1.0.25).
+   *
+   * ⚠️ ما لا يفعله: لا يرفع قطعاً ولا يطلبها. الصورة واحدة من أصول القصّة،
+   * والقطع تُقصّ وقت التشغيل (§3) — فالمؤلّفة تختار صورةً وشبكةً، وانتهى.
+   * وهذا ما يجعل النوع مستعمَلاً في روضةٍ بلا مصمّم.
+   */
+  private renderJigsawEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    const audioOptions = [
+      { value: "", label: "بدون" },
+      ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
+    ];
+    const images = draft.assets.filter((a) => isImageAsset(a.src));
+
+    const cols = activity.grid?.cols ?? 2;
+    const rows = activity.grid?.rows ?? 2;
+    const total = cols * rows;
+
+    // --- ٢ · السؤال ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(
+      textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "question", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت السؤال", activity.question?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "question", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // --- ٣ · الصورة والشبكة ----------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · الصورة والشبكة"));
+    wrap.appendChild(
+      el("div", "s-item__meta", "القطع تُقصّ من هذه الصورة نفسها — لا ترفع قطعاً منفصلة.")
+    );
+    wrap.appendChild(
+      assetChooser(
+        "الصورة",
+        images.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+        activity.image,
+        (alias) => {
+          draft.setJigsawImage(scene.id, alias ?? "");
+          this.markEdited();
+          this.render();
+        },
+        { allowNone: true, noneLabel: "بدون", triggerLabel: "اختر صورة" }
+      )
+    );
+    if (!activity.image) {
+      wrap.appendChild(status("bad", "بلا صورة لا توجد قطع — اختر صورة من أصول القصّة."));
+    }
+
+    const sideOptions = [1, 2, 3, 4, 5, 6].map((n) => ({ value: String(n), label: String(n) }));
+    wrap.appendChild(
+      selectField("أعمدة", String(cols), sideOptions, (value) => {
+        draft.setJigsawGrid(scene.id, "cols", Number(value));
+        this.markEdited();
+        this.render();
+      })
+    );
+    wrap.appendChild(
+      selectField("صفوف", String(rows), sideOptions, (value) => {
+        draft.setJigsawGrid(scene.id, "rows", Number(value));
+        this.markEdited();
+        this.render();
+      })
+    );
+
+    if (total < 2) {
+      wrap.appendChild(status("bad", "قطعة واحدة ليست أحجية — زد الأعمدة أو الصفوف."));
+    } else {
+      // العدد وحده لا يكفي حكماً: خمس سنوات وستّ وثلاثون قطعة قرارٌ يُتَّخذ
+      // أمام الصفّ لا في الجدول. والرقم يُقال، والحكم للمعلّمة.
+      wrap.appendChild(el("div", "s-item__meta", `${total} قطعة.` + (total > 9 ? " كثيرة لطفل الروضة — جرّبها على الشاشة قبل الحصّة." : "")));
+    }
+
+    wrap.appendChild(
+      numberField("درجة التسامح في المطابقة", activity.matchTolerance ?? 60, (v) => {
+        draft.updateActivity(scene.id, { matchTolerance: v });
+        this.markEdited();
+      })
+    );
+
+    // --- ٤ · عناوين البطاقات ---------------------------------------
+    //
+    // ⚠️ اختياريّ بالكامل: النشاط يُلعب بالإصبع، والبطاقة طريقٌ ثانٍ
+    // متساوٍ (§6) لا شرطٌ — بخلاف «الجواب المباشر» و«الترتيب» اللذين لا
+    // يُجابان باللمس إطلاقاً. فلا تحذير هنا من «لا بطاقة».
+    if (total >= 2 && total <= 12) {
+      wrap.appendChild(el("div", "s-field__label", "٤ · عناوين البطاقات (اختياري)"));
+      wrap.appendChild(
+        el(
+          "div",
+          "s-item__meta",
+          "الخانات مرقّمة من اليمين. اترك الاسم فارغاً ليبقى العنوان الافتراضي pN."
+        )
+      );
+      const aliasByCell = new Map((activity.pieces ?? []).map((piece) => [piece.cell, piece.alias]));
+      for (let cell = 1; cell <= total; cell++) {
+        const alias = aliasByCell.get(cell) ?? "";
+        const row = el("div", "s-item");
+        row.appendChild(el("div", "s-item__meta", `خانة ${cell}`));
+        const input = el("input", "s-input") as HTMLInputElement;
+        input.type = "text";
+        input.value = alias;
+        input.placeholder = `p${cell}`;
+        // عند الخروج لا عند كل حرف: إعادة الرسم وسط الكتابة تسرق التركيز
+        // (العلّة نفسها التي تجعل X/Y تُثبَّت عند blur).
+        input.onblur = () => {
+          const next = input.value.trim();
+          if (next === alias) return;
+          draft.setJigsawPieceAlias(scene.id, cell, next);
+          this.markEdited();
+          this.render();
+        };
+        row.appendChild(input);
+        if (alias && this.cardLabels !== null) {
+          const bound = this.cardLabels.has(alias);
+          row.appendChild(
+            tag(
+              bound ? "chain" : "warning",
+              bound ? "بطاقة" : "لا بطاقة",
+              `s-item__meta ${bound ? "" : "s-item__meta--warn"}`
+            )
+          );
+        }
+        wrap.appendChild(row);
+      }
+    } else if (total > 12) {
+      wrap.appendChild(
+        el("div", "s-item__meta", "الأحجيات الكبيرة تُلعب بالسحب — لا تُعرض عناوين بطاقات لأكثر من ١٢ خانة.")
+      );
+    }
+
+    // --- ٥ · ردّ الخطأ ---------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٥ · حين تُفلَت القطعة بعيداً"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "القطعة تعود إلى مكانها ويعيد الطفل المحاولة. الحكم عند كل قطعة — لأن القطعة تدخل أو لا تدخل، والمادّة هي من تخبر."
+      )
+    );
+    wrap.appendChild(
+      textField("ردّ الشخصية", activity.wrongResponse?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت الردّ", activity.wrongResponse?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    return wrap;
+  }
+
+  /**
+   * محرّر «الفرز» (v1.0.26).
+   *
+   * ⚠️ ما يقوله هذا المحرّر ولا يقوله أي محرّر آخر: **الأثر التعليمي في
+   * المشهد التالي**. الفرز مرّةً واحدة تصنيف؛ والفرز مرّتين بالأغراض نفسها
+   * وقاعدةٍ أخرى هو تمرين المرونة المعرفية (§4). وهذا لا يفرضه حقل ولا
+   * يحرسه مُتحقِّق — يُقال للمؤلّفة، أو لا يحدث.
+   */
+  private renderSortEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    const audioOptions = [
+      { value: "", label: "بدون" },
+      ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
+    ];
+    const backgrounds = draft.backgroundAliases;
+    const images = draft.assets.filter((a) => isImageAsset(a.src) && !backgrounds.has(a.alias));
+
+    const bins = activity.bins ?? [];
+    const items = activity.items ?? [];
+    const binOptions = bins.map((bin) => ({ value: bin.id, label: bin.label || bin.id }));
+
+    // --- ٢ · السؤال ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(el("div", "s-item__meta", "بأي قاعدة نفرز؟ هذا ما يسمعه الصفّ قبل أن يبدأ."));
+    wrap.appendChild(
+      textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "question", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت السؤال", activity.question?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "question", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // --- ٣ · السلال -------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · السلال"));
+    bins.forEach((bin) => {
+      const row = el("div", "s-item");
+      const input = el("input", "s-input") as HTMLInputElement;
+      input.type = "text";
+      input.value = bin.label ?? "";
+      input.placeholder = "اسم السلّة — «أغراض يارا»";
+      // عند الخروج لا عند كل حرف: إعادة الرسم وسط الكتابة تسرق التركيز.
+      input.onblur = () => {
+        if (input.value.trim() === (bin.label ?? "")) return;
+        draft.updateSortBin(scene.id, bin.id, { label: input.value.trim() });
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(input);
+
+      const count = items.filter((item) => item.bin === bin.id).length;
+      row.appendChild(el("div", "s-item__meta", `${count} غرض`));
+
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      // سلّتان الحدّ الأدنى — وحذفُ سلّةٍ يحذف أغراضها معها، وإلّا بقي
+      // غرضٌ يتيم لا تُقبل له إجابة أبداً.
+      remove.disabled = bins.length <= 2;
+      remove.onclick = () => {
+        if (!draft.removeSortBin(scene.id, bin.id)) return;
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(remove);
+      wrap.appendChild(row);
+
+      if (!bin.label) {
+        wrap.appendChild(status("warn", "سلّة بلا اسم لا تقول للطفلة ما الذي تجمعه."));
+      }
+
+      wrap.appendChild(
+        assetChooser(
+          "",
+          images.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          bin.image,
+          (alias) => {
+            draft.updateSortBin(scene.id, bin.id, { image: alias ?? "" });
+            this.markEdited();
+            this.render();
+          },
+          { allowNone: true, noneLabel: "إطار بلا صورة", triggerLabel: "صورة السلّة (اختياري)" }
+        )
+      );
+    });
+
+    wrap.appendChild(
+      button("أضف سلّة", () => {
+        draft.addSortBin(scene.id);
+        this.markEdited();
+        this.render();
+      })
+    );
+
+    // --- ٤ · الأغراض ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٤ · الأغراض وسلّاتها"));
+
+    if (items.length === 0) {
+      wrap.appendChild(status("bad", "بلا أغراض لا يوجد ما يُفرَز — أضف غرضاً أدناه."));
+    }
+
+    items.forEach((item) => {
+      const row = el("div", "s-item");
+      row.appendChild(el("div", "s-item__name", item.alias));
+      const missing = !draft.assets.some((a) => a.alias === item.alias);
+      if (missing) row.appendChild(tag("warning", "صورة مفقودة", "s-item__meta s-item__meta--warn"));
+
+      const select = el("select", "s-select") as HTMLSelectElement;
+      for (const option of binOptions) {
+        const node = document.createElement("option");
+        node.value = option.value;
+        node.textContent = option.label;
+        select.appendChild(node);
+      }
+      select.value = item.bin;
+      select.onchange = () => {
+        draft.setSortItemBin(scene.id, item.id, select.value);
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(select);
+
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      remove.onclick = () => {
+        draft.removeSortItem(scene.id, item.id);
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(remove);
+      wrap.appendChild(row);
+    });
+
+    // سلّةٌ لا ينتمي إليها شيء تبقى فارغة في كل حلٍّ صحيح — وهي على الأرجح
+    // سلّةٌ نُسي ملؤها، لا قراراً.
+    const emptyBins = bins.filter((bin) => !items.some((item) => item.bin === bin.id));
+    if (items.length > 0 && emptyBins.length > 0) {
+      wrap.appendChild(
+        status("warn", `لا غرض في: ${emptyBins.map((b) => b.label || b.id).join("، ")} — تبقى فارغة في الحلّ الصحيح.`)
+      );
+    }
+
+    const firstBin = bins[0]?.id;
+    if (firstBin && images.length > 0) {
+      wrap.appendChild(
+        assetChooser(
+          "",
+          images.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          undefined,
+          (alias) => {
+            if (!alias) return;
+            draft.addSortItem(scene.id, alias, firstBin);
+            this.markEdited();
+            this.render();
+          },
+          { allowNone: false, triggerLabel: "أضف غرضاً" }
+        )
+      );
+      wrap.appendChild(el("div", "s-item__meta", `يُضاف إلى «${bins[0]?.label || firstBin}»، ثم انقله من قائمته.`));
+    }
+
+    // --- ٥ · تبديل القاعدة ------------------------------------------
+    //
+    // ليس حقلاً بل توصية: ما يدرّب المرونة المعرفية هو الفرز مرّتين
+    // بالأغراض **نفسها** وقاعدةٍ أخرى — ويُؤلَّف مشهدين، بلا أي إضافة إلى
+    // العقد (§4). وحقلٌ لهذا كان سيصف داخل نشاطٍ ما يصفه مشهدان بوضوحٍ أكبر.
+    wrap.appendChild(el("div", "s-field__label", "٥ · تبديل القاعدة (توصية)"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "التمرين الحقيقي أن يتكرّر الفرز في المشهد التالي بالأغراض نفسها وقاعدة أخرى — بالحجم بدل المالك مثلاً. كرّر المشهد، وغيّر أسماء السلال وتوزيع الأغراض وحدها."
+      )
+    );
+
+    // --- ٦ · ردّ الخطأ ----------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٦ · حين يكون الفرز خاطئاً"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "لا حكم قبل أن يُوضع آخر غرض، ولا شيء يُقلَب بعده: الأغراض تبقى مكانها، ولا يُقال أيّها الخطأ. أيّ تحريك بعد الردّ يُعيد الحكم."
+      )
+    );
+    wrap.appendChild(
+      textField("ردّ الشخصية", activity.wrongResponse?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت الردّ", activity.wrongResponse?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // ⚠️ البطاقة هنا **تُخرج التصنيف من المهمّة** (§6): تضع الغرض في سلّته
+    // الصحيحة بلا أن تقرّر الطفلة. يُقال صراحةً، لأن المؤلّفة التي ربطت
+    // بطاقات لنشاطٍ آخر ستفترض أنها تعمل هنا بالمعنى نفسه.
+    if (this.cardLabels !== null && items.some((item) => this.cardLabels!.has(item.alias))) {
+      wrap.appendChild(
+        status(
+          "info",
+          "بعض الأغراض لها بطاقات مربوطة. البطاقة تضع الغرض في سلّته الصحيحة مباشرة — فهي طريق وصول لطفل لا يبلغ الشاشة، لا طريقة اللعب المقصودة."
+        )
+      );
+    }
+
+    return wrap;
+  }
+
+  /**
+   * محرّر «ابحث وقُل أين» (v1.0.27).
+   *
+   * ⚠️ لا يعرض قائمة أصول بل **قائمة عناصر هذا المشهد**: الموضع شيءٌ
+   * وضعته المؤلّفة على المسرح بيدها، لا صورة في الرزمة (§3). وعرض
+   * `assets[]` هنا كان سيدعوها إلى اختيار اسمٍ لا يُلمَس في هذا المشهد.
+   *
+   * وما يُلحّ عليه: **الاسم العربي للمكان**. بغيره لا تُولَّد الجملة
+   * المكانية، ويصير النشاط سؤالاً صامتاً — أي `pick-correct` بخطوات أكثر.
+   */
+  private renderFindEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    const audioOptions = [
+      { value: "", label: "بدون" },
+      ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
+    ];
+
+    const RELATIONS = [
+      { value: "", label: "بلا علاقة" },
+      { value: "under", label: "تحت" },
+      { value: "over", label: "فوق" },
+      { value: "behind", label: "خلف" },
+      { value: "in-front", label: "أمام" },
+      { value: "inside", label: "داخل" },
+      { value: "beside", label: "بجانب" }
+    ];
+    const wordOf = (relation?: string) => RELATIONS.find((r) => r.value === relation)?.label ?? "";
+
+    const spots = activity.spots ?? [];
+    const sceneAliases = scene.elements.map((element) => element.alias).filter((a): a is string => !!a);
+    const unused = sceneAliases.filter((alias) => !spots.some((spot) => spot.alias === alias));
+
+    // --- ٢ · السؤال ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(el("div", "s-item__meta", "عمّ نبحث؟ المواضع على المسرح أصلاً، فاللمس مقبول فور بدء النشاط."));
+    wrap.appendChild(
+      textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "question", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت السؤال", activity.question?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "question", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // --- ٣ · المواضع ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · المواضع"));
+
+    if (scene.elements.length === 0) {
+      wrap.appendChild(
+        status("bad", "لا عناصر في هذا المشهد — أضف عناصر أولاً من تبويب «العناصر»، فالمواضع هي عناصر المشهد نفسها.")
+      );
+    }
+
+    if (spots.length > 0 && !spots.some((spot) => spot.correct)) {
+      wrap.appendChild(status("bad", "لم تحدّد الموضع الذي يخبّئ المطلوب — بدونه لا يُحلّ النشاط أبداً."));
+    }
+
+    spots.forEach((spot) => {
+      const row = el("div", "s-item");
+      row.appendChild(el("div", "s-item__name", spot.alias));
+
+      const pick = el("button", "s-btn") as HTMLButtonElement;
+      pick.type = "button";
+      pick.textContent = spot.correct ? "★ هنا المطلوب" : "اجعله الصحيح";
+      pick.disabled = spot.correct === true;
+      pick.onclick = () => {
+        draft.setFindCorrectSpot(scene.id, spot.id);
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(pick);
+
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      remove.onclick = () => {
+        draft.removeFindSpot(scene.id, spot.id);
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(remove);
+      wrap.appendChild(row);
+
+      const labelInput = el("input", "s-input") as HTMLInputElement;
+      labelInput.type = "text";
+      labelInput.value = spot.label ?? "";
+      labelInput.placeholder = "اسم المكان بالعربية — «السرير»";
+      labelInput.onblur = () => {
+        if (labelInput.value.trim() === (spot.label ?? "")) return;
+        draft.updateFindSpot(scene.id, spot.id, { label: labelInput.value.trim() });
+        this.markEdited();
+        this.render();
+      };
+      wrap.appendChild(labelInput);
+
+      wrap.appendChild(
+        selectField("العلاقة", spot.relation ?? "", RELATIONS, (value) => {
+          draft.updateFindSpot(scene.id, spot.id, { relation: value });
+          this.markEdited();
+          this.render();
+        })
+      );
+
+      // ⚠️ ما سيُقال فعلاً، معروضاً قبل الحفظ. هذا هو التدخّل كلّه: كلمةٌ
+      // مكانية عند كل محاولة. وسطرٌ فارغ هنا يعني نشاطاً صامتاً.
+      const word = wordOf(spot.relation);
+      if (word && spot.label) {
+        wrap.appendChild(
+          el(
+            "div",
+            "s-item__meta",
+            spot.correct ? `سيُقال: «نعم! ${word} ${spot.label}»` : `سيُقال: «ليس ${word} ${spot.label}»`
+          )
+        );
+      } else {
+        wrap.appendChild(
+          status("warn", "بلا علاقة واسمٍ عربيّ لن تُقال أي كلمة مكانية هنا — وهي سبب وجود هذا النشاط.")
+        );
+      }
+    });
+
+    if (unused.length > 0) {
+      wrap.appendChild(
+        assetChooser(
+          "",
+          unused.map((alias) => {
+            const asset = draft.assets.find((a) => a.alias === alias);
+            return { alias, url: asset ? this.assetUrl(asset.src) : "" };
+          }),
+          undefined,
+          (alias) => {
+            if (!alias) return;
+            draft.addFindSpot(scene.id, alias);
+            this.markEdited();
+            this.render();
+          },
+          { allowNone: false, triggerLabel: "أضف موضعاً من عناصر المشهد" }
+        )
+      );
+    }
+
+    // --- ٤ · ما يُعثَر عليه -----------------------------------------
+    //
+    // ⚠️ لا حقل خاصّ به: ما يظهر عند العثور هو `onSolved.showObject`
+    // الموجود في كل نوعٍ منذ v1.0 (§2). وحقلٌ ثانٍ كان سيصف الشيء نفسه.
+    wrap.appendChild(el("div", "s-field__label", "٤ · ما يُعثَر عليه"));
+    const backgrounds = draft.backgroundAliases;
+    const rewardAssets = draft.assets.filter((a) => isImageAsset(a.src) && !backgrounds.has(a.alias));
+    wrap.appendChild(
+      assetChooser(
+        "الغرض الضائع",
+        rewardAssets.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+        activity.onSolved?.showObject,
+        (alias) => {
+          draft.updateActivityOnSolved(scene.id, { showObject: alias ?? "" });
+          this.markEdited();
+          this.render();
+        },
+        { allowNone: true, noneLabel: "بدون", triggerLabel: "اختر الغرض" }
+      )
+    );
+    if (!activity.onSolved?.showObject) {
+      wrap.appendChild(status("warn", "بلا غرضٍ يظهر، لا يرى الصفّ ما وُجد."));
+    }
+
+    // --- ٥ · ردّ الخطأ ----------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٥ · ردّ الخطأ"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "اتركه فارغاً ليُولَّد من العلاقة والاسم — «ليس خلف الباب». وما تكتبينه هنا يحلّ محلّ الجملة المولَّدة في كل المواضع."
+      )
+    );
+    wrap.appendChild(
+      textField("ردّ الشخصية", activity.wrongResponse?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت الردّ", activity.wrongResponse?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { audio: value });
+        this.markEdited();
+      })
+    );
+    if (activity.wrongResponse?.text) {
+      wrap.appendChild(
+        status("info", "الردّ المكتوب يسبق المولَّد — لن تُقال كلمة المكان عند الخطأ ما دام موجوداً.")
+      );
+    }
+
+    return wrap;
+  }
+
+  /**
+   * محرّر «كل الأيدي» (v1.0.28).
+   *
+   * ⚠️ ما لا يوجد فيه أهمّ ممّا يوجد: **لا حقل لردّ الخطأ**، ولا «الإجابة
+   * الصحيحة» بصيغة المفرد. هذا النشاط لا يخسر فيه أحد (§4)، وحقلٌ يوحي
+   * بغير ذلك كان سيجعل المؤلّفة تبني لحظةً تُفرز فيها الغرفة أمام نفسها.
+   *
+   * وما يُلحّ عليه: **البطاقات المربوطة**. لا يُجاب باللمس إطلاقاً، فرزمةٌ
+   * غير مربوطة تعني عشرين طفلاً يرفعون ما لا يُقرأ.
+   */
+  private renderAllRespondEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    const audioOptions = [
+      { value: "", label: "بدون" },
+      ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
+    ];
+    const answers = activity.answers ?? [];
+
+    // --- ٢ · السؤال ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(
+      el("div", "s-item__meta", "يرفع كل طفل بطاقةً معاً. لا يُعدّ شيء قبل انتهاء السؤال.")
+    );
+    wrap.appendChild(
+      textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "question", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت السؤال", activity.question?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "question", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // --- ٣ · الإجابات المحتسَبة صحيحة --------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · ما يُحتسب صحيحاً"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "كل بطاقة تُعدّ وتظهر في التوزيع، طابقت أو لم تطابق. وهذه القائمة لقراءتك أنت: كم من الغرفة أصاب."
+      )
+    );
+
+    if (answers.length === 0) {
+      wrap.appendChild(status("bad", "بلا إجابة صحيحة لا يقول التوزيع شيئاً — أضف معنى بطاقة."));
+    }
+
+    answers.forEach((answer, i) => {
+      const row = el("div", "s-item");
+      row.appendChild(el("div", "s-item__name", answer));
+      const bound = this.cardLabels?.has(answer) ?? null;
+      if (bound !== null) {
+        row.appendChild(
+          tag(
+            bound ? "chain" : "warning",
+            bound ? "بطاقة" : "لا بطاقة",
+            `s-item__meta ${bound ? "" : "s-item__meta--warn"}`
+          )
+        );
+      }
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      remove.onclick = () => {
+        draft.setActivityAnswers(
+          scene.id,
+          answers.filter((_, j) => j !== i)
+        );
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(remove);
+      wrap.appendChild(row);
+    });
+
+    const addRow = el("div", "s-item");
+    const addInput = el("input", "s-input") as HTMLInputElement;
+    addInput.type = "text";
+    addInput.placeholder = "معنى البطاقة — «حذاء»";
+    const addAnswer = () => {
+      const value = addInput.value.trim();
+      if (!value || answers.includes(value)) return;
+      draft.setActivityAnswers(scene.id, [...answers, value]);
+      this.markEdited();
+      this.render();
+    };
+    addInput.addEventListener("keydown", (e) => {
+      if ((e as KeyboardEvent).key === "Enter") {
+        e.preventDefault();
+        addAnswer();
+      }
+    });
+    addRow.appendChild(addInput);
+    const addBtn = el("button", "s-btn") as HTMLButtonElement;
+    addBtn.type = "button";
+    addBtn.textContent = "أضف";
+    addBtn.onclick = addAnswer;
+    addRow.appendChild(addBtn);
+    wrap.appendChild(addRow);
+
+    // ⚠️ هذا النشاط لا يُجاب باللمس إطلاقاً — رزمةٌ غير مربوطة تعني عشرين
+    // طفلاً يرفعون ما لا يُقرأ. يُقال هنا حيث يمكن الإصلاح، لا أمام الصفّ.
+    if (this.cardLabels !== null && answers.length > 0) {
+      const unbound = answers.filter((answer) => !this.cardLabels!.has(answer));
+      if (unbound.length === answers.length) {
+        wrap.appendChild(
+          status(
+            "warn",
+            "لا بطاقة مربوطة بأي إجابة — هذا النشاط لا يُجاب باللمس، فلن يُقرأ ما يرفعه الأطفال. اربط بطاقات من «الأجهزة» بالأسماء نفسها."
+          )
+        );
+      } else if (unbound.length > 0) {
+        wrap.appendChild(status("warn", `بلا بطاقة: ${unbound.join("، ")}`));
+      }
+    }
+
+    // --- ٤ · كم ننتظر ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٤ · كم ننتظر"));
+    wrap.appendChild(
+      numberField("عدد البطاقات المنتظَرة", activity.expect ?? 12, (v) => {
+        draft.updateAllRespond(scene.id, { expect: v });
+        this.markEdited();
+        this.render();
+      })
+    );
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "عدد الحاضرين اليوم، لا عدد المسجّلين. منه تُبنى «وصلت ٧ من ١٢» — وهي ما يُمسك الغرفة."
+      )
+    );
+    wrap.appendChild(
+      numberField("سقف الانتظار (ثانية)", activity.waitSeconds ?? 30, (v) => {
+        draft.updateAllRespond(scene.id, { waitSeconds: v });
+        this.markEdited();
+        this.render();
+      })
+    );
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "ينتهي الانتظار بأيّهما أسبق: اكتمال العدد أو انقضاء المهلة. ولا يُكشف التوزيع قبل ٣ ثوانٍ مهما أسرعت البطاقات — كي لا تنتهي لحظة التفكير عند أسرع ثلاثة."
+      )
+    );
+
+    // --- ٥ · ما تراه الشاشة ------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٥ · ما يظهر، وما لا يظهر"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "أثناء الانتظار: «وصلت ٧ من ١٢». وعند الإغلاق: توزيع الإجابات — «١٢ بطاقة: ٩ للحذاء، ٣ للدمية». ولا اسم ولا نتيجة لطفل بعينه: المنصّة لا تعرف من أجاب، والبطاقة تحمل معنىً لا هويّة."
+      )
+    );
+    wrap.appendChild(
+      status(
+        "info",
+        "لا يخسر أحد هنا: لا ردّ خطأ ولا إعادة، والقصّة تمضي دائماً. التوزيع لك أنتِ — تقرئينه وتقرّرين هل تُعاد الفكرة الآن."
+      )
+    );
+
+    return wrap;
+  }
+
   private renderSequenceEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
     const draft = this.draft!;
     const wrap = el("div", "s-stack");

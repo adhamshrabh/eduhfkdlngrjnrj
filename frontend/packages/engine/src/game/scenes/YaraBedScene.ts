@@ -1433,6 +1433,45 @@ export class YaraBedScene extends Scene {
     },
     clearHint: (): void => {
       /* السطر التالي يستبدله؛ لا شيء يُمحى صراحةً. */
+    },
+
+    /**
+     * يجعل عناصر المشهد المسمّاة قابلةً للّمس ما دام «ابحث» يعمل (v1.0.27 §3).
+     *
+     * ⚠️ لا يُنشئ شيئاً ولا يرسم: يعيد ربط `setTapResponse` على عناصر
+     * موجودة، ثم يعيدها إلى ما كانت. وهذا سببُ وجود النوع أصلاً — النشاط
+     * يعمل بأثاث الغرفة لا بسطحٍ يعلو عليها.
+     *
+     * والحارس `() => true` مقصود: الحارس الافتراضي
+     * (`!this.puzzle.isActive`) يمنع اللمس أثناء أي نشاط — وهو بالضبط
+     * الوقت الذي يجب أن يُقبل فيه اللمس هنا.
+     */
+    enableSpots: (
+      aliases: string[],
+      onTap: (alias: string) => void
+    ): { restore: () => void; found: string[] } => {
+      const found: string[] = [];
+      const bound: string[] = [];
+      for (const alias of new Set(aliases)) {
+        const id = this.spriteRegistry.idForAlias(alias);
+        if (!id) continue;
+        found.push(alias);
+        bound.push(id);
+        this.spriteRegistry.setTapResponse(id, () => onTap(alias), () => true);
+      }
+      return {
+        found,
+        restore: (): void => {
+          // تُعاد استجابة اللمس المؤلَّفة (v1.0.11)، لا تُلغى: عنصرٌ كان
+          // يجيب عن اللمس قبل النشاط يجب أن يبقى كذلك بعده.
+          const elements = this.scenes[this.currentSceneIndex]?.elements ?? [];
+          for (const id of bound) {
+            const element = elements.find((el) => el.id === id);
+            if (element) this.wireTapResponse(element);
+            else this.spriteRegistry.setTapResponse(id, null, () => false);
+          }
+        }
+      };
     }
   };
 

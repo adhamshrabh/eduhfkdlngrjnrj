@@ -27,8 +27,21 @@ import { PuzzleRunner } from "./PuzzleRunner";
 import { PickCorrectRunner } from "./PickCorrectRunner";
 import { CardAnswerRunner, type CardAnswerHost } from "./CardAnswerRunner";
 import { SequenceRunner } from "./SequenceRunner";
+import { JigsawRunner } from "./JigsawRunner";
+import { SortRunner } from "./SortRunner";
+import { FindRunner, type FindHost } from "./FindRunner";
+import { AllRespondRunner } from "./AllRespondRunner";
 import { PixiSequenceView } from "./SequenceView";
-import { CARD_ANSWER_TYPE, PICK_CORRECT_TYPE, SEQUENCE_TYPE, type ActivityData } from "./ActivityTypes";
+import {
+  CARD_ANSWER_TYPE,
+  JIGSAW_TYPE,
+  PICK_CORRECT_TYPE,
+  SEQUENCE_TYPE,
+  SORT_TYPE,
+  FIND_TYPE,
+  ALL_RESPOND_TYPE,
+  type ActivityData
+} from "./ActivityTypes";
 
 /**
  * The public contract every activity renderer must satisfy — exactly the
@@ -153,5 +166,69 @@ ActivityRendererRegistry.register(
       return new PuzzleRunner(container, eventBus, animation, layout);
     }
     return new SequenceRunner(eventBus, host, new PixiSequenceView(container, assets, animation));
+  }
+);
+
+/**
+ * «الأحجية» (v1.0.25).
+ *
+ * يأخذ اللوحة والأصول ولا يأخذ `host`: يرسم كل ما يحتاجه بنفسه — الخانات
+ * والقطع ونصّ السؤال — كما يفعل `PickCorrectRunner`. ولا شيء منه يحتاج
+ * مؤقّتات المشهد ولا صندوق الحوار.
+ */
+ActivityRendererRegistry.register(
+  JIGSAW_TYPE,
+  (container, eventBus, animation, _layout, assets) =>
+    new JigsawRunner(container, eventBus, animation, assets)
+);
+
+/**
+ * «الفرز» (v1.0.26).
+ *
+ * كالأحجية: لوحةٌ وأصول، بلا `host`. السلال والأغراض ونصّ السؤال كلّها
+ * يرسمها بنفسه، ولا شيء منه يحتاج مؤقّتات المشهد.
+ */
+ActivityRendererRegistry.register(
+  SORT_TYPE,
+  (container, eventBus, animation, _layout, assets) =>
+    new SortRunner(container, eventBus, animation, assets)
+);
+
+/**
+ * «ابحث وقُل أين» (v1.0.27).
+ *
+ * يتقاسم مضيف «الجواب المباشر» ويزيد عليه `enableSpots` — والزيادة
+ * اختيارية على الواجهة، فمشهدٌ لم يحقّقها يُبقي النشاط قابلاً للّعب
+ * بالبطاقة والمفتاح بدل أن يسقط.
+ *
+ * وغياب المضيف كلّه يسقط على الافتراضي للسبب نفسه المشروح في «الجواب
+ * المباشر»: خطأُ إقلاعٍ يُبتلَع لا يُرى إلّا عَرَضُه.
+ */
+ActivityRendererRegistry.register(
+  FIND_TYPE,
+  (container, eventBus, animation, layout, _assets, host) => {
+    if (!host) {
+      console.warn('[ActivityRendererRegistry] "find" needs a scene host — falling back.');
+      return new PuzzleRunner(container, eventBus, animation, layout);
+    }
+    return new FindRunner(eventBus, host as FindHost);
+  }
+);
+
+/**
+ * «كل الأيدي» (v1.0.28).
+ *
+ * يتقاسم مضيف «الجواب المباشر» بلا زيادة: لا يرسم شيئاً، والعدّاد والتوزيع
+ * يظهران في صندوق الحوار كما يظهر أي سطر. وغياب المضيف يسقط على الافتراضي
+ * للسبب نفسه المشروح أعلاه.
+ */
+ActivityRendererRegistry.register(
+  ALL_RESPOND_TYPE,
+  (container, eventBus, animation, layout, _assets, host) => {
+    if (!host) {
+      console.warn('[ActivityRendererRegistry] "all-respond" needs a scene host — falling back.');
+      return new PuzzleRunner(container, eventBus, animation, layout);
+    }
+    return new AllRespondRunner(eventBus, host);
   }
 );

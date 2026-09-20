@@ -499,7 +499,333 @@ function validateSequence(activity: Record<string, unknown>, sceneId: string, er
   }
 }
 
-function validateActivity(activity: unknown, sceneId: string, errors: string[], warnings: string[]): void {
+/**
+ * «الأحجية» (v1.0.25) — البنية وحدها، كما في كل نوعٍ سبقه.
+ *
+ * أن يشير `image` إلى أصلٍ مُعلَن سؤالٌ لا يجيب عنه مشهدٌ واحد؛ يفحصه
+ * الاستوديو، وهو الطبقة الوحيدة التي تملك `assets[]` والمشهد معاً.
+ */
+function validateJigsaw(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  if (!isNonEmptyString(activity.image)) {
+    // خطأ لا تحذير: بلا صورة لا توجد قطع — النشاط لا يُلعب أصلاً. والمحرّك
+    // يتنازل ويمضي (لئلّا تتجمّد حصّة)، والحفظ يُمنع حيث يمكن الإصلاح.
+    errors.push(`Scene "${sceneId}": a "jigsaw" activity needs a non-empty "image" asset alias (v1.0.25 §2).`);
+  }
+
+  const grid = activity.grid;
+  if (!isPlainObject(grid)) {
+    errors.push(`Scene "${sceneId}": a "jigsaw" activity needs a "grid" object with "cols" and "rows" (v1.0.25 §2).`);
+  } else {
+    let cols = 0;
+    let rows = 0;
+    for (const side of ["cols", "rows"] as const) {
+      const value = grid[side];
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 6) {
+        errors.push(`Scene "${sceneId}": activity.grid.${side} must be a whole number between 1 and 6 (v1.0.25 §8).`);
+      } else if (side === "cols") cols = value;
+      else rows = value;
+    }
+    // أحجيةٌ بقطعةٍ واحدة ليست أحجية: لا شيء يُزاح فلا شيء يُحوَّل.
+    if (cols > 0 && rows > 0 && cols * rows < 2) {
+      errors.push(`Scene "${sceneId}": activity.grid describes a single piece — a jigsaw needs at least two (v1.0.25 §8).`);
+    }
+  }
+
+  const frame = activity.frame;
+  if (frame !== undefined) {
+    if (!isPlainObject(frame)) {
+      errors.push(`Scene "${sceneId}": activity.frame must be an object when present (v1.0.25 §8).`);
+    } else {
+      for (const field of ["x", "y", "scale"] as const) {
+        const value = frame[field];
+        if (value === undefined) continue;
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          errors.push(`Scene "${sceneId}": activity.frame.${field} must be a number when present (v1.0.25 §8).`);
+        }
+      }
+      // الصفر ليس «صغيراً جداً» بل غير مرئي، والسالب يقلب الصورة — الدرس
+      // نفسه الذي سجّله `validateStepVisuals`.
+      if (typeof frame.scale === "number" && Number.isFinite(frame.scale) && frame.scale <= 0) {
+        errors.push(`Scene "${sceneId}": activity.frame.scale must be greater than 0 (v1.0.25 §8).`);
+      }
+    }
+  }
+
+  if (activity.matchTolerance !== undefined) {
+    const tolerance = activity.matchTolerance;
+    if (typeof tolerance !== "number" || !Number.isFinite(tolerance) || tolerance <= 0) {
+      errors.push(`Scene "${sceneId}": activity.matchTolerance must be greater than 0 (v1.0.25 §8).`);
+    }
+  }
+
+  validateJigsawPieces(activity, sceneId, errors, warnings);
+
+  if (activity.question === undefined) {
+    warnings.push(`Scene "${sceneId}": a "jigsaw" activity with no "question" never tells the child what she is assembling (v1.0.25 §8).`);
+  }
+}
+
+/** عناوين الخانات المؤلَّفة (v1.0.25 §4). */
+function validateJigsawPieces(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const pieces = activity.pieces;
+  if (pieces === undefined) return;
+  if (!Array.isArray(pieces)) {
+    errors.push(`Scene "${sceneId}": activity.pieces must be an array when present (v1.0.25 §4).`);
+    return;
+  }
+
+  const grid = isPlainObject(activity.grid) ? activity.grid : {};
+  const cols = typeof grid.cols === "number" ? grid.cols : 0;
+  const rows = typeof grid.rows === "number" ? grid.rows : 0;
+  const total = cols > 0 && rows > 0 ? cols * rows : 0;
+
+  const seenCells = new Set<number>();
+  const seenAliases = new Set<string>();
+
+  pieces.forEach((piece, i) => {
+    if (!isPlainObject(piece)) {
+      errors.push(`Scene "${sceneId}": activity.pieces[${i}] must be an object (v1.0.25 §4).`);
+      return;
+    }
+    if (!isNonEmptyString(piece.alias)) {
+      errors.push(`Scene "${sceneId}": activity.pieces[${i}].alias must be a non-empty name — it is what a card binds to (v1.0.25 §4).`);
+    } else if (seenAliases.has(piece.alias)) {
+      // عنوانان متطابقان لخانتين يجعلان قصد البطاقة ملتبساً — ولا قاعدة
+      // ترجيحٍ تستحقّ الاختراع هنا؛ هذه مؤلِّفةٌ لم تُكمل تحديد ما تريد.
+      errors.push(`Scene "${sceneId}": activity.pieces[${i}] repeats the alias "${piece.alias}" — a card address must name one cell (v1.0.25 §4).`);
+    } else {
+      seenAliases.add(piece.alias);
+    }
+
+    const cell = piece.cell;
+    if (typeof cell !== "number" || !Number.isInteger(cell) || cell < 1) {
+      errors.push(`Scene "${sceneId}": activity.pieces[${i}].cell must be a whole number starting at 1 (v1.0.25 §4).`);
+      return;
+    }
+    if (seenCells.has(cell)) {
+      errors.push(`Scene "${sceneId}": activity.pieces[${i}] repeats cell ${cell} (v1.0.25 §4).`);
+      return;
+    }
+    seenCells.add(cell);
+    // تحذير لا خطأ: الخانة تبقى بعنوانها المولَّد، والقصّة تُلعب — لكن
+    // البطاقة التي ربطتها المعلّمة لن تفعل شيئاً، وهذا ما يجب أن تعرفه.
+    if (total > 0 && cell > total) {
+      warnings.push(`Scene "${sceneId}": activity.pieces[${i}].cell is ${cell}, outside a ${cols}×${rows} grid — the address is ignored (v1.0.25 §4).`);
+    }
+  });
+}
+
+/**
+ * «الفرز» (v1.0.26) — البنية وحدها، كما في كل نوعٍ سبقه.
+ *
+ * أن يشير `items[].alias` إلى أصلٍ مُعلَن سؤالٌ لا يجيب عنه مشهدٌ واحد؛
+ * يفحصه الاستوديو حيث يمكن إصلاحه.
+ */
+function validateSort(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const bins = activity.bins;
+  const binIds = new Set<string>();
+
+  if (!Array.isArray(bins) || bins.length < 2) {
+    // سلّةٌ واحدة ليست فرزاً: كل شيء ينتمي إليها، فلا قاعدة تُطبَّق.
+    errors.push(`Scene "${sceneId}": a "sort" activity needs a "bins" array with at least two bins (v1.0.26 §8).`);
+  } else {
+    bins.forEach((bin, i) => {
+      if (!isPlainObject(bin)) {
+        errors.push(`Scene "${sceneId}": activity.bins[${i}] must be an object (v1.0.26 §8).`);
+        return;
+      }
+      if (!isNonEmptyString(bin.id)) {
+        errors.push(`Scene "${sceneId}": activity.bins[${i}] is missing a string "id" (v1.0.26 §8).`);
+      } else if (binIds.has(bin.id)) {
+        errors.push(`Scene "${sceneId}": activity.bins[${i}] repeats the id "${bin.id}" — a bin id must name one bin (v1.0.26 §8).`);
+      } else {
+        binIds.add(bin.id);
+      }
+      if (!isNonEmptyString(bin.label)) {
+        // تحذير لا خطأ: السلّة تُرسم ويُلعب النشاط — لكن الطفلة لا تعرف
+        // بأي قاعدة تفرز، وهي القاعدة كلّها.
+        warnings.push(`Scene "${sceneId}": activity.bins[${i}] has no "label" — an unnamed bin never says what it collects (v1.0.26 §8).`);
+      }
+      validatePlacement(bin, `Scene "${sceneId}": activity.bins[${i}]`, errors);
+    });
+  }
+
+  const items = activity.items;
+  if (!Array.isArray(items) || items.length === 0) {
+    errors.push(`Scene "${sceneId}": a "sort" activity needs a non-empty "items" array (v1.0.26 §8).`);
+    return;
+  }
+
+  const filled = new Set<string>();
+  items.forEach((item, i) => {
+    if (!isPlainObject(item)) {
+      errors.push(`Scene "${sceneId}": activity.items[${i}] must be an object (v1.0.26 §8).`);
+      return;
+    }
+    if (!isNonEmptyString(item.alias)) {
+      errors.push(`Scene "${sceneId}": activity.items[${i}].alias must be a non-empty asset alias (v1.0.26 §8).`);
+    }
+    if (!isNonEmptyString(item.bin)) {
+      errors.push(`Scene "${sceneId}": activity.items[${i}].bin must name the bin it belongs in (v1.0.26 §8).`);
+    } else if (binIds.size > 0 && !binIds.has(item.bin)) {
+      // خطأ لا تحذير: غرضٌ بسلّةٍ لا وجود لها لا يمكن وضعه في مكانه
+      // الصحيح أبداً — فالفرز لا يُحلّ.
+      errors.push(`Scene "${sceneId}": activity.items[${i}].bin is "${item.bin}", which no bin declares (v1.0.26 §8).`);
+    } else if (isNonEmptyString(item.bin)) {
+      filled.add(item.bin);
+    }
+    validatePlacement(item, `Scene "${sceneId}": activity.items[${i}]`, errors);
+  });
+
+  for (const id of binIds) {
+    if (!filled.has(id)) {
+      warnings.push(`Scene "${sceneId}": no item belongs in bin "${id}" — it stays empty in every correct answer (v1.0.26 §8).`);
+    }
+  }
+
+  if (activity.question === undefined) {
+    warnings.push(`Scene "${sceneId}": a "sort" activity with no "question" never says which rule to sort by (v1.0.26 §8).`);
+  }
+}
+
+/** موضعٌ على المسرح — القاعدة نفسها التي يفرضها `validateStepVisuals`. */
+function validatePlacement(node: Record<string, unknown>, context: string, errors: string[]): void {
+  for (const field of ["x", "y", "scale"] as const) {
+    const value = node[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      errors.push(`${context}.${field} must be a number when present.`);
+    }
+  }
+  // الصفر ليس «صغيراً جداً» بل غير مرئي، والسالب يقلب الصورة.
+  if (typeof node.scale === "number" && Number.isFinite(node.scale) && node.scale <= 0) {
+    errors.push(`${context}.scale must be greater than 0.`);
+  }
+}
+
+/** المفردات المغلقة لعلاقة المكان (v1.0.27 §4). */
+const SPATIAL_RELATIONS = ["under", "over", "behind", "in-front", "inside", "beside"];
+
+/**
+ * «ابحث وقُل أين» (v1.0.27) — البنية وحدها.
+ *
+ * ⚠️ وأن يخصّ `alias` عنصراً في هذا المشهد **يُفحَص هنا**، بخلاف كل نوعٍ
+ * سبقه: المواضع عناصرُ المشهد نفسه (§3)، و`elements[]` أمام هذه الدالّة —
+ * فلا حاجة إلى `assets[]` ولا إلى الاستوديو لتقولها.
+ */
+function validateFind(
+  activity: Record<string, unknown>,
+  sceneId: string,
+  elementAliases: Set<string> | null,
+  errors: string[],
+  warnings: string[]
+): void {
+  const spots = activity.spots;
+  if (!Array.isArray(spots) || spots.length === 0) {
+    errors.push(`Scene "${sceneId}": a "find" activity needs a non-empty "spots" array (v1.0.27 §8).`);
+    return;
+  }
+
+  const ids = new Set<string>();
+  let hasCorrect = false;
+
+  spots.forEach((spot, i) => {
+    if (!isPlainObject(spot)) {
+      errors.push(`Scene "${sceneId}": activity.spots[${i}] must be an object (v1.0.27 §8).`);
+      return;
+    }
+    if (!isNonEmptyString(spot.id)) {
+      errors.push(`Scene "${sceneId}": activity.spots[${i}] is missing a string "id" (v1.0.27 §8).`);
+    } else if (ids.has(spot.id)) {
+      errors.push(`Scene "${sceneId}": activity.spots[${i}] repeats the id "${spot.id}" (v1.0.27 §8).`);
+    } else {
+      ids.add(spot.id);
+    }
+
+    if (!isNonEmptyString(spot.alias)) {
+      errors.push(`Scene "${sceneId}": activity.spots[${i}].alias must name an element in this scene (v1.0.27 §8).`);
+    } else if (elementAliases && !elementAliases.has(spot.alias)) {
+      // تحذير لا خطأ: الموضع يُتخطّى ويُلعب البحث بما بقي (§9) — لكنّ ثلث
+      // الإجابات صار غير قابلٍ للوصول، وهو ما يجب أن تعرفه المؤلّفة.
+      warnings.push(`Scene "${sceneId}": activity.spots[${i}].alias is "${spot.alias}", which no element in this scene shows — the spot is skipped (v1.0.27 §3).`);
+    }
+
+    if (spot.relation !== undefined && !SPATIAL_RELATIONS.includes(String(spot.relation))) {
+      errors.push(`Scene "${sceneId}": activity.spots[${i}].relation is "${String(spot.relation)}" — supported: ${SPATIAL_RELATIONS.join(", ")} (v1.0.27 §4).`);
+    }
+    // العلاقة بلا اسمٍ عربيّ لا تولّد جملة، فتضيع الكلمة المكانية التي
+    // وُجد النوع لأجلها — وهي تضيع بصمت.
+    if (spot.relation !== undefined && !isNonEmptyString(spot.label)) {
+      warnings.push(`Scene "${sceneId}": activity.spots[${i}] has a "relation" but no "label" — no spatial sentence can be generated for it (v1.0.27 §4).`);
+    }
+
+    if (spot.correct === true) hasCorrect = true;
+  });
+
+  if (!hasCorrect) {
+    errors.push(`Scene "${sceneId}": no spot is marked "correct" — a "find" activity with nothing to find can never be solved (v1.0.27 §8).`);
+  }
+
+  if (activity.question === undefined) {
+    warnings.push(`Scene "${sceneId}": a "find" activity with no "question" never says what is being looked for (v1.0.27 §8).`);
+  }
+
+  const onSolved = activity.onSolved;
+  if (!isPlainObject(onSolved) || !isNonEmptyString(onSolved.showObject)) {
+    warnings.push(`Scene "${sceneId}": a "find" activity with no "onSolved.showObject" finds nothing visible (v1.0.27 §8).`);
+  }
+}
+
+/**
+ * «كل الأيدي» (v1.0.28) — البنية وحدها.
+ *
+ * ⚠️ وأنّ في الغرفة `expect` بطاقةً مربوطة سؤالٌ لا يجيب عنه مشهد؛ يفحصه
+ * الاستوديو، وهو الوحيد الذي يملك جدول البطاقات.
+ */
+function validateAllRespond(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const answers = activity.answers;
+  if (!Array.isArray(answers) || answers.length === 0) {
+    errors.push(`Scene "${sceneId}": an "all-respond" activity needs a non-empty "answers" array (v1.0.28 §8).`);
+  } else {
+    answers.forEach((answer, i) => {
+      if (!isNonEmptyString(answer)) {
+        errors.push(`Scene "${sceneId}": activity.answers[${i}] must be a non-empty card meaning (v1.0.28 §8).`);
+      }
+    });
+  }
+
+  // مطلوب لا اختياري (§2.1): بغيره لا تعرف الشاشة متى «أجاب الجميع»، وهو
+  // أيضاً ما يميّز هذا النوع بنيوياً عن «الجواب المباشر».
+  const expectCount = activity.expect;
+  if (typeof expectCount !== "number" || !Number.isInteger(expectCount) || expectCount < 2) {
+    errors.push(`Scene "${sceneId}": an "all-respond" activity needs "expect" — a whole number of cards, at least 2 (v1.0.28 §8).`);
+  }
+
+  if (activity.waitSeconds !== undefined) {
+    const wait = activity.waitSeconds;
+    // خطأ لا تحذير: صمتٌ هنا يجمّد حصّةً كاملة، أو يُلغي مهلة التفكير.
+    if (typeof wait !== "number" || !Number.isFinite(wait) || wait < 3 || wait > 180) {
+      errors.push(`Scene "${sceneId}": activity.waitSeconds must be between 3 and 180 seconds (v1.0.28 §5).`);
+    }
+  }
+
+  if (activity.question === undefined) {
+    warnings.push(`Scene "${sceneId}": an "all-respond" activity with no "question" waits for an answer to nothing (v1.0.28 §8).`);
+  }
+
+  // لا يُقرأ في هذا النوع — ومؤلّفةٌ كتبته تظنّ أن الشاشة سترّد على الخطأ.
+  if (activity.wrongResponse !== undefined) {
+    warnings.push(`Scene "${sceneId}": "all-respond" never answers back — nobody loses, so "wrongResponse" is ignored (v1.0.28 §4).`);
+  }
+}
+
+function validateActivity(
+  activity: unknown,
+  sceneId: string,
+  errors: string[],
+  warnings: string[],
+  elementAliases: Set<string> | null = null
+): void {
   if (activity === null || activity === undefined) return;
   if (Array.isArray(activity)) {
     errors.push(`Scene "${sceneId}": "activity" must be a single object, not an array — v1 supports exactly one activity per scene (see Scene-Model-Specification-v1.0.1.md §2).`);
@@ -515,6 +841,14 @@ function validateActivity(activity: unknown, sceneId: string, errors: string[], 
     validateCardAnswer(activity, sceneId, errors, warnings);
   } else if (activity.type === "sequence") {
     validateSequence(activity, sceneId, errors, warnings);
+  } else if (activity.type === "jigsaw") {
+    validateJigsaw(activity, sceneId, errors, warnings);
+  } else if (activity.type === "sort") {
+    validateSort(activity, sceneId, errors, warnings);
+  } else if (activity.type === "find") {
+    validateFind(activity, sceneId, elementAliases, errors, warnings);
+  } else if (activity.type === "all-respond") {
+    validateAllRespond(activity, sceneId, errors, warnings);
   } else if (activity.type === "pick-correct" && activity.navigate !== undefined) {
     // «يُجاب بالإطار والأزرار» (v1.0.24 §5). البنية وحدها: أمّا وجود صندوق
     // مربوط فسؤالٌ لا يعرفه مشهد — يفحصه الاستوديو ويحذّر منه.
@@ -620,7 +954,18 @@ function validateScene(
       errors.push(`Scene "${sceneId}": "holdAfter" must be a number of seconds (≥ 0) or "tap" (v1.0.21 §2).`);
     }
   }
-  validateActivity(scene.activity, sceneId, errors, warnings);
+  // الأسماء المعروضة في هذا المشهد — يحتاجها «ابحث» وحده (v1.0.27 §3):
+  // مواضعه عناصرُ المشهد نفسه، وهي أمامنا هنا. فالفحص يقع حيث تتوفّر
+  // المعرفة، لا يُؤجَّل إلى الاستوديو كما في الأنواع التي تسمّي أصولاً.
+  const elementAliases = Array.isArray(scene.elements)
+    ? new Set(
+        scene.elements
+          .filter(isPlainObject)
+          .map((el) => el.alias)
+          .filter((alias): alias is string => typeof alias === "string" && alias.length > 0)
+      )
+    : null;
+  validateActivity(scene.activity, sceneId, errors, warnings, elementAliases);
   if (scene.nextScene !== undefined && scene.nextScene !== null && typeof scene.nextScene !== "string") {
     errors.push(`Scene "${sceneId}": "nextScene" must be a string or null.`);
   }

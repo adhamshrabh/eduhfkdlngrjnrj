@@ -73,6 +73,25 @@ export class SpriteRegistry {
     return this.displays.get(id);
   }
 
+  /**
+   * The content id currently showing `alias`, or undefined.
+   *
+   * ⚠️ الاتجاه المعاكس لـ`aliases`، ويُقرأ لا يُخزَّن: «ابحث» (v1.0.27)
+   * يسمّي مواضعه بالاسم المستعار لأنه ما تكتبه المعلّمة وما تُربط به
+   * البطاقة — والمعرّفات مولَّدة. وخريطةٌ ثانية كانت ستتباعد عن الأولى
+   * عند أوّل `swapImage`.
+   *
+   * وأوّل مطابقة تكفي: اسمان متطابقان لعنصرين يعنيان صورتين بالاسم نفسه،
+   * وهو تأليفٌ لم يُكمَل لا حالةٌ تستحقّ قاعدة ترجيح.
+   */
+  idForAlias(alias: string): string | undefined {
+    if (!alias) return undefined;
+    for (const [id, current] of this.aliases) {
+      if (current === alias) return id;
+    }
+    return undefined;
+  }
+
   /** The sprite under an id, or undefined when the id names a group (or
    *  nothing). Used by the operations that need a texture. */
   getSprite(id: string): Sprite | undefined {

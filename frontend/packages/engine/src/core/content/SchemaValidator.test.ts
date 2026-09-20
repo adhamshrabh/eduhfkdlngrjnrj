@@ -1178,3 +1178,441 @@ describe("pick-correct navigate", () => {
     expect(r.errors).toEqual([]);
   });
 });
+
+/**
+ * «الأحجية» (v1.0.25) — البنية وحدها. أمّا أن يشير `image` إلى أصل مُعلَن
+ * فسؤالٌ لا يجيب عنه مشهدٌ واحد؛ يفحصه الاستوديو.
+ */
+describe("jigsaw activity", () => {
+  const storyWithActivity = (activity: unknown) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements: [],
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity,
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  const jigsaw = (over: Record<string, unknown> = {}) => ({
+    type: "jigsaw",
+    question: { text: "ركّبي صورة السرير" },
+    image: "bed",
+    grid: { cols: 2, rows: 2 },
+    ...over
+  });
+
+  it("accepts the minimal authored shape", () => {
+    const r = validateStorySchema(storyWithActivity(jigsaw()));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("rejects a missing image — no picture means no pieces", () => {
+    const r = validateStorySchema(storyWithActivity(jigsaw({ image: "" })));
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(" ")).toContain("image");
+  });
+
+  it("rejects a missing grid", () => {
+    const r = validateStorySchema(storyWithActivity({ type: "jigsaw", image: "bed" }));
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(" ")).toContain("grid");
+  });
+
+  it("rejects a side outside 1..6", () => {
+    const r = validateStorySchema(storyWithActivity(jigsaw({ grid: { cols: 9, rows: 2 } })));
+    expect(r.errors.join(" ")).toContain("grid.cols");
+  });
+
+  it("rejects a one-piece grid — nothing is displaced, so nothing is transformed", () => {
+    const r = validateStorySchema(storyWithActivity(jigsaw({ grid: { cols: 1, rows: 1 } })));
+    expect(r.errors.join(" ")).toContain("single piece");
+  });
+
+  it("rejects a zero scale — invisible, not small (the lesson validateStepVisuals paid for)", () => {
+    const r = validateStorySchema(storyWithActivity(jigsaw({ frame: { x: 960, scale: 0 } })));
+    expect(r.errors.join(" ")).toContain("frame.scale");
+  });
+
+  it("rejects a non-positive matchTolerance", () => {
+    const r = validateStorySchema(storyWithActivity(jigsaw({ matchTolerance: 0 })));
+    expect(r.errors.join(" ")).toContain("matchTolerance");
+  });
+
+  it("warns, but does not fail, when nothing is asked", () => {
+    const r = validateStorySchema(storyWithActivity(jigsaw({ question: undefined })));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("what she is assembling");
+  });
+
+  describe("authored cell addresses (§4)", () => {
+    it("accepts an alias per cell", () => {
+      const r = validateStorySchema(
+        storyWithActivity(jigsaw({ pieces: [{ cell: 1, alias: "bed_head" }, { cell: 4, alias: "bed_foot" }] }))
+      );
+      expect(r.errors).toEqual([]);
+    });
+
+    it("rejects two cells sharing one alias — a card address must name one cell", () => {
+      const r = validateStorySchema(
+        storyWithActivity(jigsaw({ pieces: [{ cell: 1, alias: "x" }, { cell: 2, alias: "x" }] }))
+      );
+      expect(r.errors.join(" ")).toContain("repeats the alias");
+    });
+
+    it("rejects a repeated cell", () => {
+      const r = validateStorySchema(
+        storyWithActivity(jigsaw({ pieces: [{ cell: 1, alias: "a" }, { cell: 1, alias: "b" }] }))
+      );
+      expect(r.errors.join(" ")).toContain("repeats cell 1");
+    });
+
+    it("only warns for a cell outside the grid — the story still plays, the card just does nothing", () => {
+      const r = validateStorySchema(storyWithActivity(jigsaw({ pieces: [{ cell: 9, alias: "a" }] })));
+      expect(r.errors).toEqual([]);
+      expect(r.warnings.join(" ")).toContain("outside a 2×2 grid");
+    });
+  });
+
+  it("says nothing about image/grid on an activity of another type", () => {
+    const r = validateStorySchema(
+      storyWithActivity({ type: "drag-match", word: "cat", letters: ["c", "a", "t"], missingIndex: 1 })
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+});
+
+/**
+ * «الفرز» (v1.0.26) — البنية وحدها.
+ */
+describe("sort activity", () => {
+  const storyWithActivity = (activity: unknown) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements: [],
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity,
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  const sort = (over: Record<string, unknown> = {}) => ({
+    type: "sort",
+    question: { text: "أي هذه أغراض يارا؟" },
+    bins: [
+      { id: "hers", label: "أغراض يارا" },
+      { id: "not", label: "ليست لها" }
+    ],
+    items: [
+      { alias: "doll", bin: "hers" },
+      { alias: "apple", bin: "not" }
+    ],
+    ...over
+  });
+
+  it("accepts the minimal authored shape", () => {
+    const r = validateStorySchema(storyWithActivity(sort()));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("rejects one bin — everything belongs in it, so no rule applies", () => {
+    const r = validateStorySchema(
+      storyWithActivity(sort({ bins: [{ id: "hers", label: "أغراض يارا" }], items: [{ alias: "doll", bin: "hers" }] }))
+    );
+    expect(r.errors.join(" ")).toContain("at least two bins");
+  });
+
+  it("rejects a repeated bin id — the address must name one bin", () => {
+    const r = validateStorySchema(
+      storyWithActivity(sort({ bins: [{ id: "x", label: "a" }, { id: "x", label: "b" }] }))
+    );
+    expect(r.errors.join(" ")).toContain('repeats the id "x"');
+  });
+
+  it("rejects an item pointing at a bin that does not exist — it can never be right", () => {
+    const r = validateStorySchema(
+      storyWithActivity(sort({ items: [{ alias: "doll", bin: "ghost" }] }))
+    );
+    expect(r.errors.join(" ")).toContain("which no bin declares");
+  });
+
+  it("rejects an item with no alias", () => {
+    const r = validateStorySchema(storyWithActivity(sort({ items: [{ bin: "hers" }] })));
+    expect(r.errors.join(" ")).toContain("items[0].alias");
+  });
+
+  it("rejects an empty items array", () => {
+    const r = validateStorySchema(storyWithActivity(sort({ items: [] })));
+    expect(r.errors.join(" ")).toContain("non-empty \"items\"");
+  });
+
+  it("rejects a zero scale on a bin or an item", () => {
+    const r = validateStorySchema(
+      storyWithActivity(sort({ items: [{ alias: "doll", bin: "hers", scale: 0 }] }))
+    );
+    expect(r.errors.join(" ")).toContain("scale must be greater than 0");
+  });
+
+  it("warns about a bin nothing belongs in — it stays empty in every correct answer", () => {
+    const r = validateStorySchema(
+      storyWithActivity(sort({ items: [{ alias: "doll", bin: "hers" }] }))
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain('bin "not"');
+  });
+
+  it("warns about an unnamed bin — it never says what it collects", () => {
+    const r = validateStorySchema(
+      storyWithActivity(sort({ bins: [{ id: "hers", label: "لها" }, { id: "not" }] }))
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("no \"label\"");
+  });
+
+  it("warns, but does not fail, when nothing is asked", () => {
+    const r = validateStorySchema(storyWithActivity(sort({ question: undefined })));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("which rule to sort by");
+  });
+
+  it("says nothing about bins on an activity of another type", () => {
+    const r = validateStorySchema(
+      storyWithActivity({ type: "drag-match", word: "cat", letters: ["c", "a", "t"], missingIndex: 1 })
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+});
+
+/**
+ * «ابحث وقُل أين» (v1.0.27).
+ *
+ * ⚠️ هذا أوّل نوعٍ يُفحص فيه أن الاسم يخصّ شيئاً في المشهد: مواضعه عناصرُ
+ * المشهد نفسه، وهي أمام المُتحقِّق — فلا يُؤجَّل الفحص إلى الاستوديو.
+ */
+describe("find activity", () => {
+  const storyWithActivity = (activity: unknown, elements: unknown[] = [
+    { id: "bed", alias: "bed" },
+    { id: "door", alias: "door" }
+  ]) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements,
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity,
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  const find = (over: Record<string, unknown> = {}) => ({
+    type: "find",
+    question: { text: "أين حذاء يارا؟" },
+    spots: [
+      { id: "sp1", alias: "bed", label: "السرير", relation: "under", correct: true },
+      { id: "sp2", alias: "door", label: "الباب", relation: "behind" }
+    ],
+    onSolved: { showObject: "shoe" },
+    ...over
+  });
+
+  it("accepts the minimal authored shape", () => {
+    const r = validateStorySchema(storyWithActivity(find()));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("rejects an activity with nothing to find", () => {
+    const r = validateStorySchema(
+      storyWithActivity(find({ spots: [{ id: "sp1", alias: "bed", label: "السرير" }] }))
+    );
+    expect(r.errors.join(" ")).toContain("no spot is marked");
+  });
+
+  it("rejects a repeated spot id", () => {
+    const r = validateStorySchema(
+      storyWithActivity(
+        find({
+          spots: [
+            { id: "sp1", alias: "bed", correct: true },
+            { id: "sp1", alias: "door" }
+          ]
+        })
+      )
+    );
+    expect(r.errors.join(" ")).toContain('repeats the id "sp1"');
+  });
+
+  it("rejects a relation outside the closed vocabulary", () => {
+    const r = validateStorySchema(
+      storyWithActivity(
+        find({ spots: [{ id: "sp1", alias: "bed", label: "السرير", relation: "near", correct: true }] })
+      )
+    );
+    expect(r.errors.join(" ")).toContain("relation");
+  });
+
+  it("warns about a spot naming an element this scene does not show", () => {
+    const r = validateStorySchema(
+      storyWithActivity(
+        find({
+          spots: [
+            { id: "sp1", alias: "bed", label: "السرير", relation: "under", correct: true },
+            { id: "sp2", alias: "wardrobe", label: "الخزانة", relation: "inside" }
+          ]
+        })
+      )
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("the spot is skipped");
+  });
+
+  it("warns about a relation with no label — the spatial sentence is lost silently", () => {
+    const r = validateStorySchema(
+      storyWithActivity(
+        find({
+          spots: [
+            { id: "sp1", alias: "bed", label: "السرير", relation: "under", correct: true },
+            { id: "sp2", alias: "door", relation: "behind" }
+          ]
+        })
+      )
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("no spatial sentence");
+  });
+
+  it("warns when nothing appears on success", () => {
+    const r = validateStorySchema(storyWithActivity(find({ onSolved: undefined })));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("finds nothing visible");
+  });
+
+  it("says nothing about spots on an activity of another type", () => {
+    const r = validateStorySchema(
+      storyWithActivity({ type: "drag-match", word: "cat", letters: ["c", "a", "t"], missingIndex: 1 })
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+});
+
+/**
+ * «كل الأيدي» (v1.0.28).
+ */
+describe("all-respond activity", () => {
+  const storyWithActivity = (activity: unknown) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements: [],
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity,
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  const allRespond = (over: Record<string, unknown> = {}) => ({
+    type: "all-respond",
+    question: { text: "ارفعوا بطاقة الغرض الضائع" },
+    answers: ["shoe"],
+    expect: 12,
+    ...over
+  });
+
+  it("accepts the minimal authored shape", () => {
+    const r = validateStorySchema(storyWithActivity(allRespond()));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("rejects a missing expect — the counter cannot say 'everyone'", () => {
+    const r = validateStorySchema(storyWithActivity(allRespond({ expect: undefined })));
+    expect(r.errors.join(" ")).toContain("expect");
+  });
+
+  it("rejects one expected card — that is not 'all hands'", () => {
+    const r = validateStorySchema(storyWithActivity(allRespond({ expect: 1 })));
+    expect(r.errors.join(" ")).toContain("at least 2");
+  });
+
+  it("rejects a wait outside 3..180 — silence here freezes a whole lesson", () => {
+    expect(validateStorySchema(storyWithActivity(allRespond({ waitSeconds: 1 }))).errors.join(" ")).toContain(
+      "waitSeconds"
+    );
+    expect(validateStorySchema(storyWithActivity(allRespond({ waitSeconds: 600 }))).errors.join(" ")).toContain(
+      "waitSeconds"
+    );
+  });
+
+  it("rejects empty answers", () => {
+    const r = validateStorySchema(storyWithActivity(allRespond({ answers: [] })));
+    expect(r.errors.join(" ")).toContain("answers");
+  });
+
+  it("warns about a wrongResponse — nobody loses here, so it is ignored", () => {
+    const r = validateStorySchema(storyWithActivity(allRespond({ wrongResponse: { text: "خطأ" } })));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("nobody loses");
+  });
+
+  it("does not confuse card-answer with all-respond", () => {
+    const r = validateStorySchema(
+      storyWithActivity({ type: "card-answer", question: { text: "?" }, answers: ["egg"] })
+    );
+    expect(r.errors).toEqual([]);
+  });
+});

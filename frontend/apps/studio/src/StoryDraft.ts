@@ -139,6 +139,49 @@ export interface DraftSequenceStepObject {
 
 export type DraftSequenceStep = string | DraftSequenceStepObject;
 
+/** موضعٌ يُبحث فيه (v1.0.27 §2) — عنصرٌ في المشهد، لا شيء يُرسم. */
+export interface DraftFindSpot {
+  /** مولَّد لا مؤلَّف — عنوانٌ يقرؤه القصد. */
+  id: string;
+  /** اسم عنصرٍ في هذا المشهد. */
+  alias: string;
+  /** اسم المكان بالعربية كما يُقال: «السرير». منه تُبنى جملة الردّ. */
+  label?: string;
+  relation?: string;
+  correct?: boolean;
+}
+
+/** سلّةٌ يُفرَز إليها (v1.0.26 §2). */
+export interface DraftSortBin {
+  /** مولَّد لا مؤلَّف — العنوان الذي يربط الغرض بسلّته. */
+  id: string;
+  /** ما يجمع ما في السلّة. هو القاعدة التي تفرز بها الطفلة. */
+  label?: string;
+  image?: string;
+  x?: number;
+  y?: number;
+  scale?: number;
+}
+
+/** غرضٌ يُفرَز (v1.0.26 §2). */
+export interface DraftSortItem {
+  id: string;
+  alias: string;
+  /** معرّف السلّة الصحيحة. */
+  bin: string;
+  x?: number;
+  y?: number;
+  scale?: number;
+}
+
+/** عنوانٌ مؤلَّف لخانةٍ في الأحجية (v1.0.25 §4). */
+export interface DraftJigsawPiece {
+  /** رقم الخانة، ١-مبدوء، من اليمين إلى اليسار صفّاً صفّاً. */
+  cell: number;
+  /** الاسم الذي تُربط به البطاقة — «رأس السرير» تُتذكَّر، و`p1` لا تُتذكَّر. */
+  alias: string;
+}
+
 export interface DraftActivity {
   type: string;
   // ── drag-match ──
@@ -170,6 +213,31 @@ export interface DraftActivity {
    *
    *  ⚠️ التكرار **مقصود** هنا، بخلاف `answers`: «سرير» فيها «ر» مرّتين. */
   steps?: DraftSequenceStep[];
+  // ── jigsaw (v1.0.25) ──
+  /** الصورة التي تُقصّ قطعاً — اسمٌ مستعار في `assets[]`، لا مسار.
+   *
+   *  القطع لا تُرسم ولا تُرفع: تُقصّ وقت التشغيل من الصورة نفسها. فمعلّمةٌ
+   *  تملك صورةً واحدة تملك أحجية (v1.0.25 §3). */
+  image?: string;
+  /** أبعاد الشبكة. كلٌّ في [١،٦]، وحاصلهما ≥ ٢. */
+  grid?: { cols: number; rows: number };
+  /** موضع الصورة المكتملة ومقياسها. الغياب = يحسبه المحرّك. */
+  frame?: { x?: number; y?: number; scale?: number };
+  /** عناوين مؤلَّفة لخاناتٍ بعينها — وهي ما تُربط به البطاقة (§4). */
+  pieces?: DraftJigsawPiece[];
+  // ── sort (v1.0.26) ──
+  /** السلال. سلّتان على الأقلّ — سلّةٌ واحدة ليست فرزاً. */
+  bins?: DraftSortBin[];
+  /** الأغراض، ولكلٍّ سلّته الصحيحة. */
+  items?: DraftSortItem[];
+  // ── find (v1.0.27) ──
+  /** المواضع التي يُبحث فيها — أسماء عناصر هذا المشهد. */
+  spots?: DraftFindSpot[];
+  // ── all-respond (v1.0.28) ──
+  /** كم بطاقة ننتظر اليوم. مطلوب في «كل الأيدي»، ولا معنى له في غيره. */
+  expect?: number;
+  /** سقف الانتظار بعد انتهاء السؤال، في [٣، ١٨٠]. */
+  waitSeconds?: number;
   // ── shared ──
   onSolved?: DraftActivityOnSolved;
   /** Lifecycle effects (Scene-Model-Specification-v1.0.4.md §6.1). */
@@ -472,6 +540,63 @@ export class StoryDraft {
         ? node.answers.filter((a): a is string => typeof a === "string" && a.length > 0)
         : undefined,
       steps: Array.isArray(node.steps) ? node.steps.flatMap(readStep) : undefined,
+      image: typeof node.image === "string" ? node.image : undefined,
+      expect: typeof node.expect === "number" ? node.expect : undefined,
+      waitSeconds: typeof node.waitSeconds === "number" ? node.waitSeconds : undefined,
+      spots: Array.isArray(node.spots)
+        ? node.spots
+            .filter(isPlainObject)
+            .filter((spot) => typeof spot.id === "string" && typeof spot.alias === "string")
+            .map((spot) => ({
+              id: spot.id as string,
+              alias: spot.alias as string,
+              label: typeof spot.label === "string" ? spot.label : undefined,
+              relation: typeof spot.relation === "string" ? spot.relation : undefined,
+              correct: spot.correct === true ? true : undefined
+            }))
+        : undefined,
+      bins: Array.isArray(node.bins)
+        ? node.bins
+            .filter(isPlainObject)
+            .filter((bin) => typeof bin.id === "string" && bin.id)
+            .map((bin) => ({
+              id: bin.id as string,
+              label: typeof bin.label === "string" ? bin.label : undefined,
+              image: typeof bin.image === "string" ? bin.image : undefined,
+              x: typeof bin.x === "number" ? bin.x : undefined,
+              y: typeof bin.y === "number" ? bin.y : undefined,
+              scale: typeof bin.scale === "number" ? bin.scale : undefined
+            }))
+        : undefined,
+      items: Array.isArray(node.items)
+        ? node.items
+            .filter(isPlainObject)
+            .filter((item) => typeof item.alias === "string" && item.alias)
+            .map((item, index) => ({
+              id: typeof item.id === "string" && item.id ? item.id : `it_${index + 1}`,
+              alias: item.alias as string,
+              bin: typeof item.bin === "string" ? item.bin : "",
+              x: typeof item.x === "number" ? item.x : undefined,
+              y: typeof item.y === "number" ? item.y : undefined,
+              scale: typeof item.scale === "number" ? item.scale : undefined
+            }))
+        : undefined,
+      grid: isPlainObject(node.grid) && typeof node.grid.cols === "number" && typeof node.grid.rows === "number"
+        ? { cols: node.grid.cols, rows: node.grid.rows }
+        : undefined,
+      frame: isPlainObject(node.frame)
+        ? {
+            x: typeof node.frame.x === "number" ? node.frame.x : undefined,
+            y: typeof node.frame.y === "number" ? node.frame.y : undefined,
+            scale: typeof node.frame.scale === "number" ? node.frame.scale : undefined
+          }
+        : undefined,
+      pieces: Array.isArray(node.pieces)
+        ? node.pieces
+            .filter(isPlainObject)
+            .filter((piece) => typeof piece.cell === "number" && typeof piece.alias === "string" && piece.alias)
+            .map((piece) => ({ cell: piece.cell as number, alias: piece.alias as string }))
+        : undefined,
       wrongResponse: readActivityText(node.wrongResponse),
       navigate: node.navigate === true ? true : undefined,
       onSolved,
@@ -883,6 +1008,14 @@ export class StoryDraft {
       add(activity?.wrongResponse?.audio, `صوت الخطأ في نشاط «${where}»`);
       for (const choice of activity?.choices ?? []) add(choice.alias, `خيار في نشاط «${where}»`);
       for (const answer of activity?.answers ?? []) add(answer, `جواب نشاط «${where}»`);
+      // ⚠️ صورة الأحجية (v1.0.25 §3) **مرجع أصلٍ حقيقي** بخلاف `steps`:
+      // منها تُقصّ كل قطعة، وحذفها يترك نشاطاً يُتخطّى بصمت — وهو بالضبط
+      // العطل الذي وُجد هذا المسح لأجله.
+      add(activity?.image, `صورة أحجية «${where}»`);
+      // صور السلال والأغراض (v1.0.26): حذف صورة غرضٍ يجعله يُتخطّى في
+      // زمن التشغيل — فينقص الفرز غرضاً بلا أن يقول ذلك شيء.
+      for (const bin of activity?.bins ?? []) add(bin.image, `سلّة «${bin.label || bin.id}» في «${where}»`);
+      for (const item of activity?.items ?? []) add(item.alias, `غرض فرزٍ في «${where}»`);
       // ⚠️ `steps` (v1.0.22) **ليست مراجع أصول** عمداً: خطوةٌ حرفٌ يُعرض
       // نصّاً، لا صورةٌ تُحمَّل. إدراجها هنا كان سيجعل كل حرف في كل كلمة
       // «أصلاً مفقوداً» — تحذيرٌ لا يمكن إسكاته إلّا بإضافة صورةٍ لا يحتاجها
@@ -1336,6 +1469,32 @@ export class StoryDraft {
     if (type === "pick-correct" && !Array.isArray(activity.choices)) activity.choices = [];
     if (type === "card-answer" && !Array.isArray(activity.answers)) activity.answers = [];
     if (type === "sequence" && !Array.isArray(activity.steps)) activity.steps = [];
+    // شبكةٌ ٢×٢ لا شبكةٌ فارغة: الأحجية بلا `grid` لا تُلعب، والمؤلّفة
+    // تنتظر نموذجاً تعدّله لا حقلاً تملؤه من الصفر (v1.0.25 §2).
+    if (type === "jigsaw" && !isPlainObject(activity.grid)) activity.grid = { cols: 2, rows: 2 };
+    // سلّتان فارغتان لا مصفوفةٌ فارغة: «فرزٌ» بسلّةٍ واحدة يرفضه المُتحقِّق،
+    // والمؤلّفة تنتظر نموذجاً تسمّيه لا بنيةً تبنيها (v1.0.26 §2).
+    // ⚠️ لا مواضع تلقائية: الموضع يسمّي عنصراً في هذا المشهد بعينه، ولا
+    // يعرف `StoryDraft` أيّها تقصد المؤلّفة. مصفوفةٌ فارغة تجعل المحرّر
+    // يعرض عناصر المشهد لتختار منها (v1.0.27 §3).
+    if (type === "find" && !Array.isArray(activity.spots)) activity.spots = [];
+    // ⚠️ `answers` **و**`expect` معاً: الأوّل يتقاسمه مع «الجواب المباشر»،
+    // والثاني هو ما يميّزه بنيوياً — وبغيره يقرأ المحرّك النشاط نوعاً آخر
+    // (v1.0.28 §2.1). و١٢ عددٌ مبدئيّ تُعدّله المعلّمة، لا صفرٌ يرفضه
+    // المُتحقِّق فوراً.
+    if (type === "all-respond") {
+      if (!Array.isArray(activity.answers)) activity.answers = [];
+      if (typeof activity.expect !== "number") activity.expect = 12;
+    }
+    if (type === "sort") {
+      if (!Array.isArray(activity.bins) || (activity.bins as unknown[]).length < 2) {
+        activity.bins = [
+          { id: "bin_1", label: "" },
+          { id: "bin_2", label: "" }
+        ];
+      }
+      if (!Array.isArray(activity.items)) activity.items = [];
+    }
     if (type === "drag-match" && typeof activity.word !== "string") {
       activity.word = "";
       activity.letters = [];
@@ -1435,6 +1594,228 @@ export class StoryDraft {
     // الخطوة بصورتها وموضعها. كتابةُ المعاني وحدها كانت تمحو ما ألّفته
     // المعلّمة من صورٍ ومواضع في كل ضغطة على ↑.
     node.activity.steps = steps.filter((s) => (typeof s === "string" ? s : s.answer));
+  }
+
+  // ---------------------------------------------------------------------
+  // «الأحجية» (v1.0.25)
+  // ---------------------------------------------------------------------
+
+  /** الصورة التي تُقصّ قطعاً. الفراغ يحذف الحقل بدل أن يكتب نصّاً فارغاً. */
+  setJigsawImage(sceneId: string, image: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    if (image) node.activity.image = image;
+    else delete node.activity.image;
+  }
+
+  /**
+   * ضلعٌ من الشبكة.
+   *
+   * ⚠️ يُقصّ هنا إلى [١،٦] لا في الواجهة: الحدّ قاعدةٌ في العقد (§8)، وتركه
+   * للواجهة يعني قيمةً تمرّ من أي مسارٍ آخر يكتب في المسوّدة.
+   *
+   * وتغيير الضلع يُسقط عناوين الخانات الخارجة عن الشبكة الجديدة: عنوانٌ
+   * يشير إلى خانةٍ لم تعد موجودة بطاقةٌ لا تفعل شيئاً أمام الصفّ.
+   */
+  setJigsawGrid(sceneId: string, side: "cols" | "rows", value: number): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity;
+    if (!isPlainObject(activity.grid)) activity.grid = { cols: 2, rows: 2 };
+    const grid = activity.grid as { cols: number; rows: number };
+    grid[side] = Math.min(6, Math.max(1, Math.round(value)));
+
+    const total = grid.cols * grid.rows;
+    if (Array.isArray(activity.pieces)) {
+      const kept = (activity.pieces as Array<Record<string, unknown>>).filter(
+        (piece) => typeof piece.cell === "number" && piece.cell >= 1 && piece.cell <= total
+      );
+      if (kept.length === 0) delete activity.pieces;
+      else activity.pieces = kept;
+    }
+  }
+
+  /** عنوان خانةٍ مؤلَّف. الفراغ يحذف العنوان فتعود الخانة إلى `pN`. */
+  setJigsawPieceAlias(sceneId: string, cell: number, alias: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity;
+    const pieces = Array.isArray(activity.pieces)
+      ? (activity.pieces as Array<Record<string, unknown>>).filter(isPlainObject)
+      : [];
+    const rest = pieces.filter((piece) => piece.cell !== cell);
+    // اسمٌ يحمله عنوانٌ آخر يجعل قصد البطاقة ملتبساً — يُزاح من هناك، فلا
+    // تُحفظ حالةٌ يرفضها المُتحقِّق أصلاً (§8).
+    const next = alias ? [...rest.filter((piece) => piece.alias !== alias), { cell, alias }] : rest;
+    next.sort((a, b) => (a.cell as number) - (b.cell as number));
+    if (next.length === 0) delete activity.pieces;
+    else activity.pieces = next;
+  }
+
+  // ---------------------------------------------------------------------
+  // «كل الأيدي» (v1.0.28)
+  // ---------------------------------------------------------------------
+
+  /**
+   * عدد البطاقات المنتظَرة، أو سقف الانتظار.
+   *
+   * ⚠️ يُقصّان هنا لا في الواجهة: الحدّان قاعدتان في العقد (§5، §8)، وتركهما
+   * للواجهة يعني قيمةً تمرّ من أي مسارٍ آخر يكتب في المسوّدة.
+   */
+  updateAllRespond(sceneId: string, patch: { expect?: number; waitSeconds?: number }): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity;
+    if (patch.expect !== undefined && Number.isFinite(patch.expect)) {
+      activity.expect = Math.max(2, Math.round(patch.expect));
+    }
+    if (patch.waitSeconds !== undefined && Number.isFinite(patch.waitSeconds)) {
+      activity.waitSeconds = Math.min(180, Math.max(3, Math.round(patch.waitSeconds)));
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // «ابحث وقُل أين» (v1.0.27)
+  // ---------------------------------------------------------------------
+
+  /** يضيف موضعاً يسمّي عنصراً في المشهد. المعرّف مولَّد لا مؤلَّف. */
+  addFindSpot(sceneId: string, alias: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !alias) return;
+    if (!Array.isArray(node.activity.spots)) node.activity.spots = [];
+    const spots = node.activity.spots as Array<Record<string, unknown>>;
+    if (spots.some((spot) => spot.alias === alias)) return;
+    let n = spots.length + 1;
+    while (spots.some((spot) => spot.id === `sp_${n}`)) n++;
+    spots.push({ id: `sp_${n}`, alias, label: "" });
+  }
+
+  updateFindSpot(
+    sceneId: string,
+    spotId: string,
+    patch: { label?: string; relation?: string }
+  ): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const spots = Array.isArray(node.activity.spots) ? (node.activity.spots as Array<Record<string, unknown>>) : [];
+    const spot = spots.find((s) => isPlainObject(s) && s.id === spotId);
+    if (!spot) return;
+    for (const key of ["label", "relation"] as const) {
+      if (patch[key] === undefined) continue;
+      if (patch[key] === "") delete spot[key];
+      else spot[key] = patch[key];
+    }
+  }
+
+  /**
+   * يختار الموضع الذي يخبّئ المطلوب.
+   *
+   * ⚠️ واحدٌ فقط: `find` يبحث عن شيءٍ واحد (§7). وموضعان صحيحان كانا
+   * سيجعلان «أين هو؟» سؤالاً بجوابين، وهو تأليفٌ لم يُكمَل.
+   */
+  setFindCorrectSpot(sceneId: string, spotId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const spots = Array.isArray(node.activity.spots) ? (node.activity.spots as Array<Record<string, unknown>>) : [];
+    for (const spot of spots) {
+      if (!isPlainObject(spot)) continue;
+      if (spot.id === spotId) spot.correct = true;
+      else delete spot.correct;
+    }
+  }
+
+  removeFindSpot(sceneId: string, spotId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    if (!Array.isArray(node.activity.spots)) return;
+    node.activity.spots = (node.activity.spots as Array<Record<string, unknown>>).filter(
+      (spot) => spot.id !== spotId
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // «الفرز» (v1.0.26)
+  // ---------------------------------------------------------------------
+
+  /** يسمّي سلّةً، أو يبدّل صورتها. */
+  updateSortBin(sceneId: string, binId: string, patch: { label?: string; image?: string }): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const bins = Array.isArray(node.activity.bins) ? (node.activity.bins as Array<Record<string, unknown>>) : [];
+    const bin = bins.find((b) => isPlainObject(b) && b.id === binId);
+    if (!bin) return;
+    for (const key of ["label", "image"] as const) {
+      if (patch[key] === undefined) continue;
+      if (patch[key] === "") delete bin[key];
+      else bin[key] = patch[key];
+    }
+  }
+
+  /** سلّةٌ جديدة بمعرّف مولَّد — المعرّف عنوانٌ لا سطح تأليف (v1.0.10 §7.1). */
+  addSortBin(sceneId: string): string | null {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return null;
+    if (!Array.isArray(node.activity.bins)) node.activity.bins = [];
+    const bins = node.activity.bins as Array<Record<string, unknown>>;
+    let n = bins.length + 1;
+    while (bins.some((b) => b.id === `bin_${n}`)) n++;
+    const id = `bin_${n}`;
+    bins.push({ id, label: "" });
+    return id;
+  }
+
+  /**
+   * يحذف سلّةً — **وكل غرضٍ كان ينتمي إليها**.
+   *
+   * ⚠️ الغرض اليتيم يجعل الفرز غير قابلٍ للحلّ أبداً: سلّته الصحيحة لم تعد
+   * موجودة، فلا موضع يُقبل منه. وتركُه لحذفٍ يدويّ لاحق يعني قصّةً تُحفظ
+   * بخطأٍ لا تراه المؤلّفة إلّا أمام الصفّ.
+   *
+   * ولا تُحذف سلّةٌ إن بقيت أقلّ من سلّتين: سلّةٌ واحدة ليست فرزاً.
+   */
+  removeSortBin(sceneId: string, binId: string): boolean {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return false;
+    const bins = Array.isArray(node.activity.bins) ? (node.activity.bins as Array<Record<string, unknown>>) : [];
+    if (bins.length <= 2) return false;
+    const kept = bins.filter((b) => b.id !== binId);
+    if (kept.length === bins.length) return false;
+    node.activity.bins = kept;
+    if (Array.isArray(node.activity.items)) {
+      node.activity.items = (node.activity.items as Array<Record<string, unknown>>).filter(
+        (item) => item.bin !== binId
+      );
+    }
+    return true;
+  }
+
+  /** غرضٌ جديد، في السلّة المسمّاة. */
+  addSortItem(sceneId: string, alias: string, binId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !alias || !binId) return;
+    if (!Array.isArray(node.activity.items)) node.activity.items = [];
+    const items = node.activity.items as Array<Record<string, unknown>>;
+    let n = items.length + 1;
+    while (items.some((i) => i.id === `it_${n}`)) n++;
+    items.push({ id: `it_${n}`, alias, bin: binId });
+  }
+
+  /** ينقل غرضاً إلى سلّةٍ أخرى — وهو ما يُؤلَّف حين تتغيّر القاعدة (§4). */
+  setSortItemBin(sceneId: string, itemId: string, binId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !binId) return;
+    const items = Array.isArray(node.activity.items) ? (node.activity.items as Array<Record<string, unknown>>) : [];
+    const item = items.find((i) => isPlainObject(i) && i.id === itemId);
+    if (item) item.bin = binId;
+  }
+
+  removeSortItem(sceneId: string, itemId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    if (!Array.isArray(node.activity.items)) return;
+    node.activity.items = (node.activity.items as Array<Record<string, unknown>>).filter(
+      (item) => item.id !== itemId
+    );
   }
 
   /**
