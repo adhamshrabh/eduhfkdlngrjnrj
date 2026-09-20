@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 
-import { ActivityBase, isSolvable, resolveAddress } from "./ActivityBase";
+import { ActivityBase, isSolvable, isStrayPosition, readWrongResponse, resolveAddress } from "./ActivityBase";
 
 describe("resolveAddress — العناوين الثلاثة وترتيبها", () => {
   const choices = [
@@ -197,5 +197,64 @@ describe("ActivityBase — الحالة والإبلاغ", () => {
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * ⚠️ درس مدفوع الثمن: `wrongResponse` كان يُؤلَّف في الاستوديو، ويُفحص في
+ * المُتحقِّق، ويُبثّ في حمولة `Puzzle.Failed` — **ولا يقرؤه أحد**. تكتب
+ * المعلّمة «هذه ليست بيضة» فلا يسمعها الطفل، ولا خطأ في أي طبقة يقول لماذا.
+ */
+describe("readWrongResponse — ما يُقال حين يُخطئ الطفل", () => {
+  it("النصّ يصل", () => {
+    expect(readWrongResponse({ id: "x", response: { text: "ليس هذا" } })).toEqual({
+      text: "ليس هذا",
+      audio: undefined
+    });
+  });
+
+  it("صوتٌ بلا نصّ ردٌّ صالح — مسموعٌ لا مكتوب", () => {
+    expect(readWrongResponse({ response: { audio: "no_clip" } })).toEqual({ text: "", audio: "no_clip" });
+  });
+
+  it("بلا ردّ مؤلَّف: صمتٌ مقصود، لا «خطأ» عامّة", () => {
+    expect(readWrongResponse({ id: "x" })).toBeNull();
+    expect(readWrongResponse({ response: {} })).toBeNull();
+    expect(readWrongResponse({ response: { text: "" } })).toBeNull();
+  });
+
+  it("حمولة مشوَّهة لا تكسر مشهداً — قصّة الطفل تبقى قابلة للّعب", () => {
+    expect(readWrongResponse(null)).toBeNull();
+    expect(readWrongResponse(undefined)).toBeNull();
+    expect(readWrongResponse({ response: { text: 7 } })).toBeNull();
+    expect(readWrongResponse("nonsense")).toBeNull();
+  });
+});
+
+/**
+ * ⚠️ فجوة نامت حتى صارت الأزرار مربوطة: ضغطةُ زرٍّ في مشهد بطاقة كانت
+ * تُحتسب **إجابة خاطئة**، فيردّ الطائر «ليست هذه» على طفلٍ لمس زرّاً.
+ */
+describe("isStrayPosition — الموضع ليس معنى", () => {
+  it("موضعٌ لا يدّعيه جوابٌ مؤلَّف يُهمَل", () => {
+    expect(isStrayPosition("3", ["egg", "nest"])).toBe(true);
+    expect(isStrayPosition("1", [])).toBe(true);
+  });
+
+  it("اسمُ أصلٍ ليس موضعاً — مهما بدا", () => {
+    expect(isStrayPosition("egg", ["egg"])).toBe(false);
+    expect(isStrayPosition("stone", ["egg"])).toBe(false);
+    expect(isStrayPosition("1nest_idle", ["egg"])).toBe(false);
+  });
+
+  it("⚠️ موضعٌ **مؤلَّف** معنىً لا موضع — فأصلٌ اسمه «2» يبقى يعمل", () => {
+    // صورٌ مرقّمة موجودة في محتوى حقيقي؛ إهمالها كان سيكسر جواباً صحيحاً.
+    expect(isStrayPosition("2", ["1", "2", "3"])).toBe(false);
+  });
+
+  it("ما ليس رقماً خالصاً ليس موضعاً", () => {
+    expect(isStrayPosition("2a", [])).toBe(false);
+    expect(isStrayPosition("choice_2", [])).toBe(false);
+    expect(isStrayPosition("", [])).toBe(false);
   });
 });

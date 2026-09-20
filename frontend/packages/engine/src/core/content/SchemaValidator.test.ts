@@ -970,3 +970,211 @@ describe("generic groups (v1.0.17)", () => {
     expect(r.warnings.join(" ")).not.toContain("group");
   });
 });
+
+/**
+ * «الترتيب» (v1.0.22 §5) — البنية وحدها. أمّا أن يكون لخطوةٍ بطاقةٌ مربوطة
+ * فسؤالٌ يخصّ الاستوديو، وهو الطبقة الوحيدة التي ترى جدول البطاقات.
+ */
+describe("sequence activity", () => {
+  const storyWithActivity = (activity: unknown) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements: [],
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity,
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  const sequence = (over: Record<string, unknown> = {}) => ({
+    type: "sequence",
+    question: { text: "رتّب حروف كلمة سرير" },
+    steps: ["س", "ر", "ي", "ر"],
+    ...over
+  });
+
+  it("accepts steps written as bare strings", () => {
+    const r = validateStorySchema(storyWithActivity(sequence()));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("accepts the object form, which exists so a later need needs no new contract", () => {
+    const r = validateStorySchema(
+      storyWithActivity(sequence({ steps: [{ answer: "seen", text: "س" }, "ر"] }))
+    );
+    expect(r.errors).toEqual([]);
+  });
+
+  it("rejects a single step — one step is not an order", () => {
+    const r = validateStorySchema(storyWithActivity(sequence({ steps: ["س"] })));
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(" ")).toContain("at least two");
+  });
+
+  it("rejects missing steps", () => {
+    const r = validateStorySchema(storyWithActivity({ type: "sequence" }));
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(" ")).toContain("steps");
+  });
+
+  it("rejects a step that says nothing — an empty string or an object with no answer", () => {
+    const r = validateStorySchema(storyWithActivity(sequence({ steps: ["س", "", { text: "ر" }] })));
+    expect(r.errors.join(" ")).toContain("steps[1]");
+    expect(r.errors.join(" ")).toContain("steps[2]");
+  });
+
+  it("warns, but does not fail, when nothing is asked", () => {
+    const r = validateStorySchema(storyWithActivity(sequence({ question: undefined })));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("empty slots");
+  });
+
+  it("says nothing about steps on an activity of another type", () => {
+    const r = validateStorySchema(
+      storyWithActivity({ type: "drag-match", word: "cat", letters: ["c", "a", "t"], missingIndex: 1 })
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+});
+
+/**
+ * ما يُرسم من خطوة (v1.0.23 §5) — كلّه اختياري، والبنية وحدها تُفحص.
+ */
+describe("sequence steps on the stage", () => {
+  const storyWithSteps = (steps: unknown) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements: [],
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity: { type: "sequence", question: { text: "رتّب" }, steps },
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  it("accepts an image and a position on every step", () => {
+    const r = validateStorySchema(
+      storyWithSteps([
+        { answer: "branch", image: "branch_pic", x: 460, y: 700, scale: 0.5 },
+        { answer: "nest", x: 760, y: 700 }
+      ])
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("still accepts a step with none of them — every field is optional (§6)", () => {
+    const r = validateStorySchema(storyWithSteps(["س", "ر"]));
+    expect(r.errors).toEqual([]);
+  });
+
+  it("rejects an empty image — absent means \"use the answer\", blank means nothing", () => {
+    const r = validateStorySchema(storyWithSteps([{ answer: "a", image: "" }, "b"]));
+    expect(r.errors.join(" ")).toContain("steps[0].image");
+  });
+
+  it("rejects a position that is not a number", () => {
+    const r = validateStorySchema(storyWithSteps([{ answer: "a", x: "460" }, { answer: "b", y: null }]));
+    expect(r.errors.join(" ")).toContain("steps[0].x");
+    expect(r.errors.join(" ")).toContain("steps[1].y");
+  });
+
+  it("rejects scale 0 — not \"very small\" but invisible", () => {
+    // ⚠️ `Number("")` صفرٌ في JavaScript: حقلُ مقياسٍ مُفرَّغ لحظةً كان
+    // يُحفظ صفراً، فيصير السبرايت «موجوداً» بحسب البيانات وغيرَ مرئيّ.
+    const r = validateStorySchema(storyWithSteps([{ answer: "a", scale: 0 }, "b"]));
+    expect(r.errors.join(" ")).toContain("greater than 0");
+  });
+
+  it("rejects a negative scale, which flips the picture", () => {
+    const r = validateStorySchema(storyWithSteps([{ answer: "a", scale: -1 }, "b"]));
+    expect(r.errors.join(" ")).toContain("greater than 0");
+  });
+});
+
+/** «يُجاب بالإطار والأزرار» (v1.0.24 §5) — حقلٌ واحد، والبنية وحدها تُفحص. */
+describe("pick-correct navigate", () => {
+  const storyWith = (activity: unknown) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements: [],
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity,
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  const pick = (over: Record<string, unknown> = {}) => ({
+    type: "pick-correct",
+    question: { text: "ابحث عن حرف الألف" },
+    choices: [
+      { id: "c1", alias: "alef", correct: true },
+      { id: "c2", alias: "baa" }
+    ],
+    ...over
+  });
+
+  it("accepts navigate: true", () => {
+    const r = validateStorySchema(storyWith(pick({ navigate: true })));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("accepts its absence — which is every scene authored so far (§6)", () => {
+    const r = validateStorySchema(storyWith(pick()));
+    expect(r.errors).toEqual([]);
+  });
+
+  it("rejects a non-boolean — \"true\" is not true", () => {
+    const r = validateStorySchema(storyWith(pick({ navigate: "true" })));
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(" ")).toContain("navigate");
+  });
+
+  it("says nothing about navigate on another activity type", () => {
+    const r = validateStorySchema(
+      storyWith({ type: "card-answer", question: { text: "?" }, answers: ["egg"], navigate: "nonsense" })
+    );
+    expect(r.errors).toEqual([]);
+  });
+});

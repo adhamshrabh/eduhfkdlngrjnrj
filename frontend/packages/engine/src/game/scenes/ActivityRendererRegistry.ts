@@ -26,7 +26,9 @@ import type { LayoutApplier } from "./LayoutApplier";
 import { PuzzleRunner } from "./PuzzleRunner";
 import { PickCorrectRunner } from "./PickCorrectRunner";
 import { CardAnswerRunner, type CardAnswerHost } from "./CardAnswerRunner";
-import { CARD_ANSWER_TYPE, PICK_CORRECT_TYPE, type ActivityData } from "./ActivityTypes";
+import { SequenceRunner } from "./SequenceRunner";
+import { PixiSequenceView } from "./SequenceView";
+import { CARD_ANSWER_TYPE, PICK_CORRECT_TYPE, SEQUENCE_TYPE, type ActivityData } from "./ActivityTypes";
 
 /**
  * The public contract every activity renderer must satisfy — exactly the
@@ -131,5 +133,25 @@ ActivityRendererRegistry.register(
       return new PuzzleRunner(_container, eventBus, _animation, _layout);
     }
     return new CardAnswerRunner(eventBus, host);
+  }
+);
+
+/**
+ * «الترتيب» (v1.0.22، ورسمه في v1.0.23).
+ *
+ * يتقاسم مضيف «الجواب المباشر» نفسه — فما يحتاجه من المشهد واحد: مؤقّتات،
+ * ومدد مقاطع، وصندوق حوارٍ يعرض السؤال. أمّا الخانات فتُرسم في `SequenceView`
+ * الذي يُبنى هنا: المُصيِّر لا يعرف Pixi، والمُسجِّل هو من يملك اللوحة والأصول.
+ *
+ * وغياب المضيف يسقط على الافتراضي للسبب نفسه المشروح أعلاه.
+ */
+ActivityRendererRegistry.register(
+  SEQUENCE_TYPE,
+  (container, eventBus, animation, layout, assets, host) => {
+    if (!host) {
+      console.warn('[ActivityRendererRegistry] "sequence" needs a scene host — falling back.');
+      return new PuzzleRunner(container, eventBus, animation, layout);
+    }
+    return new SequenceRunner(eventBus, host, new PixiSequenceView(container, assets, animation));
   }
 );

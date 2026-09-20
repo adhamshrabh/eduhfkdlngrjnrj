@@ -107,6 +107,43 @@ export function isSolvable<T extends AddressableChoice & { correct?: boolean }>(
 }
 
 /**
+ * إشارةٌ لا معنى لها عند هذا النشاط: **موضعٌ** لا يدّعيه أي جوابٍ مؤلَّف.
+ *
+ * ⚠️ فجوة مقيسة، نامت حتى صارت الأزرار مربوطة:
+ *
+ * الزرّ يصل النشاط موضعاً («3») كما يصل لوحة المفاتيح. و«اختر الإجابة
+ * الصحيحة» يفهم الموضع — الثالث من الخيارات المعروضة. أمّا «الجواب المباشر»
+ * و«الترتيب» فلا شيء معروضٌ فيهما ليكون «الثالث»، فكان «3» يُقارَن بأسماء
+ * الأصول ولا يطابق، **فيُحتسب إجابة خاطئة**: الطائر يردّ «ليست هذه» على طفلٍ
+ * لمس زرّاً بطرف إصبعه.
+ *
+ * والقاعدة التي تحسمه: **الموضع ليس معنى**. البطاقة تمرّ بجدول المنصّة فتصل
+ * حاملةً معنىً قصده الطفل؛ والموضع لم يمرّ بشيء.
+ *
+ * ولا يُهمَل موضعٌ **مؤلَّف**: أصلٌ اسمه «2» موجود في محتوى حقيقي (صور
+ * مرقّمة)، فإن ادّعاه جوابٌ أو خطوة فهو معنىً لا موضع.
+ */
+export function isStrayPosition(raw: string, authored: ReadonlyArray<string>): boolean {
+  if (!/^\d+$/.test(raw)) return false;
+  return !authored.includes(raw);
+}
+
+/**
+ * ردّ الشخصية في حمولة `Puzzle.Failed`، أو `null` إن لم يكن هناك ما يُقال.
+ *
+ * ⚠️ يعيش هنا لا في المشهد: `reportWrong` أدناه هو من يبثّ هذه الحمولة،
+ * فقراءتها في ملفٍ آخر تفصل الكاتب عن القارئ — وقد كلّف هذا الفصلُ ثمناً
+ * مرّة: الردّ كان يُؤلَّف ويُفحص ويُبثّ، ولا يقرؤه أحد.
+ */
+export function readWrongResponse(payload: unknown): { text: string; audio?: string } | null {
+  const response = (payload as { response?: { text?: unknown; audio?: unknown } } | null)?.response;
+  const text = typeof response?.text === "string" ? response.text : "";
+  const audio = typeof response?.audio === "string" ? response.audio : undefined;
+  // نصٌّ فارغ مع صوت حالةٌ صالحة: ردٌّ مسموع بلا مكتوب.
+  return text || audio ? { text, audio } : null;
+}
+
+/**
  * حالة النشاط وإبلاغه — الجزء الذي لا يخصّ الرسم.
  *
  * يرثه المُصيِّر فيحصل على العناوين الثلاثة وحراسة «مرّة واحدة» مجّاناً،

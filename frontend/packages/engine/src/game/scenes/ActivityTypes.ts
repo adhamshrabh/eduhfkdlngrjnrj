@@ -84,6 +84,16 @@ export interface PickCorrectActivity extends ActivityBase {
    *  child: it reports what the character experienced, so the mistake
    *  carries information the child can reason from. */
   wrongResponse?: { text?: string; audio?: string };
+  /**
+   * يُجاب بإطارٍ يتنقّل بأزرار الصندوق، لا بزرٍّ لكل خيار (v1.0.24).
+   *
+   * ⚠️ مؤلَّف لا تلقائي، لأنه **يغيّر معنى الزرّ**: بغيابه يختار الزرّ ٣
+   * الخيارَ الثالث (v1.0.10 §7.3)؛ وبوجوده يحرّك الإطار يميناً. وإطارٌ
+   * يظهر من تلقائه كان سيعيد تعريف كل زرّ في كل مشهدٍ قائم عند أوّل ضغطة.
+   *
+   * وهو أيضاً ما يفكّ قيد «زرّ لكل خيار»: خمسة أزرار تكفي لاثني عشر حرفاً.
+   */
+  navigate?: boolean;
 }
 
 /**
@@ -109,11 +119,61 @@ export interface CardAnswerActivity extends ActivityBase {
   wrongResponse?: { text?: string; audio?: string };
 }
 
-export type ActivityData = DragMatchActivity | PickCorrectActivity | CardAnswerActivity;
+/** خطوة واحدة في تسلسل (v1.0.22 §2.1، وv1.0.23 لما يُرسم منها). */
+export interface SequenceStep {
+  /** ما يجب أن تعنيه البطاقة (أو المفتاح) لتُقبَل في هذا الموضع. */
+  answer: string;
+  /** ما يظهر على الشاشة عند قبولها. الغياب = `answer` نفسه. */
+  text?: string;
+  /**
+   * الصورة التي تُرسم حين تُملأ هذه الخانة **بالبطاقة الصحيحة** (v1.0.23 §2.1).
+   *
+   * نادراً ما تُكتب: `answer` معنى، والمعنى اسمُ أصلٍ في بقيّة النموذج، فخطوةٌ
+   * جوابها `egg` ترسم أصل `egg` بلا تأليفٍ إضافي. وهذا الحقل للحالة التي
+   * وُجد الشكل الكائني لأجلها: معنى البطاقة ليس اسم الصورة.
+   *
+   * ⚠️ ولا تُرسم لبطاقةٍ **لا تطابق** هذه الخطوة (§2.2): إظهار الصورة
+   * المنتظَرة لبطاقةٍ خاطئة يُري الطفلة جواباً صحيحاً لم تُعطه ثم يسمّيه خطأً.
+   */
+  image?: string;
+  /**
+   * موضع **الخانة** على المسرح (فضاء التصميم 1920×1080) — لا موضع البطاقة:
+   * ما يهبط في الخانة يُرسم حيث هي (§2.3).
+   *
+   * الغياب = صفٌّ متوسّط بالمسافات نفسها التي يستعملها `pick-correct`.
+   */
+  x?: number;
+  y?: number;
+  scale?: number;
+}
+
+/**
+ * «الترتيب» (v1.0.22) — الطفل يجمّع ترتيباً، والشاشة تعرضه وهو يتكوّن.
+ *
+ * ⚠️ الحكم عند **النهاية** لا عند كل بطاقة: الحكم على كل خطوة يحوّل النشاط
+ * إلى أربعة أسئلة من حرفٍ واحد بتلميحٍ بعد كلٍّ منها؛ والحكم على المجموع
+ * يجعله سؤالاً واحداً عن كلمة — وهو ما يُعلَّم.
+ *
+ * ويطابق الفعل المادّي: طفلةٌ ترصف بطاقات على طاولة لا يُقال لها شيء بعد
+ * كل بطاقة، بل تنظر إلى ما بنته وتقرّر أنه تمّ.
+ */
+export interface SequenceActivity extends ActivityBase {
+  question?: { text?: string; audio?: string };
+  /** الترتيب الصحيح. النصّ اختصارٌ لـ`{ answer: X, text: X }`. */
+  steps: Array<string | SequenceStep>;
+  wrongResponse?: { text?: string; audio?: string };
+}
+
+export type ActivityData =
+  | DragMatchActivity
+  | PickCorrectActivity
+  | CardAnswerActivity
+  | SequenceActivity;
 
 /** The id `ActivityRendererRegistry` knows this renderer by. */
 export const PICK_CORRECT_TYPE = "pick-correct";
 export const CARD_ANSWER_TYPE = "card-answer";
+export const SEQUENCE_TYPE = "sequence";
 
 /** Structural narrowing — see the note above on why not `type`. */
 export function isPickCorrect(activity: ActivityData): activity is PickCorrectActivity {
@@ -123,4 +183,18 @@ export function isPickCorrect(activity: ActivityData): activity is PickCorrectAc
 /** تضييق بنيوي — `answers` مصفوفة لا يحملها أي نوع آخر. */
 export function isCardAnswer(activity: ActivityData): activity is CardAnswerActivity {
   return Array.isArray((activity as CardAnswerActivity).answers);
+}
+
+/** تضييق بنيوي — `steps` مصفوفة لا يحملها أي نوع آخر. */
+export function isSequence(activity: ActivityData): activity is SequenceActivity {
+  return Array.isArray((activity as SequenceActivity).steps);
+}
+
+/** يوحّد الخطوة إلى شكلها الكامل — النصّ اختصار (v1.0.22 §2.1). */
+export function readStep(step: string | SequenceStep): SequenceStep {
+  if (typeof step === "string") return { answer: step, text: step };
+  // ⚠️ `image` **لا** يقع على `answer` هنا: الغياب يعني «جرّب المعنى اسمَ
+  // أصل»، وهو قرارٌ يخصّ الرسم لا القراءة (v1.0.23 §2.1). ولو مُلئ هنا
+  // لصارت الخطوةُ تدّعي صورةً لم تؤلَّف، فيضيع الفرق بين المؤلَّف والمستنتَج.
+  return { ...step, answer: step.answer, text: step.text ?? step.answer };
 }

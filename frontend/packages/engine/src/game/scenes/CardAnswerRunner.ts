@@ -31,6 +31,7 @@ import type { EventBus } from "@core/events/EventBus";
 import { ActivityBase } from "./ActivityBase";
 import type { ActivityData, CardAnswerActivity } from "./ActivityTypes";
 import { isCardAnswer } from "./ActivityTypes";
+import { isStrayPosition } from "./ActivityBase";
 
 /**
  * سقف فتح البوّابة، بالثواني.
@@ -98,10 +99,19 @@ export class CardAnswerRunner extends ActivityBase {
     const raw = (payload as { choice?: unknown })?.choice;
     if (typeof raw !== "string" || !raw) return;
 
-    // أي قصد يصل بعد الفتح يعني أن جهازاً يعمل — فلا داعي لمهلة «لا قارئ».
+    // ⚠️ ضغطةُ زرٍّ ليست بطاقةً خاطئة (`isStrayPosition`): لا شيء معروضٌ هنا
+    // ليكون «الثالث»، فالموضع لا يعني شيئاً — ولا يستحقّ ردّ الطائر.
+    const answers = this.activity?.answers ?? [];
+    if (isStrayPosition(raw, answers)) return;
+
+    // وأيّ قصدٍ **ذي معنى** يعني أن قارئاً يعمل — فلا داعي لمهلة «لا قارئ».
+    //
+    // بعد الحارس لا قبله، عمداً: المهلة موجودة لأن هذا النشاط لا يُجاب
+    // باللمس — والزرّ لا يُجيبه أيضاً. فطفلٌ يعبث بالأزرار كان سيُبطل مخرج
+    // الصفّ الذي لا قارئ لديه، ثم يقف الجميع على مشهدٍ لا يُحلّ.
     this.host.cancel("card-answer-no-device");
 
-    if (this.activity?.answers.includes(raw)) {
+    if (answers.includes(raw)) {
       this.host.clearHint();
       this.reportSolved(raw);
       return;

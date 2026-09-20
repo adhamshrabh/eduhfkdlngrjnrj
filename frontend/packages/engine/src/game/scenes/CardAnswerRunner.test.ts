@@ -229,3 +229,63 @@ describe("السقوط الآمن — لا تتجمّد حصّة أبداً", ()
     expect(solved).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * ضغطة زرٍّ في مشهد بطاقة (v1.0.24).
+ *
+ * ⚠️ العطل الذي يُصلَح هنا نام حتى صارت الأزرار مربوطة: الزرّ يصل النشاط
+ * موضعاً («3»)، ولا شيء معروضٌ هنا ليكون «الثالث» — فكان يُقارَن بأسماء
+ * الأصول، ولا يطابق، **فيُحتسب إجابة خاطئة**.
+ */
+describe("الزرّ ليس بطاقة خاطئة", () => {
+  function open() {
+    const h = fakeHost();
+    const b = busSpy();
+    const solved = vi.fn();
+    const runner = new CardAnswerRunner(b.bus, h.host);
+    runner.start(activity(), "act_1", solved);
+    h.fire("card-answer-gate");
+    return { h, b, solved, runner };
+  }
+
+  it("ضغطة زرّ لا تُحتسب خطأً — ولا يردّ الطائر على طفلٍ لمس زرّاً", () => {
+    const { b } = open();
+    b.send("3");
+    expect(b.emitted).toEqual([]);
+  });
+
+  it("والبطاقة الخاطئة تبقى خطأً — هذا هو الفرق كلّه", () => {
+    const { b } = open();
+    b.send("stone");
+    expect(b.emitted.map((e) => e.event)).toEqual(["puzzle:failed"]);
+  });
+
+  it("⚠️ ولا تُبطل مخرج «لا قارئ»", () => {
+    // المهلة موجودة لأن هذا النشاط لا يُجاب باللمس — والزرّ لا يُجيبه أيضاً.
+    // فطفلٌ يعبث بالأزرار كان سيُبطل مخرج الصفّ الذي لا قارئ لديه.
+    const { h, b, solved } = open();
+    b.send("4");
+    expect(h.timers.has("card-answer-no-device")).toBe(true);
+    h.fire("card-answer-no-device");
+    expect(solved).toHaveBeenCalledTimes(1);
+  });
+
+  it("وبطاقة حقيقية تُبطلها — فالقارئ يعمل", () => {
+    const { h, b } = open();
+    b.send("stone");
+    expect(h.timers.has("card-answer-no-device")).toBe(false);
+  });
+
+  it("جوابٌ مؤلَّف اسمه رقم يبقى يعمل", () => {
+    // أصلٌ اسمه «2» موجود في محتوى حقيقي — إهماله كان سيكسر جواباً صحيحاً.
+    const h = fakeHost();
+    const b = busSpy();
+    const solved = vi.fn();
+    const runner = new CardAnswerRunner(b.bus, h.host);
+    runner.start(activity({ answers: ["2"] }), "act_1", solved);
+    h.fire("card-answer-gate");
+
+    b.send("2");
+    expect(solved).toHaveBeenCalledTimes(1);
+  });
+});

@@ -445,6 +445,60 @@ function validateCardAnswer(activity: Record<string, unknown>, sceneId: string, 
   }
 }
 
+/**
+ * ما يُرسم من الخطوة (v1.0.23 §5) — البنية وحدها.
+ *
+ * أن يشير `image` إلى أصلٍ مُعلَن سؤالٌ لا يجيب عنه مشهدٌ واحد؛ يفحصه
+ * الاستوديو، وهو الطبقة الوحيدة التي تملك `assets[]` والمشهد معاً.
+ */
+function validateStepVisuals(step: Record<string, unknown>, sceneId: string, i: number, errors: string[]): void {
+  if (step.image !== undefined && !isNonEmptyString(step.image)) {
+    errors.push(`Scene "${sceneId}": activity.steps[${i}].image must be a non-empty asset alias when present (v1.0.23 §5).`);
+  }
+  for (const field of ["x", "y", "scale"] as const) {
+    const value = step[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      errors.push(`Scene "${sceneId}": activity.steps[${i}].${field} must be a number when present (v1.0.23 §5).`);
+    }
+  }
+  // ⚠️ الصفر ليس «صغيراً جداً» بل **غير مرئي**، والسالب يقلب الصورة. وهو
+  // درسٌ مدفوع الثمن: `Number("")` صفرٌ في JavaScript، فحقلُ مقياسٍ مُفرَّغ
+  // لحظةً كان يُحفظ صفراً — سبرايت «موجود» بحسب البيانات ولا يُرى.
+  if (typeof step.scale === "number" && Number.isFinite(step.scale) && step.scale <= 0) {
+    errors.push(`Scene "${sceneId}": activity.steps[${i}].scale must be greater than 0 (v1.0.23 §5).`);
+  }
+}
+
+/**
+ * «الترتيب» (v1.0.22) — البنية وحدها، كما في «الجواب المباشر».
+ *
+ * أن يكون لخطوةٍ بطاقةٌ مربوطة سؤالٌ لا يجيب عنه مشهدٌ واحد؛ يفحصه
+ * الاستوديو حيث يمكن إصلاحه.
+ */
+function validateSequence(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const steps = activity.steps;
+  if (!Array.isArray(steps) || steps.length < 2) {
+    // خطوةٌ واحدة ليست ترتيباً — وهي على الأرجح النوع الخطأ لا الطول الخطأ.
+    errors.push(`Scene "${sceneId}": a "sequence" activity needs a "steps" array with at least two entries (v1.0.22 §5).`);
+    return;
+  }
+  steps.forEach((step, i) => {
+    // نصٌّ اختصارٌ لـ { answer, text } (§2.1) — والشكلان مقبولان هنا كي لا
+    // يضطرّ تأليفٌ لاحق إلى نسخةٍ ثانية من العقد.
+    if (isNonEmptyString(step)) return;
+    if (!isPlainObject(step) || !isNonEmptyString(step.answer)) {
+      errors.push(`Scene "${sceneId}": activity.steps[${i}] must be a non-empty string, or an object with a non-empty "answer" (v1.0.22 §2.1).`);
+      return;
+    }
+    validateStepVisuals(step, sceneId, i, errors);
+  });
+
+  if (activity.question === undefined) {
+    warnings.push(`Scene "${sceneId}": a "sequence" activity with no "question" asks nothing — the child sees empty slots with nothing to order (v1.0.22 §2).`);
+  }
+}
+
 function validateActivity(activity: unknown, sceneId: string, errors: string[], warnings: string[]): void {
   if (activity === null || activity === undefined) return;
   if (Array.isArray(activity)) {
@@ -459,6 +513,14 @@ function validateActivity(activity: unknown, sceneId: string, errors: string[], 
     errors.push(`Scene "${sceneId}": activity is missing a string "type".`);
   } else if (activity.type === "card-answer") {
     validateCardAnswer(activity, sceneId, errors, warnings);
+  } else if (activity.type === "sequence") {
+    validateSequence(activity, sceneId, errors, warnings);
+  } else if (activity.type === "pick-correct" && activity.navigate !== undefined) {
+    // «يُجاب بالإطار والأزرار» (v1.0.24 §5). البنية وحدها: أمّا وجود صندوق
+    // مربوط فسؤالٌ لا يعرفه مشهد — يفحصه الاستوديو ويحذّر منه.
+    if (typeof activity.navigate !== "boolean") {
+      errors.push(`Scene "${sceneId}": activity.navigate must be true or false when present (v1.0.24 §5).`);
+    }
   }
   // Lifecycle effects (Scene-Model-Specification-v1.0.4.md). Optional —
   // absent means the activity behaves exactly as it did before effects
@@ -544,6 +606,18 @@ function validateScene(
       errors.push(`Scene "${sceneId}": "effects" must be an object with an "onEnter" effect.`);
     } else if (scene.effects.onEnter !== undefined) {
       errors.push(...validateEffect(scene.effects.onEnter, `Scene "${sceneId}": effects.onEnter`).errors);
+    }
+  }
+  // ── كم يبقى المشهد بعد أن ينتهي (v1.0.21) ──────────────────────────
+  //
+  // خطأ لا تحذير حين تكون القيمة غير صالحة: قيمةٌ لا يفهمها المحرّك
+  // تُهمَل بصمت، فتظنّ المؤلّفة أنها ضبطت وقفةً وقد انتقل المشهد فوراً
+  // أمام صفّها. والصمت هنا أسوأ من الرفض.
+  if (scene.holdAfter !== undefined) {
+    const hold = scene.holdAfter;
+    const isSeconds = typeof hold === "number" && Number.isFinite(hold) && hold >= 0;
+    if (!isSeconds && hold !== "tap") {
+      errors.push(`Scene "${sceneId}": "holdAfter" must be a number of seconds (≥ 0) or "tap" (v1.0.21 §2).`);
     }
   }
   validateActivity(scene.activity, sceneId, errors, warnings);
