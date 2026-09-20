@@ -27,16 +27,31 @@ This page is the map. Read the base first, then the patches that touch what you 
 | [v1.0.17](./Scene-Model-Specification-v1.0.17.md) | §2.3 | `type: "group"` + `groupId` — several elements that move as one |
 | [v1.0.18](./Scene-Model-Specification-v1.0.18.md) | §2.2 | `idle: "blink"` — the eyes say the character is awake |
 | [v1.0.19](./Scene-Model-Specification-v1.0.19.md) | §2.2 | `idle: "sway"` — the world has weather in it |
+| [v1.0.20](./Scene-Model-Specification-v1.0.20.md) | §6 | `card-answer` — the answer is in the child's hand, not on the screen |
+| [v1.0.21](./Scene-Model-Specification-v1.0.21.md) | §1 | `scene.holdAfter` — how long a scene stays once it has ended |
+| [v1.0.22](./Scene-Model-Specification-v1.0.22.md) | §6 | `sequence` — the child assembles an order, judged at the end |
+| [v1.0.23](./Scene-Model-Specification-v1.0.23.md) | §2.1 | `steps[].image` / `.x` / `.y` — what a filled slot draws, and where |
+| [v1.0.24](./Scene-Model-Specification-v1.0.24.md) | §7.3 | `navigate` — a travelling frame, so five buttons can answer twelve options |
+| [v1.0.25](./Scene-Model-Specification-v1.0.25.md) | §6 | `jigsaw` — spatial transformation, cut from a picture the story already has |
+| [v1.0.26](./Scene-Model-Specification-v1.0.26.md) | §6 | `sort` — classification, and a rule change authored as a second scene |
+| [v1.0.27](./Scene-Model-Specification-v1.0.27.md) | §6 | `find` — the scene's own elements are the search, and a spatial word is always said |
+| [v1.0.28](./Scene-Model-Specification-v1.0.28.md) | §6 | `all-respond` — the whole class answers at once, counted and never judged |
 
 ## What every patch has kept true
 
-These held from v1.0 through v1.0.17, and a patch that breaks one is a patch to argue about before it is written.
+These held from v1.0 through v1.0.28, and a patch that breaks one is a patch to argue about before it is written.
 
 - **Every new field is optional.** Content authored before a patch behaves identically after it. There is no migration step, ever.
 - **`schemaVersion` stays `"1.0"`.** The patches clarify and extend one contract; they do not fork it.
 - **The validator diagnoses, it never blocks.** `SchemaValidator` reports errors and warnings and never throws — a malformed story still loads, so an author can see and fix the problem instead of facing a blank screen.
 - **The Runtime keeps a child's story playable.** Where the validator errors, the Runtime falls back to something sensible (a skipped effect, an ignored intent, `input: "any"`), because a typo in authoring must not become a dead end mid-lesson.
 - **No control is offered that the engine cannot honour.** Fields exist because something executes them. This is why there is still no `IF` and no follow: the runtime capability does not exist, and a field for it would be a promise the engine cannot keep. (Tap-on-element was in this list until v1.0.11 built the capability — that is the order these things must happen in.)
+- **When a verdict lands is a pedagogical decision, not a rendering one.** A
+  verdict is immediate when the feedback is intrinsic to the physical act (a
+  puzzle piece fits or it doesn't — the material tells you), and withheld to
+  the end when the verdict is a rule the adult holds (the order of a word, a
+  category). Stated in [v1.0.25 §5](./Scene-Model-Specification-v1.0.25.md),
+  and it governs every type after it.
 - **The engine names no device.** RFID, WebSocket, camera and ESP32 appear in adapters and in prose, never in `core/` or `game/` code.
 
 ## Where each part lives
@@ -53,12 +68,26 @@ These held from v1.0 through v1.0.17, and a patch that breaks one is a patch to 
 | Living stillness | v1.0.15, v1.0.18, v1.0.19 | `game/scenes/IdleMotion.ts`, in `Scene.update` | «الحيوية» on the Element tab |
 | Sound beside the voice | v1.0.16 | `play-audio` in `EffectRunner`, on the `sfx` channel | «يُشغّل صوتًا» in the effect list |
 | Grouping and parenting | v1.0.17 | `Pixi.Container` via `SpriteRegistry.revealGroup` | «المجموعة» on the Element tab |
+| Assembling a picture | v1.0.25 | `game/scenes/JigsawRunner.ts` | «الأحجية» on the Activity tab |
+| Sorting into bins | v1.0.26 | `game/scenes/SortRunner.ts` | «الفرز» on the Activity tab |
+| Searching the scene itself | v1.0.27 | `game/scenes/FindRunner.ts` + `enableSpots` in `YaraBedScene` | «ابحث وقُل أين» on the Activity tab |
+| The whole class answering | v1.0.28 | `game/scenes/AllRespondRunner.ts` | «كل الأيدي» on the Activity tab |
+| Why an activity type exists at all | — | — | [`Activity-Evidence-Base.md`](./Activity-Evidence-Base.md) |
 | Validation | all | `core/content/SchemaValidator.ts` | the validation strip |
 
 ## Adding the next patch
 
+0. If the patch adds an activity **type**, write its section in
+   [`Activity-Evidence-Base.md`](./Activity-Evidence-Base.md) first — what it
+   rests on, and where that ends. A type with nothing behind it but taste is
+   allowed, but it says so there in plain words.
 1. Write `Scene-Model-Specification-v1.0.N.md` — what it amends, **why the gap mattered**, the rules, and what it deliberately does not add.
 2. Extend `SchemaValidator` so the field is diagnosed wherever it appears.
 3. Implement the Runtime, with a fallback that keeps a bad value playable.
 4. Add the authoring UI only once the Runtime honours the field.
 5. Add a row to the table above.
+6. The type must appear in BOTH halves: `ActivityRendererRegistry.register()` in
+   the engine **and** `KNOWN_TYPES` + a `render…Editor` branch in `StudioApp`.
+   `apps/studio/src/ActivityTypeParity.test.ts` fails when only one half is
+   done — the silent failure this order exists to prevent, since a type that
+   runs perfectly in the player is still unauthorable.
