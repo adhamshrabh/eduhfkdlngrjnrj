@@ -21,9 +21,21 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const canvas = readFileSync(resolve(__dirname, "SceneCanvas.ts"), "utf-8");
+// ⚠️ المصدر انتقل: كانت هذه الأرقام داخل `PickCorrectRunner`، ثم طلبها
+// «الترتيب» (v1.0.23) أيضاً — فنسخةٌ ثالثة كانت ستجعل الوعد ثلاثيّاً.
+// المحرّك يعرّفها الآن مرّةً في `ActivityLayout.ts`، ويبقى تكرار الاستوديو
+// وحده هو ما يحرسه هذا الملف.
 const runner = readFileSync(
-  resolve(__dirname, "../../../../packages/engine/src/game/scenes/PickCorrectRunner.ts"),
+  resolve(__dirname, "../../../../packages/engine/src/game/scenes/ActivityLayout.ts"),
   "utf-8"
+);
+
+/** ولا يعيد أي مُصيِّر تعريفها بعد الانتقال — وإلّا عاد الانقسام صامتاً. */
+const runnersUsingLayout = ["PickCorrectRunner", "SequenceView"].map((name) =>
+  readFileSync(
+    resolve(__dirname, `../../../../packages/engine/src/game/scenes/${name}.ts`),
+    "utf-8"
+  )
 );
 
 /** Reads `const NAME = <number>;` out of a source file. */
@@ -67,6 +79,15 @@ describe("choice placement — Studio and engine agree", () => {
 
   it("centres the spread on the same design width", () => {
     expect(constant(canvas, "DESIGN_WIDTH")).toBe(constant(runner, "DESIGN_WIDTH"));
+  });
+
+  it("no renderer re-declares them — one definition inside the engine", () => {
+    for (const source of runnersUsingLayout) {
+      expect(source).toMatch(/from "\.\/ActivityLayout"/);
+      for (const name of ["SPREAD_Y", "SPREAD_GAP", "CHOICE_HEIGHT"]) {
+        expect(constant(source, name)).toBeNull();
+      }
+    }
   });
 
   it("keeps a choice's position out of layout.json", () => {
