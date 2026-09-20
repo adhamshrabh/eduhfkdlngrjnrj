@@ -348,3 +348,40 @@ class AssetOwnershipTests(TestCase):
 
     def test_another_teacher_cannot_upload_either(self):
         self.assertEqual(self._upload(self.other, alias="intruder").status_code, 403)
+
+
+class ReferenceStorySurvivesTheSafetyNet(SimpleTestCase):
+    """
+    القصّة المرجعية `yara_finds` تمرّ من `validators.py` بلا رفض.
+
+    ⚠️ سبب وجود هذا الاختبار هو الدرس المدفوع في v1.0.17: المُتحقِّق هنا
+    نسخةٌ ثانية مكتوبة باليد من جزءٍ صغير من العقد، **فهو يتباعد عنه**. وقد
+    رفض فعلاً كل قصّةٍ تستخدم المجموعات لأنه اشترط `alias` على كل عنصر.
+
+    وأربعة أنواع نشاط جديدة (v1.0.25–28) فرصةٌ لتكرار العطل نفسه: تُضاف
+    أشكال، ويرفض الخادم حفظ ما ألّفته المعلّمة — فتكتشفه أمام صفّها لا هنا.
+
+    والاختبار يقرأ القصّة من أمر البذر نفسه لا من نسخةٍ مكتوبة هنا: نسخةٌ
+    ثانية كانت ستبقى صالحة بينما القصّة الحقيقية تنكسر.
+    """
+
+    def test_the_seeded_reference_story_is_accepted(self):
+        from .management.commands.seed_yara_finds import build_story_json
+
+        validate_story_json(build_story_json())
+
+    def test_it_really_carries_the_four_new_activity_types(self):
+        """وإلّا مرّ الاختبار فوق قصّةٍ فقدت ما وُجدت لأجله."""
+        from .management.commands.seed_yara_finds import build_story_json
+
+        types = {
+            scene["activity"]["type"]
+            for scene in build_story_json()["story"]["scenes"]
+            if isinstance(scene.get("activity"), dict)
+        }
+        self.assertTrue({"jigsaw", "sort", "find", "all-respond"} <= types)
+
+    def test_every_scene_is_counted(self):
+        from .management.commands.seed_yara_finds import build_story_json
+
+        self.assertEqual(len(extract_scene_objects(build_story_json())), 8)
