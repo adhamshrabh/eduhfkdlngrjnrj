@@ -1,7 +1,7 @@
 """مُسلسِلات الأجهزة والبطاقات."""
 from rest_framework import serializers
 
-from .models import Device, DeviceCard
+from .models import Device, DeviceButton, DeviceCard
 
 
 class DeviceCardSerializer(serializers.ModelSerializer):
@@ -25,13 +25,28 @@ class DeviceCardSerializer(serializers.ModelSerializer):
         return uid
 
 
+class DeviceButtonSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeviceButton
+        fields = ["id", "index", "role", "updated_at"]
+        read_only_fields = ["id", "updated_at"]
+
+    def validate_index(self, value: int) -> int:
+        # الموضع يبدأ من ١ كما تعدّه اللوحة والمنصّة معاً. الصفر ليس موضعاً،
+        # والسالب يستحيل أن يصل من سكتش.
+        if value < 1:
+            raise serializers.ValidationError("موضع الزرّ يبدأ من ١.")
+        return value
+
+
 class DeviceSerializer(serializers.ModelSerializer):
     cards = DeviceCardSerializer(many=True, read_only=True)
+    buttons = DeviceButtonSerializer(many=True, read_only=True)
     card_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Device
-        fields = ["id", "name", "kind", "url", "owner", "cards", "card_count", "updated_at"]
+        fields = ["id", "name", "kind", "url", "owner", "cards", "buttons", "card_count", "updated_at"]
         read_only_fields = ["id", "owner", "updated_at"]
 
     def get_card_count(self, obj: Device) -> int:

@@ -9,8 +9,8 @@ from rest_framework.request import Request
 from apps.accounts.permissions import IsOwnerOrAdmin
 from apps.accounts.response import ok
 
-from .models import Device, DeviceCard
-from .serializers import DeviceCardSerializer, DeviceSerializer
+from .models import Device, DeviceButton, DeviceCard
+from .serializers import DeviceButtonSerializer, DeviceCardSerializer, DeviceSerializer
 
 
 class DeviceViewSet(viewsets.ModelViewSet):
@@ -70,7 +70,14 @@ class DeviceViewSet(viewsets.ModelViewSet):
         وسط حصّة يجد استجابةً واحدة صغيرة في الذاكرة المؤقّتة، لا وثيقة.
         """
         device = self.get_object()
-        return ok({"bindings": {c.uid: c.label for c in device.cards.all()}})
+        return ok(
+            {
+                "bindings": {c.uid: c.label for c in device.cards.all()},
+                # الأزرار بجوارها لا في نقطةٍ ثانية: صفحة العرض تقرأ هذا مرّة
+                # عند بدء الحصّة، وطلبٌ ثانٍ يعني عطلاً ثانياً محتملاً وسطها.
+                "buttons": {b.index: b.role for b in device.buttons.all()},
+            }
+        )
 
 
 class DeviceCardViewSet(viewsets.ModelViewSet):
@@ -152,3 +159,67 @@ class DeviceCardViewSet(viewsets.ModelViewSet):
         self._get_device()
         self.get_object().delete()
         return ok(message="فُكّ ارتباط البطاقة.")
+
+
+class DeviceButtonViewSet(viewsets.ModelViewSet):
+    """
+    GET    /api/devices/{device_pk}/buttons/        أزرار الجهاز
+    POST   /api/devices/{device_pk}/buttons/        ربط زرّ بدور
+    DELETE /api/devices/{device_pk}/buttons/{id}/   فكّ الارتباط
+
+    لا `PATCH`: إعادة التسمية هنا **هي** إعادة الضغط. المعلّمة تضغط الزرّ
+    وتختار دوره، وإن أخطأت ضغطته ثانيةً واختارت غيره — فـ`create` يُحدِّث.
+    """
+
+    serializer_class = DeviceButtonSerializer
+    permission_classes = [IsAuthenticated, IsOwnerOrAdmin]
+
+    def _get_device(self) -> Device:
+        device = Device.objects.filter(pk=self.kwargs["device_pk"]).first()
+        if device is None:
+            raise NotFound("الجهاز غير موجود.")
+        self.check_object_permissions(self.request, device)
+        return device
+
+    def get_queryset(self):
+        user = self.request.user
+        if not (user and user.is_authenticated):
+            return DeviceButton.objects.none()
+        return DeviceButton.objects.filter(device__pk=self.kwargs["device_pk"])
+
+    def list(self, request: Request, *args, **kwargs):
+        self._get_device()
+        return ok(self.get_serializer(self.get_queryset(), many=True).data)
+
+    def create(self, request: Request, *args, **kwargs):
+        device = self._get_device()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        index = serializer.validated_data["index"]
+        role = serializer.validated_data["role"]
+
+        # ── دورٌ واحد لكل زرّ، وزرٌّ واحد لكل دور ────────────────────────
+        #
+        # الثاني لا يحرسه قيدٌ في قاعدة البيانات لأنه ليس خطأً في البيانات بل
+        # في المعنى: زرّان يقولان «فوق» يجعلان أحدهما ميتاً بلا رسالة. فمن
+        # أسندت «فوق» إلى زرٍّ آخر تكون قد **نقلته**، لا أنشأت ثانياً.
+        DeviceButton.objects.filter(device=device, role=role).exclude(index=index).delete()
+
+        # ⚠️ `all_objects` لا `objects`: القيد `uniq_device_button_index` قيدٌ
+        # في قاعدة البيانات، والحذف الناعم لا يحرّره — فزرٌّ فُكّ ارتباطه يبقى
+        # محتجزاً للأبد. الدرس نفسه المدفوع في `DeviceCard` و`slug` القصّة.
+        existing = DeviceButton.all_objects.filter(device=device, index=index).first()
+        if existing is not None:
+            existing.role = role
+            existing.deleted_at = None
+            existing.save(update_fields=["role", "deleted_at", "updated_at"])
+            return ok(self.get_serializer(existing).data, "تم ربط الزرّ.")
+
+        button = serializer.save(device=device)
+        return ok(self.get_serializer(button).data, "تم ربط الزرّ.", 201)
+
+    def destroy(self, request: Request, *args, **kwargs):
+        self._get_device()
+        self.get_object().delete()
+        return ok(message="فُكّ ارتباط الزرّ.")

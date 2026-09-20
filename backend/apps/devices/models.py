@@ -92,3 +92,54 @@ class DeviceCard(BaseModel):
         بدونه يُرفض حذف أي بطاقة لكل معلّمة، وهو العطل نفسه الذي وقع في
         `StoryAsset` قبلها."""
         return self.device.owner_id
+
+
+class DeviceButton(BaseModel):
+    """زرّ واحد: موضعه على اللوحة، والدور الذي يؤدّيه.
+
+    ⚠️ لماذا يعيش هنا لا في القصّة:
+
+    الزرّ يرسل **موضعاً** ولا يعرف «فوق» — تماماً كما ترسل البطاقة رقماً ولا
+    تعرف «تفاحة» (`firmware/src/main.cpp`). وأيُّ موضعٍ هو «فوق» خاصّيةُ
+    **لحام هذا الصندوق**، لا خاصّيةُ الدرس. فلو دخل في `story.json` لصارت
+    القصّة تعمل على صندوق وتفشل على آخر بلا سبب ظاهر.
+
+    والفرق عن البطاقة أنّ المعنى هنا **مفردات مغلقة**: `label` البطاقة اسمُ
+    أصلٍ تختاره المعلّمة بحرّية، أمّا الدور فيجب أن يفهمه المحرّك. فحقلٌ حرّ
+    كان يسمح بكتابة «أعلى» فلا يتحرّك شيء ولا يقول أحد لماذا.
+    """
+
+    class Role(models.TextChoices):
+        UP = "up", "فوق"
+        DOWN = "down", "تحت"
+        LEFT = "left", "يسار"
+        RIGHT = "right", "يمين"
+        SELECT = "select", "تأكيد"
+
+    device = models.ForeignKey(
+        Device, verbose_name="الجهاز", on_delete=models.CASCADE, related_name="buttons"
+    )
+
+    # ما ترسله اللوحة: موضعٌ يبدأ من ١. لا يُعرَض إلا للتشخيص — المعلّمة
+    # تضغط الزرّ وتسمّي دوره، ولا تكتب رقمه.
+    index = models.PositiveSmallIntegerField("موضع الزرّ")
+
+    role = models.CharField("الدور", max_length=16, choices=Role.choices)
+
+    class Meta:
+        verbose_name = "زرّ"
+        verbose_name_plural = "الأزرار"
+        ordering = ["index"]
+        constraints = [
+            # زرٌّ واحد لا يؤدّي دورين على الجهاز نفسه — وإلّا صارت الضغطة
+            # غير حتميّة، وهو أسوأ عطل ممكن أمام صفّ.
+            models.UniqueConstraint(fields=["device", "index"], name="uniq_device_button_index"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.get_role_display()} ({self.index})"
+
+    @property
+    def owner_id(self):
+        """مالك الزرّ هو مالك جهازه — الاصطلاح الذي يقرأه `IsOwnerOrAdmin`."""
+        return self.device.owner_id

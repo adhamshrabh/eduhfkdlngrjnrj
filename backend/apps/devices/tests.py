@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import User
 
-from .models import Device, DeviceCard
+from .models import Device, DeviceButton, DeviceCard
 
 
 class DeviceApiTests(TestCase):
@@ -154,3 +154,97 @@ class DeviceApiTests(TestCase):
 
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json()["data"]["bindings"], {"786qaaa": "تفاحة", "991zbbb": "موزة"})
+
+
+class DeviceButtonApiTests(TestCase):
+    """
+    أزرار الصندوق (v1.0.24).
+
+    ما يميّزها عن البطاقة: المعنى **مفردات مغلقة** يفهمها المحرّك، والموضع
+    يُقاس بالضغط لا يُفترَض من اللحام.
+    """
+
+    def setUp(self):
+        self.teacher = User.objects.create_user(email="b1@x.local", password="pw12345678", full_name="م")
+        self.other = User.objects.create_user(email="b2@x.local", password="pw12345678", full_name="ن")
+        self.device = Device.objects.create(name="صندوق الصف", owner=self.teacher)
+
+    def _auth(self, user):
+        return {"HTTP_AUTHORIZATION": f"Bearer {RefreshToken.for_user(user).access_token}"}
+
+    def _bind(self, index, role, user=None):
+        return self.client.post(
+            f"/api/devices/{self.device.pk}/buttons/",
+            data={"index": index, "role": role},
+            content_type="application/json",
+            **self._auth(user or self.teacher),
+        )
+
+    def test_pressing_and_naming_binds_a_button(self):
+        res = self._bind(1, "up")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(DeviceButton.objects.get(device=self.device, index=1).role, "up")
+
+    def test_a_role_outside_the_vocabulary_is_refused(self):
+        """حقلٌ حرّ كان يسمح بـ«أعلى» فلا يتحرّك شيء ولا يقول أحد لماذا."""
+        self.assertEqual(self._bind(1, "أعلى").status_code, 400)
+        self.assertEqual(self._bind(1, "diagonal").status_code, 400)
+
+    def test_position_starts_at_one(self):
+        self.assertEqual(self._bind(0, "up").status_code, 400)
+
+    def test_pressing_the_same_button_again_updates_instead_of_duplicating(self):
+        """المعلّمة تضغط الزرّ مرّتين حتماً: مرّة لتربطه ومرّة لتتأكّد."""
+        self._bind(2, "down")
+        res = self._bind(2, "left")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(DeviceButton.objects.filter(device=self.device, index=2).count(), 1)
+        self.assertEqual(DeviceButton.objects.get(device=self.device, index=2).role, "left")
+
+    def test_a_role_moves_rather_than_duplicating(self):
+        """زرّان يقولان «فوق» يجعلان أحدهما ميتاً بلا رسالة."""
+        self._bind(1, "up")
+        self._bind(3, "up")
+        roles = list(DeviceButton.objects.filter(device=self.device).values_list("index", "role"))
+        self.assertEqual(roles, [(3, "up")])
+
+    def test_an_unbound_button_can_be_bound_again(self):
+        """⚠️ الحذف الناعم لا يحرّر قيد قاعدة البيانات — الدرس نفسه المدفوع
+        في البطاقات وفي `slug` القصّة."""
+        res = self._bind(4, "right")
+        button_id = res.json()["data"]["id"]
+        self.client.delete(
+            f"/api/devices/{self.device.pk}/buttons/{button_id}/", **self._auth(self.teacher)
+        )
+        again = self._bind(4, "right")
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(DeviceButton.objects.filter(device=self.device, index=4).count(), 1)
+
+    def test_owner_can_unbind_her_own_button(self):
+        """الزرّ لا يحمل `owner`؛ مالكه مالك جهازه — خاصيّة `owner_id`."""
+        button = DeviceButton.objects.create(device=self.device, index=5, role="select")
+        res = self.client.delete(
+            f"/api/devices/{self.device.pk}/buttons/{button.pk}/", **self._auth(self.teacher)
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(DeviceButton.objects.filter(pk=button.pk).exists())
+
+    def test_another_teacher_cannot_bind_buttons(self):
+        self.assertIn(self._bind(1, "up", user=self.other).status_code, (403, 404))
+
+    def test_bindings_carries_the_buttons_beside_the_cards(self):
+        """طلبٌ ثانٍ وسط حصّة يعني عطلاً ثانياً محتملاً — فالاثنان معاً."""
+        DeviceCard.objects.create(device=self.device, uid="AA11", label="تفاحة")
+        DeviceButton.objects.create(device=self.device, index=1, role="up")
+        res = self.client.get(f"/api/devices/{self.device.pk}/bindings/", **self._auth(self.teacher))
+        data = res.json()["data"]
+        self.assertEqual(data["bindings"], {"AA11": "تفاحة"})
+        self.assertEqual(data["buttons"], {"1": "up"})
+
+    def test_the_device_listing_exposes_its_buttons(self):
+        """صفحة العرض تقرأ `/api/devices/` مرّة — فالأزرار فيها."""
+        DeviceButton.objects.create(device=self.device, index=2, role="down")
+        res = self.client.get("/api/devices/", **self._auth(self.teacher))
+        device = res.json()["data"]["results"][0]
+        self.assertEqual(device["buttons"], [{"id": device["buttons"][0]["id"], "index": 2, "role": "down",
+                                              "updated_at": device["buttons"][0]["updated_at"]}])
