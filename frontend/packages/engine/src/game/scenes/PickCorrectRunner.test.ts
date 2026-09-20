@@ -268,3 +268,165 @@ describe("PickCorrectRunner", () => {
     });
   });
 });
+
+/**
+ * الإطار (v1.0.24) — يُجاب بالتنقّل، والزرّ صار اتجاهاً لا موضعاً.
+ *
+ * ⚠️ أهمّ ما تحرسه هذه الاختبارات ليس الإطار بل **غيابه**: كل مشهدٍ مؤلَّف
+ * اليوم بلا `navigate`، ويجب أن يسلك ما كان يسلكه بالحرف.
+ */
+describe("الإطار والتنقّل (v1.0.24)", () => {
+  /** أربعة خيارات في صفٍّ، الصحيح أقصى اليمين. */
+  function row(over: Partial<PickCorrectActivity> = {}): PickCorrectActivity {
+    return activity({
+      choices: [
+        { id: "c1", alias: "stone", x: 400, y: 600 },
+        { id: "c2", alias: "nest", x: 700, y: 600 },
+        { id: "c3", alias: "leaf", x: 1000, y: 600 },
+        { id: "c4", alias: "egg", correct: true, x: 1300, y: 600 }
+      ],
+      ...over
+    });
+  }
+
+  const known = ["stone", "nest", "leaf", "egg"];
+
+  /** الإطار هو الابن الوحيد الذي ليس سبرايتاً ولا نصّاً. */
+  function frameOf(container: Container): { x: number; y: number } | null {
+    const root = container.children[0] as Container;
+    const frame = root.children.find((c) => c.constructor.name === "Graphics");
+    return frame ? { x: frame.x, y: frame.y } : null;
+  }
+
+  describe("بغير `navigate` — لا شيء يتغيّر", () => {
+    it("لا إطار يُرسم إطلاقاً", () => {
+      const { container, runner, solved } = setup(known);
+      runner.start(row(), "a1", solved);
+      expect(frameOf(container)).toBeNull();
+    });
+
+    it("الزرّ ٣ يبقى «الخيار الثالث» كما كان (v1.0.10 §7.3)", () => {
+      const { bus, runner, solved } = setup(known);
+      const failed = vi.fn();
+      bus.on(EngineEvents.Puzzle.Failed, failed);
+      runner.start(row({ wrongResponse: { text: "ليست هذه" } }), "a1", solved);
+
+      runner.handleKeyDown({ key: "3" });   // leaf — الثالث، وخاطئ
+      // الناقل يمرّر وسيطاً ثانياً للبيانات الوصفية — فالفحص على الأوّل.
+      expect(failed.mock.calls[0]![0]).toMatchObject({ id: "c3" });
+      expect(solved).not.toHaveBeenCalled();
+    });
+
+    it("والزرّ ٤ يبقى «الخيار الرابع» — وهو الصحيح هنا", () => {
+      const { runner, solved } = setup(known);
+      runner.start(row(), "a1", solved);
+      runner.handleKeyDown({ key: "4" });
+      expect(solved).toHaveBeenCalledTimes(1);
+    });
+
+    it("السهم لا يفعل شيئاً — فلا يسرق ضغطةً من نشاطٍ لم يطلبها", () => {
+      const { runner, solved } = setup(known);
+      runner.start(row(), "a1", solved);
+      runner.handleKeyDown({ key: "ArrowRight" });
+      runner.handleKeyDown({ key: "Enter" });
+      expect(solved).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("مع `navigate: true`", () => {
+    it("الإطار يُرسم عند أقرب خيارٍ إلى مركز المسرح (§3.1)", () => {
+      const { container, runner, solved } = setup(known);
+      runner.start(row({ navigate: true }), "a1", solved);
+      // المركز 960؛ أقرب الأربعة إليه «nest» عند 700 (فارق 260) مقابل
+      // «leaf» عند 1000 (فارق 40) — فـ«leaf».
+      expect(frameOf(container)).toEqual({ x: 1000, y: 600 });
+    });
+
+    it("التنقّل ليس إجابة — لا حكم حتى التأكيد (§3)", () => {
+      const { bus, runner, solved } = setup(known);
+      const failed = vi.fn();
+      bus.on(EngineEvents.Puzzle.Failed, failed);
+      runner.start(row({ navigate: true }), "a1", solved);
+
+      runner.handleKeyDown({ key: "ArrowLeft" });
+      runner.handleKeyDown({ key: "ArrowLeft" });
+      runner.handleKeyDown({ key: "ArrowRight" });
+      expect(solved).not.toHaveBeenCalled();
+      expect(failed).not.toHaveBeenCalled();
+    });
+
+    it("يمينٌ ثم تأكيد يختار الخيار الصحيح", () => {
+      const { runner, solved } = setup(known);
+      runner.start(row({ navigate: true }), "a1", solved);
+      runner.handleKeyDown({ key: "ArrowRight" });   // leaf → egg
+      runner.handleKeyDown({ key: "Enter" });
+      expect(solved).toHaveBeenCalledTimes(1);
+    });
+
+    it("تأكيدٌ على خيارٍ خاطئ يردّ ولا يحلّ", () => {
+      const { bus, runner, solved } = setup(known);
+      const failed = vi.fn();
+      bus.on(EngineEvents.Puzzle.Failed, failed);
+      runner.start(row({ navigate: true, wrongResponse: { text: "ليست هذه" } }), "a1", solved);
+
+      runner.handleKeyDown({ key: "Enter" });   // leaf — خاطئ
+      expect(failed).toHaveBeenCalledTimes(1);
+      expect(solved).not.toHaveBeenCalled();
+    });
+
+    it("⚠️ الزرّ ٣ صار اتجاهاً لا موضعاً — ولا يعني الاثنين معاً (§2.1)", () => {
+      // بلا استهلاك الإشارة كان الزرّ ٣ يحرّك الإطار **ويختار** الخيار
+      // الثالث في الضغطة نفسها.
+      const { runner, solved } = setup(known);
+      runner.start(row({ navigate: true }), "a1", solved);
+      runner.handleKeyDown({ key: "3" });   // «يمين» بالترتيب الافتراضي
+      expect(solved).not.toHaveBeenCalled();
+      runner.handleKeyDown({ key: "5" });   // «تأكيد» → egg
+      expect(solved).toHaveBeenCalledTimes(1);
+    });
+
+    it("الدور المربوط يغلب الترتيب الافتراضي (§4)", () => {
+      const { runner, solved } = setup(known);
+      runner.start(row({ navigate: true }), "a1", solved);
+      // الزرّ ١ افتراضاً «فوق»، لكن جدول الصندوق يقول «يمين».
+      runner.handleKeyDown({ key: "1", role: "right" });
+      runner.handleKeyDown({ key: "1", role: "select" });
+      expect(solved).toHaveBeenCalledTimes(1);
+    });
+
+    it("حافّة اللوح: الإطار يسكن ولا يلتفّ (§3.3)", () => {
+      const { container, runner, solved } = setup(known);
+      runner.start(row({ navigate: true }), "a1", solved);
+      runner.handleKeyDown({ key: "ArrowRight" });   // → egg (الأخير)
+      const before = frameOf(container);
+      runner.handleKeyDown({ key: "ArrowRight" });
+      runner.handleKeyDown({ key: "ArrowUp" });
+      expect(frameOf(container)).toEqual(before);
+      expect(solved).not.toHaveBeenCalled();
+    });
+
+    it("اللمس والبطاقة يختاران مباشرةً بلا إطار (§3.4)", () => {
+      const { bus, runner, solved } = setup(known);
+      runner.start(row({ navigate: true }), "a1", solved);
+      bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "egg" });
+      expect(solved).toHaveBeenCalledTimes(1);
+    });
+
+    it("لا يُبنى إطارٌ لنشاطٍ لن يُلعَب", () => {
+      // كل الصور مفقودة ⇒ `isSolvable` يُبلغ الحلّ ويمضي، فلا مسرح ولا إطار.
+      const { container, runner, solved } = setup([]);
+      runner.start(row({ navigate: true }), "a1", solved);
+      expect(solved).toHaveBeenCalledTimes(1);
+      expect(container.children).toHaveLength(0);
+    });
+
+    it("`reset` ينسى الإطار — فلا يستيقظ مؤشّرٌ على مسرحٍ هُدم", () => {
+      const { container, runner, solved } = setup(known);
+      runner.start(row({ navigate: true }), "a1", solved);
+      runner.reset();
+      runner.handleKeyDown({ key: "Enter" });
+      expect(solved).not.toHaveBeenCalled();
+      expect(container.children).toHaveLength(0);
+    });
+  });
+});

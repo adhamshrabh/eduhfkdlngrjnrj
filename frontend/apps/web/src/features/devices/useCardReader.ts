@@ -25,6 +25,8 @@ interface UseCardReaderResult {
   signals: ReaderSignal[];
   /** آخر بطاقة صالحة — ما يُربَط بمعنى. */
   lastCard: string | null;
+  /** آخر زرٍّ مضغوط — ما يُربَط بدور (v1.0.24). نفس سبب استقلال `lastCard`. */
+  lastPosition: number | null;
   clear(): void;
 }
 
@@ -50,6 +52,7 @@ export function useCardReader(url: string | null): UseCardReaderResult {
    * تبقى حتى تُربَط أو تُمسح بطاقة أخرى — لا حتى يمتلئ سجلّ تشخيصي.
    */
   const [lastCard, setLastCard] = useState<string | null>(null);
+  const [lastPosition, setLastPosition] = useState<number | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -79,6 +82,7 @@ export function useCardReader(url: string | null): UseCardReaderResult {
       // مسحٍ متكرّر ينمو بلا سقف.
       setSignals((prev) => [signal, ...prev].slice(0, 10));
       if (signal.uid) setLastCard(signal.uid);
+      if (signal.position !== null) setLastPosition(signal.position);
     };
 
     return () => {
@@ -94,7 +98,8 @@ export function useCardReader(url: string | null): UseCardReaderResult {
   const clear = useCallback(() => {
     setSignals([]);
     setLastCard(null);
+    setLastPosition(null);
   }, []);
 
-  return { status, signals, lastCard, clear };
+  return { status, signals, lastCard, lastPosition, clear };
 }

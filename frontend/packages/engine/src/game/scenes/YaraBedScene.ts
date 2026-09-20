@@ -26,6 +26,7 @@ import { ActionExecutor, translateOnSolvedToActions } from "./ActionExecutor";
 import { DialoguePlayer } from "./DialoguePlayer";
 import { SpriteRegistry } from "./SpriteRegistry";
 import { IdleMotion } from "./IdleMotion";
+import { readWrongResponse } from "./ActivityBase";
 // Re-exported for backward compatibility — these were originally defined
 // in this file; YaraBedScene.letterLayout.test.ts imports them from here.
 // The canonical home is now LayoutApplier.ts (system-architecture-redesign.md
@@ -186,6 +187,38 @@ export function readDevicePosition(event: { type?: unknown; payload?: unknown } 
   return null;
 }
 
+/**
+ * كم يبقى المشهد بعد أن ينتهي (v1.0.21) — بالثواني، أو `"tap"` لوقفة
+ * تُنهيها المعلّمة.
+ *
+ * ── لماذا حقلٌ واحد يحمل رقماً وكلمة ─────────────────────────────────
+ *
+ * الرقم يكفي للإيقاع، ولا يكفي للشرح: **المعلّمة التي تشرح فكرة لا تعرف
+ * أتستغرق عشرين ثانية أم تسعين.** فتأخيرٌ ثابت تخمينٌ خاطئ في أحد
+ * الاتجاهين دائماً — قصيرٌ فيقطع كلامها أمام الصف، أو طويلٌ فينتظر ثلاثون
+ * طفلاً في صمت.
+ *
+ * ── ولماذا يستبدل الافتراضي ولا يُضاف إليه ───────────────────────────
+ *
+ * كان الانتظار يُقرَّر في ثلاثة مواضع بثلاثة أرقام لم يؤلّفها أحد: فوريّ
+ * بلا نشاط، وثانيتان بعد الحلّ، واثنتان ونصف عند النهاية. وجمعُ المؤلَّف
+ * إليها كان سيجعل الرقم المكتوب كذبةً عن الانتظار الذي يعيشه الصفّ.
+ * إجابةٌ واحدة لسؤال «كم يبقى هذا المشهد بعد أن ينتهي».
+ *
+ * `defaultSeconds` هو ما كان يفعله ذلك المسار قبل هذا الحقل.
+ */
+export function resolveHold(
+  scene: { holdAfter?: number | "tap" } | null | undefined,
+  defaultSeconds: number
+): { seconds: number } | { untilTap: true } {
+  const hold = scene?.holdAfter;
+  if (hold === "tap") return { untilTap: true };
+  // قيمة غير صالحة تسقط على الافتراضي: المُتحقِّق يرفضها عند الحفظ،
+  // والمحرّك لا يوقف حصّةً على خطأ تأليف.
+  if (typeof hold === "number" && Number.isFinite(hold) && hold >= 0) return { seconds: hold };
+  return { seconds: defaultSeconds };
+}
+
 /** One branch of a choice point (Scene-Model-Specification-v1.0.6.md §7.1). */
 export interface SceneChoice {
   id: string;
@@ -279,6 +312,9 @@ export function readLineChoices(line: { choices?: unknown }): SceneChoice[] {
 
 interface SceneData {
   id: string;
+  /** كم يبقى المشهد بعد أن ينتهي (v1.0.21): ثوانٍ، أو `"tap"` لوقفة
+   *  تُنهيها المعلّمة بنفسها. الغياب = السلوك القديم حرفياً. */
+  holdAfter?: number | "tap";
   /** Alias of the image to show while this scene is active (set via the
    *  Story Editor's background dropdown). Falls back to the story-wide
    *  default when omitted — see updateSceneBackground(). */
@@ -434,6 +470,9 @@ export class YaraBedScene extends Scene {
    *  the keyboard does, so a two-button box, a keypad and two card pads
    *  all behave identically and none of them is authored anywhere. */
   private readonly onHardwareEvent = (payload: unknown): void => {
+    // بطاقةٌ أو زرّ يُنهي الوقفة كما يُنهيها الإصبع (§2.2): الوقفة
+    // للمعلّمة، وقد تكون ممسكةً بالقارئ لا بالشاشة.
+    if (this.releaseHold()) return;
     const event = payload as { type?: unknown; payload?: unknown } | null;
     if (!event) return;
     // By POSITION, exactly like the keyboard (v1.0.10 §7.2): a two-button
@@ -468,7 +507,12 @@ export class YaraBedScene extends Scene {
     //
     // `drag-match` يتجاهلها بحكم بنائه (يقرأ i/k/j/l وحدها)، وهو الصواب:
     // فقاعته الوحيدة هي الحرف الناقص نفسه، فلا شيء فيه يُنتقى.
-    this.puzzle.handleKeyDown({ key: String(position) });
+    // ⚠️ `role` يُمرَّر كما وصل ولا يُفسَّر هنا (v1.0.24 §4): المشهد لا يعرف
+    // «فوق» ولا يجب أن يعرفها. المنصّة تترجم موضعَ الزرّ إلى دورٍ بجدول
+    // الصندوق، والنشاط وحده يقرّر ما يفعل بذلك الدور — تماماً كما لا يعرف
+    // المشهد معنى بطاقة.
+    const role = (event as { role?: unknown }).role;
+    this.puzzle.handleKeyDown({ key: String(position), role });
   };
 
   constructor() {
@@ -1116,6 +1160,9 @@ export class YaraBedScene extends Scene {
    * whatever comes next.
    */
   private skipLine(): void {
+    // الوقفة أولاً: ضغطةُ المعلّمة التي تُنهي شرحها يجب ألّا يبتلعها
+    // تخطّي سطر — والمشهد منتهٍ أصلاً فلا سطر يُتخطّى.
+    if (this.releaseHold()) return;
     if (this.puzzle.isActive || this.dialogue.hasChoices) return;
     if (!this.pendingAfterLine) return;
     this.audio.stopAll("voice");
@@ -1155,6 +1202,7 @@ export class YaraBedScene extends Scene {
    * device the intent seam serves with no hardware at all.
    */
   private onKeyPressed(payload: unknown): void {
+    if (this.releaseHold()) return;
     if (this.pendingChoices.length > 0 && this.accepts("keyboard")) {
       const key = (payload as { key?: unknown } | null)?.key;
       const index = typeof key === "string" ? Number(key) - 1 : NaN;
@@ -1395,10 +1443,26 @@ export class YaraBedScene extends Scene {
     void this.effectRunner?.run(this.activeActivity?.effects?.onCorrect);
   };
 
-  /** A wrong attempt. The activity stays playable, so this is feedback
-   *  only — nothing here ends or advances anything. */
-  private readonly onPuzzleWrong = (): void => {
+  /**
+   * A wrong attempt. The activity stays playable, so this is feedback
+   * only — nothing here ends or advances anything.
+   *
+   * ⚠️ فجوة مقيسة: `wrongResponse` كان يُؤلَّف في الاستوديو، ويُفحص في
+   * المُتحقِّق، ويُبثّ في حمولة `Puzzle.Failed` — **ولا يعرضه أحد**. ثلاث
+   * طبقات تحمل ردّ الشخصية إلى طبقةٍ رابعة لم تكن تقرؤه، فتكتب المعلّمة
+   * «هذه ليست بيضة» ولا يسمعها الطفل أبداً.
+   *
+   * والردّ ليس زينة: هو ما يجعل الخطأ يحمل معلومةً يُفكَّر منها، بدل صمتٍ
+   * لا يقول للطفل شيئاً. يُعرض في صندوق الحوار كما يُعرض أي سطر — والسطر
+   * التالي يستبدله (`activityHost.clearHint`).
+   */
+  private readonly onPuzzleWrong = (payload: unknown): void => {
     void this.effectRunner?.run(this.activeActivity?.effects?.onWrong);
+
+    const response = readWrongResponse(payload);
+    if (!response) return;
+    this.dialogue.show();
+    this.dialogue.showLine("", response.text, response.audio);
   };
 
   /** Runs the JSON-driven onSolved actions once PuzzleRunner reports a
@@ -1435,18 +1499,10 @@ export class YaraBedScene extends Scene {
     // in — there is no assumption here about *where* in the story this
     // happened.
     const nextSceneId = scene ? this.resolveNextScene(scene, onSolved?.nextScene) : (onSolved?.nextScene ?? null);
-    if (nextSceneId) {
-      this.animation.play("scene-transition-delay", { x: 0 } as never, {
-        duration: 2.0,
-        onComplete: () => this.actionExecutor.run([{ type: "transitionScene", target: nextSceneId }])
-      });
-    } else {
-      // No next scene → end the story and return to menu
-      this.animation.play("story-end-delay", { x: 0 } as never, {
-        duration: 2.5,
-        onComplete: () => this.actionExecutor.run([{ type: "endStory" }])
-      });
-    }
+    // نفس نقطة المغادرة التي يمرّ منها المشهد بلا نشاط — فـ`holdAfter`
+    // يصل المسارين معاً. والافتراضيان (٢ و٢٫٥) هما ما كان يفعله كلٌّ منهما.
+    if (scene) this.leaveScene(scene, nextSceneId, nextSceneId ? 2.0 : 2.5);
+    else if (nextSceneId) this.actionExecutor.run([{ type: "transitionScene", target: nextSceneId }]);
 
     this.puzzle.hide();
   }
@@ -1496,6 +1552,9 @@ export class YaraBedScene extends Scene {
     this.lineToken += 1;
     this.pendingAfterLine = null;
 
+    // وقفةٌ معلّقة تخصّ مشهداً يُغادَر — تركها كان يعني ضغطةً في المشهد
+    // التالي تُنفّذ انتقالاً قديماً.
+    this.pendingHold = null;
     const swap = (): void => {
       this.currentSceneIndex = index;
       this.currentLineIndex = 0;
@@ -1542,14 +1601,60 @@ export class YaraBedScene extends Scene {
     return resolveSceneExit(scene, this.scenes, explicitOverride);
   }
 
-  private goToNextScene(scene: SceneData): void {
-    const nextId = this.resolveNextScene(scene);
-    if (nextId) {
-      this.transitionToScene(nextId);
-    } else {
-      // End of story — return to menu
-      this.endStory();
+  /**
+   * مغادرة المشهد بعد أن ينتهي — النقطة **الوحيدة** التي تُطبَّق فيها
+   * الوقفة (v1.0.21).
+   *
+   * كانت ثلاثة مسارات بثلاثة أرقام متفرّقة. توحيدها هنا يجعل «كم يبقى هذا
+   * المشهد» سؤالاً له جواب واحد، ويجعل إضافة `holdAfter` تصل كل مسار بلا
+   * أن يُنسى واحد — وهو ما يقع عادةً حين تتكرّر القاعدة.
+   */
+  private leaveScene(scene: SceneData, nextId: string | null, defaultSeconds: number): void {
+    const go = (): void => {
+      if (nextId) this.actionExecutor.run([{ type: "transitionScene", target: nextId }]);
+      else this.actionExecutor.run([{ type: "endStory" }]);
+    };
+
+    const hold = resolveHold(scene, defaultSeconds);
+
+    if ("untilTap" in hold) {
+      // وقفةٌ بلا سقف — وهي الموضع الوحيد في المحرّك الذي ينتظر بلا حدّ.
+      // آمنٌ لسببٍ لا يملكه غيره: **إنسانٌ واقفٌ بجوار الشاشة، والوقفة
+      // وقفته**. وسقفٌ هنا كان ينتزع التحكّم حيث طلبته المؤلّفة بالضبط.
+      this.pendingHold = go;
+      // ورسالةٌ مرئية: قصّةٌ تنتظر ولا تقول ذلك لا تُميَّز عن قصّةٍ تجمّدت.
+      this.dialogue.show();
+      this.dialogue.showLine("", "اضغط للمتابعة");
+      return;
     }
+
+    if (hold.seconds <= 0) {
+      go();
+      return;
+    }
+    this.animation.play("scene-hold", { x: 0 } as never, { duration: hold.seconds, onComplete: go });
+  }
+
+  /** ما يُنفَّذ حين تُنهي المعلّمة وقفة `"tap"`. */
+  private pendingHold: (() => void) | null = null;
+
+  /**
+   * تُنهي وقفةً معلّقة، أياً كان مصدر الإشارة (§2.2).
+   *
+   * تُستدعى قبل أي معالجة أخرى للّمس والمفتاح والجهاز: الوقفة تعلو على كل
+   * شيء ما دامت قائمة، وإلّا سرقت الضغطةُ التي تُنهيها فعلاً آخر.
+   */
+  private releaseHold(): boolean {
+    const run = this.pendingHold;
+    if (!run) return false;
+    this.pendingHold = null;
+    run();
+    return true;
+  }
+
+  private goToNextScene(scene: SceneData): void {
+    // صفر ثانية = السلوك القديم: انتقالٌ فوري بلا نشاط.
+    this.leaveScene(scene, this.resolveNextScene(scene), 0);
   }
 
   /** End the story and return to the main menu. */

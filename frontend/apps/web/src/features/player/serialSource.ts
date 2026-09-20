@@ -59,7 +59,16 @@ function serialApi(): SerialLike | null {
  */
 const log = (msg: string): void => console.info(`[edu-device] ${msg}`);
 
-export function attachSerialSource(app: BootstrappedApp): () => void {
+/**
+ * `موضع → دور`، مقروءاً عند كل ضغطة لا مرّةً عند التركيب.
+ *
+ * ⚠️ دالّة لا خريطة: الصندوق يُركَّب **قبل** وصول جدول المنصّة عمداً — كي
+ * تعمل الأزرار بلا انتظار إعدادٍ قد لا يوجد. فخريطةٌ تُمرَّر بالقيمة كانت
+ * ستُجمَّد فارغةً إلى الأبد، ولا يعمل ربطٌ فعلته المعلّمة قبل دقيقة.
+ */
+export type ButtonRoles = () => ReadonlyMap<number, string>;
+
+export function attachSerialSource(app: BootstrappedApp, roles?: ButtonRoles): () => void {
   const api = serialApi();
   if (!api) {
     log("هذا المتصفّح لا يدعم Web Serial — افتحي المنصّة في Chrome أو Edge.");
@@ -105,7 +114,13 @@ export function attachSerialSource(app: BootstrappedApp): () => void {
           // من أول توصيل ولو لم تُربَط بطاقة واحدة.
           if (signal.position !== null) {
             log(`زرّ ${signal.position}`);
-            app.eventBus.emit(EngineEvents.Hardware.Event, { type: String(signal.position) });
+            // الموضع يبقى كما كان، والدور **يُضاف** بجواره: `readDevicePosition`
+            // يقرأ `type` ولا يرى الحقل الجديد، فلا يتغيّر شيء قائم — والنشاط
+            // الذي يفهم الاتجاهات وحده هو من يقرؤه (v1.0.24 §4).
+            app.eventBus.emit(EngineEvents.Hardware.Event, {
+              type: String(signal.position),
+              role: roles?.().get(signal.position),
+            });
             continue;
           }
           // البطاقة: تُبثّ بالشكل الذي يقرأه `cardTranslator.readCardUid`.

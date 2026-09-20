@@ -104,6 +104,42 @@ describe("attachSerialSource", () => {
     expect(inputs(emitted)[0]!.payload).toEqual({ type: "2" });
   });
 
+  it("الدور المربوط يُضاف بجوار الموضع، ولا يستبدله (v1.0.24 §4)", async () => {
+    // ⚠️ الاثنان معاً: `readDevicePosition` يقرأ `type` فيبقى «الخيار
+    // الثاني» يعمل كما كان، والنشاط الاتجاهي وحده يقرأ `role`.
+    install([BUTTON_LINE]);
+    const detach = attachSerialSource(fakeApp(emitted), () => new Map([[2, "down"]]));
+    await settle();
+    await settle();
+    detach();
+
+    expect(inputs(emitted)[0]!.payload).toEqual({ type: "2", role: "down" });
+  });
+
+  it("بلا جدول: الموضع وحده — فصندوقٌ لم يُربَط يبقى يعمل", async () => {
+    install([BUTTON_LINE]);
+    const detach = attachSerialSource(fakeApp(emitted), () => new Map());
+    await settle();
+    await settle();
+    detach();
+
+    expect(inputs(emitted)[0]!.payload).toEqual({ type: "2" });
+  });
+
+  it("⚠️ الجدول يُقرأ عند الضغطة لا عند التركيب", async () => {
+    // الصندوق يُركَّب **قبل** وصول جدول المنصّة عمداً. فخريطةٌ تُمرَّر بالقيمة
+    // كانت ستُجمَّد فارغةً، ولا يعمل ربطٌ فعلته المعلّمة قبل دقيقة.
+    const roles = new Map<number, string>();
+    install([BUTTON_LINE]);
+    const detach = attachSerialSource(fakeApp(emitted), () => roles);
+    roles.set(2, "select");   // وصل الجدول بعد التركيب
+    await settle();
+    await settle();
+    detach();
+
+    expect(inputs(emitted)[0]!.payload).toEqual({ type: "2", role: "select" });
+  });
+
   it("مسحة بطاقة تُبثّ بالشكل الذي يقرأه المترجم", async () => {
     install([CARD_LINE]);
     const detach = attachSerialSource(fakeApp(emitted));

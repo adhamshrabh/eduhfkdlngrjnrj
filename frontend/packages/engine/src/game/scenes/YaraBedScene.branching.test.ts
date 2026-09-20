@@ -24,6 +24,7 @@ import {
   readInputMode,
   readLineChoices,
   resolveBranchAddress,
+  resolveHold,
   resolveSceneExit
 } from "./YaraBedScene";
 
@@ -420,5 +421,34 @@ describe("resolveBranchAddress — البطاقة تختار فرعاً كما �
   it("عنوان لا يخصّ شيئاً على الشاشة يُهمَل — مسحةٌ عابرة لا تكسر قصّة", () => {
     expect(resolveBranchAddress(branches, "لا-أحد")).toBeUndefined();
     expect(resolveBranchAddress([], "نعم")).toBeUndefined();
+  });
+});
+
+describe("resolveHold — كم يبقى المشهد بعد أن ينتهي (v1.0.21)", () => {
+  it("الغياب يعني السلوك القديم حرفياً", () => {
+    // ثلاثة مسارات بثلاثة افتراضات: فوريّ، وثانيتان، واثنتان ونصف.
+    expect(resolveHold({}, 0)).toEqual({ seconds: 0 });
+    expect(resolveHold({}, 2)).toEqual({ seconds: 2 });
+    expect(resolveHold(undefined, 2.5)).toEqual({ seconds: 2.5 });
+  });
+
+  it("رقمٌ مؤلَّف **يستبدل** الافتراضي ولا يُضاف إليه", () => {
+    // الجمع كان سيجعل الرقم المكتوب كذبةً عن الانتظار الذي يعيشه الصفّ.
+    expect(resolveHold({ holdAfter: 4 }, 2)).toEqual({ seconds: 4 });
+  });
+
+  it("صفرٌ مؤلَّف يعني فوراً — لا يسقط على الافتراضي", () => {
+    expect(resolveHold({ holdAfter: 0 }, 2.5)).toEqual({ seconds: 0 });
+  });
+
+  it("«tap» وقفةٌ تُنهيها المعلّمة", () => {
+    expect(resolveHold({ holdAfter: "tap" }, 2)).toEqual({ untilTap: true });
+  });
+
+  it("قيمة غير صالحة تسقط على الافتراضي — المُتحقِّق يرفضها عند الحفظ", () => {
+    // المحرّك لا يوقف حصّةً على خطأ تأليف.
+    expect(resolveHold({ holdAfter: -3 }, 2)).toEqual({ seconds: 2 });
+    expect(resolveHold({ holdAfter: Number.NaN }, 2)).toEqual({ seconds: 2 });
+    expect(resolveHold({ holdAfter: "لحظة" as never }, 2)).toEqual({ seconds: 2 });
   });
 });

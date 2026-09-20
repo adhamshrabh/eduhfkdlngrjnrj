@@ -22,9 +22,21 @@
  * every non-pointer device already uses (`window.eduInput.choose`). A
  * card reader and a finger reach the same code path, and this file cannot
  * tell them apart — that is the point.
+ *
+ * ── وطريقٌ ثالث: الإطار (v1.0.24) ─────────────────────────────────────
+ *
+ * حين يُؤلَّف `navigate: true` يُرسم إطارٌ حول أحد الخيارات، تنقّله أزرار
+ * الصندوق (أو سهام لوحة المفاتيح)، ويؤكّده الزرّ الخامس.
+ *
+ * ⚠️ وكل ذلك خلف الحقل، ولا يُبنى منه شيء بدونه: بغياب `navigate` لا
+ * `Graphics` ولا مؤشّر ولا مسار شفرةٍ جديد — فالمشاهد المؤلَّفة اليوم تسلك
+ * ما كانت تسلكه بالضبط.
+ *
+ * ولا يُغلق طريق: اللمس يختار مباشرةً، والبطاقة تختار مباشرةً، والإطار
+ * يُضاف إليهما (§3.4).
  */
 
-import { Container, Sprite, Text, TextStyle, type FederatedPointerEvent, type Texture } from "pixi.js";
+import { Container, Graphics, Sprite, Text, TextStyle, type FederatedPointerEvent, type Texture } from "pixi.js";
 
 import type { AnimationManager } from "@core/animation/AnimationManager";
 import type { AssetManager } from "@core/assets/AssetManager";
@@ -36,20 +48,19 @@ import type { ActivityData, PickCorrectActivity, PickCorrectChoice } from "./Act
 import { isPickCorrect } from "./ActivityTypes";
 import type { LayoutApplier } from "./LayoutApplier";
 import { ActivityBase, isSolvable, resolveAddress } from "./ActivityBase";
+// موضع الصورة غير الموضوعة — تعريفٌ واحد يتقاسمه كل نشاط يرسم.
+import { CHOICE_HEIGHT, DESIGN_WIDTH, SPREAD_GAP, SPREAD_Y, spreadStartX } from "./ActivityLayout";
+// «إلى أين يذهب الإطار» — قرارٌ خالص، مفصولٌ عن الرسم ومختبَرٌ وحده.
+import { nextInDirection, readDirection, startingIndex, type Placed } from "./Directions";
 
-/** Stage space every position in this file is expressed in. */
-const DESIGN_WIDTH = 1920;
+/** ارتفاع المسرح — لمركزٍ يولد عنده الإطار (§3.1). */
+const DESIGN_HEIGHT = 1080;
 
-/** Where unplaced choices land — spread, never stacked. The same lesson
- *  `SpriteRegistry.showSceneElement` records: identical default positions
- *  make several images look like one missing image. */
-const SPREAD_Y = 760;
-const SPREAD_GAP = 320;
+/** كم يتجاوز الإطارُ الصورةَ من كل جهة. */
+const FRAME_PAD = 14;
+/** لون الإطار — نفس أخضر «الترتيب» (v1.0.23)، فيتعلّم الطفل اللون مرّة. */
+const FRAME_COLOR = 0x3fb950;
 
-/** A choice's height on stage. Fixed rather than authored: options the
- *  child compares must be the same visual weight, or the answer can be
- *  found by looking instead of by listening. */
-const CHOICE_HEIGHT = 220;
 
 export class PickCorrectRunner extends ActivityBase {
   private readonly container: Container;
@@ -62,6 +73,11 @@ export class PickCorrectRunner extends ActivityBase {
 
   /** Sprite per choice id, so an intent can find its target. */
   private readonly sprites = new Map<string, Container>();
+  /** الخيارات المرسومة بترتيبها ومواضعها — مصدر التنقّل (v1.0.24). */
+  private placed: Array<{ choice: PickCorrectChoice; sprite: Container; at: Placed }> = [];
+  /** أي خيارٍ تحت الإطار الآن. `-1` = لا إطار. */
+  private cursor = -1;
+  private frame: Graphics | null = null;
   /** Every animation id started here, so teardown kills exactly its own. */
   private readonly tweens = new Set<string>();
 
@@ -108,10 +124,90 @@ export class PickCorrectRunner extends ActivityBase {
 
     if (incoming.question?.text) this.showPrompt(incoming.question.text);
 
+    this.placed = [];
     incoming.choices.forEach((choice, index) => {
       const sprite = this.buildChoice(choice, index, incoming.choices.length);
-      if (sprite) this.sprites.set(choice.id, sprite);
+      if (!sprite) return;
+      this.sprites.set(choice.id, sprite);
+      this.placed.push({ choice, sprite, at: { x: sprite.x, y: sprite.y } });
     });
+
+    if (incoming.navigate === true) this.buildFrame();
+  }
+
+  // ---------------------------------------------------------------------
+  // الإطار (v1.0.24) — كل ما تحته لا يعمل إلّا حين يُؤلَّف `navigate`.
+  // ---------------------------------------------------------------------
+
+  /** يولد الإطار عند أقرب خيارٍ إلى مركز المسرح (§3.1). */
+  private buildFrame(): void {
+    if (this.placed.length === 0 || !this.root) return;
+
+    this.frame = new Graphics();
+    // ⚠️ فوق الخيارات لا تحتها: إطارٌ خلف صورةٍ معتمة لا يُرى، وهو أوّل ما
+    // يجب أن تراه الطفلة لتعرف أن شيئاً مُنتقىً وأنه يتحرّك.
+    this.frame.zIndex = 1;
+    this.root.sortableChildren = true;
+    this.root.addChild(this.frame);
+
+    this.moveCursorTo(startingIndex(this.placed.map((p) => p.at), { x: DESIGN_WIDTH / 2, y: DESIGN_HEIGHT / 2 }));
+  }
+
+  private moveCursorTo(index: number): void {
+    const target = this.placed[index];
+    if (!target || !this.frame) return;
+    const first = this.cursor < 0;
+    this.cursor = index;
+
+    // يُقاس من السبرايت لا من القوام: المؤلّفة قد تكون غيّرت `scale`،
+    // والإطار يجب أن يحيط بما يُرى فعلاً.
+    const width = target.sprite.width + FRAME_PAD * 2;
+    const height = target.sprite.height + FRAME_PAD * 2;
+    this.frame
+      .clear()
+      .roundRect(-width / 2, -height / 2, width, height, 18)
+      .stroke({ color: FRAME_COLOR, width: 8, alignment: 0.5 });
+
+    // ⚠️ أوّل وضعٍ يُكتب مباشرةً لا بحركة: الحركة تحتاج إطاراتٍ تُصيَّر،
+    // ومحرّكٌ موقوف لحظة الإقلاع كان سيترك الإطار في الزاوية (0,0) —
+    // مربّعٌ أخضر في ركن الشاشة لا يفسّره شيء.
+    if (first) {
+      this.frame.position.set(target.at.x, target.at.y);
+      return;
+    }
+
+    // وما بعده انزلاقٌ قصير لا قفزة: العين تتبع الحركة فتعرف **من أين إلى
+    // أين**، فتفهم الطفلة أنّ الأزرار تحرّك شيئاً واحداً لا تُضيء أشياء.
+    this.play("choice-frame", this.frame, {
+      x: target.at.x,
+      y: target.at.y,
+      duration: 0.16,
+      ease: "power2.out"
+    });
+  }
+
+  /**
+   * اتجاهٌ وارد — من زرٍّ مربوط، أو سهم، أو موضعٍ بالترتيب الافتراضي.
+   *
+   * يُرجع `true` إن استهلك الإشارة، فيعرف `handleKeyDown` ألّا يفسّرها
+   * موضعَ اختيارٍ أيضاً — وإلّا صار الزرّ ٣ «يميناً» و«الخيار الثالث» معاً.
+   */
+  private handleDirection(payload: unknown): boolean {
+    if (!this.frame || this.cursor < 0) return false;
+    const direction = readDirection(payload);
+    if (!direction) return false;
+
+    if (direction === "select") {
+      const target = this.placed[this.cursor];
+      if (target) this.pick(target.choice);
+      return true;
+    }
+
+    const next = nextInDirection(this.placed.map((p) => p.at), this.cursor, direction);
+    // `undefined` = لا شيء في ذلك الاتجاه: الإطار يسكن (§3.3). ويُستهلَك
+    // مع ذلك — فضغطةٌ على حافّة اللوح ليست اختياراً للخيار الثالث.
+    if (next !== undefined) this.moveCursorTo(next);
+    return true;
   }
 
   private showPrompt(text: string): void {
@@ -143,7 +239,7 @@ export class PickCorrectRunner extends ActivityBase {
     const scale = choice.scale ?? (sprite.height > 0 ? CHOICE_HEIGHT / sprite.height : 1);
     sprite.scale.set(scale);
 
-    const startX = DESIGN_WIDTH / 2 - ((total - 1) * SPREAD_GAP) / 2;
+    const startX = spreadStartX(total);
     sprite.x = choice.x ?? startX + index * SPREAD_GAP;
     sprite.y = choice.y ?? SPREAD_Y;
 
@@ -189,8 +285,17 @@ export class PickCorrectRunner extends ActivityBase {
     );
   }
 
-  /** Keyboard fallback: 1..9 pick by position, matching the device rule. */
+  /**
+   * Keyboard fallback: 1..9 pick by position, matching the device rule.
+   *
+   * ومع `navigate` يسبقُه الإطار: الزرّ صار اتجاهاً لا موضعاً (v1.0.24 §2.1)،
+   * فلا يجوز أن يعني الاثنين معاً. وبغير `navigate` لا يُستهلَك شيء وتبقى
+   * هذه الدالّة كما كانت بالحرف.
+   */
   handleKeyDown(payload: unknown): void {
+    if (!this.accepts()) return;
+    if (this.handleDirection(payload)) return;
+
     const key = (payload as { key?: unknown })?.key;
     if (typeof key !== "string") return;
     const choice = resolveAddress(this.activity?.choices ?? [], key);
@@ -222,6 +327,10 @@ export class PickCorrectRunner extends ActivityBase {
     for (const id of this.tweens) this.animation.stop(id);
     this.tweens.clear();
     this.sprites.clear();
+    this.placed = [];
+    this.cursor = -1;
+    // يُهدَم مع `root` أدناه؛ المرجع وحده هو ما يُفلَت هنا.
+    this.frame = null;
     this.prompt = null;
     if (this.root) {
       this.container.removeChild(this.root);

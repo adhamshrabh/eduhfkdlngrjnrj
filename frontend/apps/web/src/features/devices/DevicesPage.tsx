@@ -27,12 +27,38 @@ interface DeviceCard {
   label: string;
 }
 
+interface DeviceButton {
+  id: number;
+  index: number;
+  role: string;
+}
+
+/**
+ * أدوار الزرّ — **مفردات مغلقة** يفهمها المحرّك (v1.0.24 §4).
+ *
+ * ⚠️ الفرق عن معنى البطاقة: ذاك اسم أصلٍ تكتبه المعلّمة بحرّية، وهذا يجب أن
+ * يعرفه `Directions.ts`. فحقلٌ حرّ كان يسمح بكتابة «أعلى» فلا يتحرّك شيء
+ * ولا يقول أحد لماذا — ولهذا قائمة لا حقل نصّ.
+ */
+const BUTTON_ROLES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "up", label: "فوق" },
+  { value: "down", label: "تحت" },
+  { value: "left", label: "يسار" },
+  { value: "right", label: "يمين" },
+  { value: "select", label: "تأكيد" },
+];
+
+function roleLabel(role: string): string {
+  return BUTTON_ROLES.find((r) => r.value === role)?.label ?? role;
+}
+
 interface Device {
   id: number;
   name: string;
   kind: string;
   url: string;
   cards: DeviceCard[];
+  buttons: DeviceButton[];
   card_count: number;
 }
 
@@ -71,6 +97,7 @@ export function DevicesPage(): JSX.Element {
 
   const connected = overUsb ? serial.status === "connected" : wifi.status === "connected";
   const lastCard = overUsb ? serial.lastCard : wifi.lastCard;
+  const lastPosition = overUsb ? serial.lastPosition : wifi.lastPosition;
   const signals = overUsb ? serial.signals : wifi.signals;
   const clearSignals = overUsb ? serial.clear : wifi.clear;
 
@@ -114,6 +141,35 @@ export function DevicesPage(): JSX.Element {
       clearSignals();
       load();
       toast.show(`ارتبطت البطاقة بـ«${label}».`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : ar.common.error);
+    }
+  };
+
+  /**
+   * يربط الزرّ المضغوط بدوره.
+   *
+   * ⚠️ الضغط قبل التسمية لا العكس: أيُّ موضعٍ هو «فوق» خاصّيةُ **لحام هذا
+   * الصندوق**، ولا سبيل إلى معرفتها بعد إغلاقه إلّا بالقياس. ولهذا لا يوجد
+   * حقلٌ لكتابة رقم الزرّ — كما لا يوجد حقلٌ لكتابة رقم البطاقة.
+   */
+  const bindButton = async (role: string): Promise<void> => {
+    if (!selected || lastPosition === null) return;
+    try {
+      await api.post(`/api/devices/${selected.id}/buttons/`, { index: lastPosition, role });
+      clearSignals();
+      load();
+      toast.show(`صار الزرّ ${lastPosition} يعني «${roleLabel(role)}».`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : ar.common.error);
+    }
+  };
+
+  const unbindButton = async (button: DeviceButton): Promise<void> => {
+    if (!selected) return;
+    try {
+      await api.delete(`/api/devices/${selected.id}/buttons/${button.id}/`);
+      load();
     } catch (err) {
       setError(err instanceof Error ? err.message : ar.common.error);
     }
@@ -285,6 +341,59 @@ export function DevicesPage(): JSX.Element {
                     ))}
                   </ul>
                 </details>
+              )}
+            </div>
+          </Card>
+
+          <Card>
+            <div className="p-4 space-y-3">
+              <div className="text-body text-slate-800 flex items-center gap-2">
+                <RadioTower size={18} /> اضغطي زرّاً لتحديد اتجاهه
+              </div>
+
+              <p className="text-label text-slate-500">
+                الصندوق يرسل موضع الزرّ ولا يعرف «فوق». اضغطي الزرّ ثم اختاري ما يعنيه — فيُقاس
+                اللحام بدل افتراضه. وحتى قبل الربط تعمل الأزرار بترتيبها الافتراضي:
+                ١ فوق، ٢ تحت، ٣ يمين، ٤ يسار، ٥ تأكيد.
+              </p>
+
+              {lastPosition !== null ? (
+                <div className="space-y-2">
+                  <div className="text-label text-slate-600">
+                    الزرّ <span className="font-mono">{lastPosition}</span> — ماذا يعني؟
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {BUTTON_ROLES.map((role) => (
+                      <Button key={role.value} variant="ghost" onClick={() => void bindButton(role.value)}>
+                        {role.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                connected && <p className="text-label text-slate-500">بانتظار ضغطة…</p>
+              )}
+
+              {selected.buttons.length > 0 && (
+                <ul className="divide-y divide-slate-100">
+                  {selected.buttons.map((button) => (
+                    <li key={button.id} className="flex items-center justify-between gap-3 py-2">
+                      <div>
+                        <div className="text-body text-slate-800">{roleLabel(button.role)}</div>
+                        <div className="text-label text-slate-400 font-mono" dir="ltr">
+                          button {button.index}
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        onClick={() => void unbindButton(button)}
+                        aria-label={`فكّ ${roleLabel(button.role)}`}
+                      >
+                        فكّ
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           </Card>

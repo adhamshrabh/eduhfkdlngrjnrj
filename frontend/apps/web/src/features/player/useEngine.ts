@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { App, EngineEvents, StoryLoader, type BootstrappedApp } from "@edu/engine";
 
-import { attachCardTranslator, loadCardBindings, readCardUid } from "./cardTranslator";
+import { attachCardTranslator, loadDeviceTables, readCardUid } from "./cardTranslator";
 import { attachSerialSource } from "./serialSource";
 
 export type EngineStatus = "idle" | "starting" | "running" | "failed";
@@ -120,10 +120,15 @@ export function useEngine(hostRef: React.RefObject<HTMLElement>, storyId: string
         // اختياري — وقصّةٌ لا تبدأ أسوأ من قصّةٍ لا تقبل البطاقة بعد.
         //
         // ولا يُنتظَر `await`: `cancelled` وحده يحرس المغادرة المبكرة.
-        void loadCardBindings().then((bindings) => {
+        // ويُملأ في مكانه حين يصل الجدول — انظر `ButtonRoles` لسبب كونه
+        // مقروءاً عند كل ضغطة لا مُمرَّراً بالقيمة.
+        const buttonRoles = new Map<number, string>();
+
+        void loadDeviceTables().then((tables) => {
           if (cancelled) return;
-          setCardBindings(bindings);
-          detachTranslator = attachCardTranslator(started, bindings);
+          setCardBindings(tables.cards);
+          for (const [index, role] of tables.buttons) buttonRoles.set(index, role);
+          detachTranslator = attachCardTranslator(started, tables.cards);
         });
 
         // ── الصندوق على الكبل ────────────────────────────────────────────
@@ -134,7 +139,7 @@ export function useEngine(hostRef: React.RefObject<HTMLElement>, storyId: string
         //
         // ومستقلّ عن مسار الشبكة: لو كان القارئ على واي-فاي فـ`Bootstrap`
         // يفتحه، وهذا لا يجد منفذاً مأذوناً فيصمت. لا تنازع بينهما.
-        detachSerial = attachSerialSource(started);
+        detachSerial = attachSerialSource(started, () => buttonRoles);
       })
       .catch((err: unknown) => {
         if (cancelled) return;

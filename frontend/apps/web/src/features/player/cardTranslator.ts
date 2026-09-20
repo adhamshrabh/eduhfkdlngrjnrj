@@ -31,6 +31,15 @@ import { api } from "../../lib/api";
 /** ما يصل من `/api/devices/` — الحقول التي يحتاجها المترجم وحدها. */
 interface DeviceRow {
   cards?: Array<{ uid?: string; label?: string }>;
+  buttons?: Array<{ index?: number; role?: string }>;
+}
+
+/** جدولا الصندوق: ما تعنيه بطاقاته، وما يعنيه كل زرّ (v1.0.24). */
+export interface DeviceTables {
+  /** `uid → معنى` — اسمُ أصلٍ تختاره المعلّمة بحرّية. */
+  cards: Map<string, string>;
+  /** `موضع → دور` — مفرداتٌ **مغلقة** يفهمها `Directions.ts` وحدها. */
+  buttons: Map<number, string>;
 }
 
 /**
@@ -68,7 +77,7 @@ export function readCardUid(event: unknown): string | null {
 }
 
 /**
- * جدول الترجمة لكل قارئات المعلّمة، مدموجاً.
+ * جدولا الترجمة لكل قارئات المعلّمة، مدموجَين.
  *
  * مدموج ولا يسأل «أي قارئ؟»: البطاقة قطعة مادّية واحدة، ولو قُرئت على
  * جهازين فمعناها واحد. وسؤال المعلّمة عن القارئ قبل الحصّة خطوةٌ تُنسى.
@@ -76,19 +85,25 @@ export function readCardUid(event: unknown): string | null {
  * يُرجع جدولاً فارغاً عند أي فشل — بلا جدول تبقى القصّة تعمل باللمس
  * وبالموضع، ولا يجوز أن يمنع تعذّر قراءةِ إعدادٍ بدءَ حصّة.
  */
-export async function loadCardBindings(): Promise<Map<string, string>> {
-  const bindings = new Map<string, string>();
+export async function loadDeviceTables(): Promise<DeviceTables> {
+  const cards = new Map<string, string>();
+  const buttons = new Map<number, string>();
   try {
+    // ⚠️ طلبٌ واحد للجدولين: هذا يقع عند بدء الحصّة، وطلبٌ ثانٍ يعني عطلاً
+    // ثانياً محتملاً في اللحظة التي لا يجوز أن يتعثّر فيها شيء.
     const data = await api.get<{ results?: DeviceRow[] }>("/api/devices/");
     for (const device of data.results ?? []) {
       for (const card of device.cards ?? []) {
-        if (card.uid && card.label) bindings.set(card.uid, card.label);
+        if (card.uid && card.label) cards.set(card.uid, card.label);
+      }
+      for (const button of device.buttons ?? []) {
+        if (typeof button.index === "number" && button.role) buttons.set(button.index, button.role);
       }
     }
   } catch {
-    /* لا جهاز، أو لا جلسة — اللمس يكفي */
+    /* لا جهاز، أو لا جلسة — اللمس يكفي، والأزرار تعمل بترتيبها الافتراضي */
   }
-  return bindings;
+  return { cards, buttons };
 }
 
 /**
