@@ -89,7 +89,8 @@ export class SpriteRegistry {
   idForAlias(alias: string): string | undefined {
     if (!alias) return undefined;
     for (const [id, current] of this.aliases) {
-      if (current === alias) return id;
+      // وحارسٌ ثانٍ: معرّفٌ بلا صورةٍ حيّة ليس جواباً، ولو بقي اسمه.
+      if (current === alias && this.displays.has(id)) return id;
     }
     return undefined;
   }
@@ -377,6 +378,11 @@ export class SpriteRegistry {
   /** Removes a single sprite by id. Safe to call for an id that isn't
    *  registered. */
   remove(id: string): void {
+    // ⚠️ الاسم يُنسى مع الصورة. عطلٌ قِيس: كان `aliases` يحتفظ بعنصرٍ هُدم،
+    // و`idForAlias` يعيد **أوّل** مطابقة — فمشهدٌ يعيد استعمال أسماء المشهد
+    // الذي قبله (بمعرّفاتٍ جديدة، كما ينسخها الاستوديو) كان يُحلّ كل اسمٍ
+    // إلى عنصرٍ ميّت: «ابحث» بلا لمسٍ ولا إطارٍ ولا أزرار في المشهد الثاني.
+    this.aliases.delete(id);
     const sprite = this.displays.get(id);
     if (!sprite) return;
     sprite.destroy();

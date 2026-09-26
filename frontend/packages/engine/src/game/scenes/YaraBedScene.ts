@@ -1614,7 +1614,7 @@ export class YaraBedScene extends Scene {
       const bound: string[] = [];
       for (const alias of new Set(aliases)) {
         const id = this.spriteRegistry.idForAlias(alias);
-        if (!id) continue;
+        if (!id || !this.spriteRegistry.get(id)) continue;
         found.push(alias);
         bound.push(id);
         this.spriteRegistry.setTapResponse(id, () => onTap(alias), () => true);

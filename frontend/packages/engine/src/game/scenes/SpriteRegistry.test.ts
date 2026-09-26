@@ -57,6 +57,19 @@ describe("SpriteRegistry", () => {
     expect(registry.get("doll")).toBeDefined();
   });
 
+  it("idForAlias() forgets a removed element — the next scene's element with the same name is found", () => {
+    // مشهدان متتاليان من «ابحث» بالأسماء نفسها ومعرّفاتٍ مختلفة: كان الثاني
+    // يُحلّ إلى عنصر الأوّل المهدوم، فلا لمس ولا إطار ولا أزرار.
+    const container = new Container();
+    const registry = new SpriteRegistry(container, makeMockAssets(["milk"]), new LayoutApplier(), makeMockAnimation());
+
+    registry.reveal("milk_scene12", "milk", { x: 0, y: 0, scale: 1, anchorX: 0, anchorY: 0 });
+    registry.remove("milk_scene12");
+    registry.reveal("milk_scene13", "milk", { x: 0, y: 0, scale: 1, anchorX: 0, anchorY: 0 });
+
+    expect(registry.idForAlias("milk")).toBe("milk_scene13");
+  });
+
   it("register() replaces and destroys a previous sprite under the same id", () => {
     const container = new Container();
     const registry = new SpriteRegistry(container, makeMockAssets(["a"]), new LayoutApplier(), makeMockAnimation());
