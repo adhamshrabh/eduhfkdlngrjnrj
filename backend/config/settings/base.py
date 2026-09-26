@@ -40,7 +40,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
+    # WhiteNoise ومعه ملفات Vite المبنية — انظر `apps/common/frontend_static.py`.
+    "apps.common.frontend_static.FrontendWhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.locale.LocaleMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -114,6 +115,10 @@ FRONTEND_DIST = {
     "web": FRONTEND_ROOT / "apps" / "web" / "dist",
     "studio": FRONTEND_ROOT / "apps" / "studio" / "dist",
 }
+
+# WhiteNoise لا يعرف `.webmanifest` فيخدمه octet-stream، و`RootAssetView` الذي
+# كان يضبط نوعه لا يُبلَغ بعد أن صار WhiteNoise يخدم جذر dist قبله.
+WHITENOISE_MIMETYPES = {".webmanifest": "application/manifest+json"}
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

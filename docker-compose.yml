@@ -38,7 +38,11 @@ services:
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost}
       DATABASE_URL: postgres://edu:${POSTGRES_PASSWORD:-edu}@db:5432/edu
     volumes:
-      - ./frontend:/app/frontend:ro   # ليقرأ Django ملفات dist المبنية
+      # ليقرأ Django ملفات dist المبنية. ⚠️ المسار `/frontend` لا `/app/frontend`:
+      # الإعدادات تحسبه `BASE_DIR.parent / "frontend"`، و`BASE_DIR` هنا `/app`.
+      # كان مركَّباً في `/app/frontend` فلا يراه Django أبداً، وكل صفحة تعود
+      # «لم تُبنَ الواجهة بعد» مع أن البناء نجح قبلها بدقيقة.
+      - ./frontend:/frontend:ro
       - media:/app/media
     # ⚠️ محليّ عمداً، والباب هو المنهي العكسي (انظر `deploy/`). المنفذ العامّ
     # يعني عنوان http، و http يعني أن المتصفّح يحذف `navigator.serial` فلا
