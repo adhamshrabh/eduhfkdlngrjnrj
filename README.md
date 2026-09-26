@@ -206,7 +206,7 @@ CameraRunner · Unity WebGL · لوحة وليّ الأمر · بنك الأسئ
 | `jigsaw` | أين تعود هذه القطعة؟ (تحويل مكاني) | [v1.0.25](./docs/Scene-Model-Specification-v1.0.25.md) |
 | `sort` | ما الذي يجمع هذه الأشياء؟ (تصنيف) | [v1.0.26](./docs/Scene-Model-Specification-v1.0.26.md) |
 | `find` | أين هو؟ (لغة مكانية في المشهد نفسه) | [v1.0.27](./docs/Scene-Model-Specification-v1.0.27.md) |
-| `all-respond` | ما رأي الصفّ كلّه؟ (بطاقات استجابة) | [v1.0.28](./docs/Scene-Model-Specification-v1.0.28.md) |
+| `all-respond` | ما رأي الصفّ كلّه؟ (تصويتٌ بصورٍ وبطاقات استجابة) | [v1.0.28](./docs/Scene-Model-Specification-v1.0.28.md)، [v1.0.32](./docs/Scene-Model-Specification-v1.0.32.md) |
 
 وأن يبقى الطرفان متّفقين يحرسه اختبار: `apps/studio/src/ActivityTypeParity.test.ts`
 يسقط إن سُجِّل نوعٌ في المحرّك بلا محرّرٍ في الاستوديو — أو العكس. وهو العطل

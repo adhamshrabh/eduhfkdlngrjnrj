@@ -20,6 +20,7 @@ import { CardAnswerRunner } from "./CardAnswerRunner";
 import { SequenceRunner } from "./SequenceRunner";
 import { JigsawRunner } from "./JigsawRunner";
 import { SortRunner } from "./SortRunner";
+import { ConnectRunner } from "./ConnectRunner";
 import { FindRunner } from "./FindRunner";
 import { AllRespondRunner } from "./AllRespondRunner";
 
@@ -118,7 +119,8 @@ describe("every shipped type builds its own renderer", () => {
     ["jigsaw", JigsawRunner],
     ["sort", SortRunner],
     ["find", FindRunner],
-    ["all-respond", AllRespondRunner]
+    ["all-respond", AllRespondRunner],
+    ["connect", ConnectRunner]
   ];
 
   for (const [type, cls] of expected) {
@@ -127,7 +129,7 @@ describe("every shipped type builds its own renderer", () => {
     });
   }
 
-  it("ثمانية أنواع، لا أقلّ — نوعٌ يُحذف بصمت يترك قصصاً تُلعب بمُصيِّر خاطئ", () => {
+  it("تسعة أنواع، لا أقلّ — نوعٌ يُحذف بصمت يترك قصصاً تُلعب بمُصيِّر خاطئ", () => {
     for (const [type] of expected) expect(ActivityRendererRegistry.has(type)).toBe(true);
   });
 

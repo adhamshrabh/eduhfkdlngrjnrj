@@ -39,14 +39,31 @@ import type { AnimationManager } from "@core/animation/AnimationManager";
 import type { AssetManager } from "@core/assets/AssetManager";
 import { Logger } from "@shared/utils";
 
-import { ActivityBase, resolveAddress } from "./ActivityBase";
-import { CHOICE_HEIGHT, DESIGN_WIDTH } from "./ActivityLayout";
+import { ActivityBase, isStrayPosition, resolveAddress } from "./ActivityBase";
+import { nextInDirection, readDirection, startingIndex, type Placed } from "./Directions";
+import { CHOICE_HEIGHT, DESIGN_HEIGHT, DESIGN_WIDTH } from "./ActivityLayout";
 import type { ActivityData, SortActivity, SortBin } from "./ActivityTypes";
 import { isSort } from "./ActivityTypes";
 
-const DESIGN_HEIGHT = 1080;
-
 /** أبعاد السلّة المرسومة حين لا تُؤلَّف لها صورة. */
+/**
+ * ارتفاع الغرض بعد أن يستقرّ في سلّة.
+ *
+ * أصغر ممّا هو على الرفّ عمداً: السلّة ٣٠٠ بكسل، وأغراضٌ بارتفاع ٢٢٠ لا
+ * يدخل منها في الصفّ إلّا واحد. والتصغير هو ما يجعل السلّة تبدو **تمتلئ**.
+ */
+const PLACED_HEIGHT = 120;
+
+/** مدّة عودة الغرض الخاطئ إلى الرفّ — بطيئةٌ بما يكفي لتتبعها العين. */
+const RETURN_SECONDS = 0.6;
+/** مدّة هزّة الخطأ قبل العودة إلى الرفّ (v1.0.35): ستّ نقلاتٍ من ٠٫٠٧ ث. */
+const SHAKE_SECONDS = 0.45;
+const FRAME_PAD = 14;
+const FRAME_COLOR = 0x3fb950;
+/** علامة «هذا في يدي» — لونٌ آخر عمداً: الإطار يقول «أنا هنا»، وهذه تقول
+ *  «أحمل هذا». ولو تشابها لما عرف الطفل أيّهما يتحرّك. */
+const HELD_COLOR = 0xf0a202;
+
 export const BIN_WIDTH = 460;
 export const BIN_HEIGHT = 300;
 
@@ -79,6 +96,26 @@ interface LiveItem {
   home: { x: number; y: number };
   /** السلّة التي هو فيها الآن، أو `null` إن لم يوضع بعد. */
   inBin: string | null;
+  /** مقياسه المحسوب عند البناء — تعود إليه ومضةُ الاستقرار (v1.0.29 §3). */
+  baseScale: number;
+  /** استقرّ في سلّته الصحيحة ولم يعد يُسحَب. */
+  locked: boolean;
+}
+
+/**
+ * ما يقع عليه الإطار — غرضٌ أو سلّة، في فضاءٍ واحد لا في مرحلتين.
+ *
+ * فضاءٌ واحد عمداً: الأغراض في أعلى المسرح والسلال أسفله، فزرّ «أسفل» ينقل
+ * الإطار من الغرض إلى السلّة **بحكم الهندسة** لا بحكم مرحلةٍ يحفظها الطفل.
+ */
+interface FocusTarget {
+  /** مفتاحٌ ثابت — به يُستعاد الإطار بعد أن تتبدّل المجموعة. */
+  key: string;
+  at: Placed;
+  width: number;
+  height: number;
+  item?: LiveItem;
+  bin?: LiveBin;
 }
 
 export class SortRunner extends ActivityBase {
@@ -95,6 +132,22 @@ export class SortRunner extends ActivityBase {
 
   private dragging: LiveItem | null = null;
   private readonly dragOffset = { x: 0, y: 0 };
+
+  /**
+   * كم مرّةً كان الفرز خاطئاً.
+   *
+   * ⚠️ عليه يقوم التدرّج (v1.0.29): الحكم الخاطئ **الأوّل** نصٌّ وحده —
+   * فتبقى المحاولة الأولى قياساً صادقاً لحال الطفل. وما بعده يُنجِد.
+   */
+  private wrongAttempts = 0;
+
+  /** الإطار المتنقّل وعلامة المحمول — لا يُبنيان إلّا بـ`navigate`. */
+  private frame: Graphics | null = null;
+  private holdMark: Graphics | null = null;
+  /** ما يقع عليه الإطار الآن، بمفتاحه. */
+  private focusKey: string | null = null;
+  /** الغرض «في اليد» — يبقى مكانه وعليه علامة، حتى تُختار سلّة. */
+  private held: LiveItem | null = null;
 
   private readonly tweenIds = new Set<string>();
 
@@ -145,7 +198,194 @@ export class SortRunner extends ActivityBase {
     this.container.on("pointerup", this.onDragEnd);
     this.container.on("pointerupoutside", this.onDragEnd);
 
+    if (incoming.navigate === true) this.buildFrame();
+
     this.begin(onSolved);
+  }
+
+  // -----------------------------------------------------------------------
+  // الإطار المتنقّل (v1.0.30)
+  // -----------------------------------------------------------------------
+
+  /**
+   * يُبنى إمّا بتأليف `navigate: true` — فيُرى من أوّل لحظة — وإمّا عند
+   * أوّل ضغطة اتجاه. والفرق بينهما **وقتُ الظهور لا وجودُه**: صفٌّ يعمل
+   * باللمس وحده لا يرى مستطيلاً أخضر لا يستعمله أحد.
+   */
+  private buildFrame(): void {
+    if (!this.root || this.frame) return;
+    this.root.sortableChildren = true;
+
+    this.holdMark = new Graphics();
+    this.holdMark.zIndex = 1;
+    this.holdMark.visible = false;
+    this.root.addChild(this.holdMark);
+
+    this.frame = new Graphics();
+    // فوق كل شيء: إطارٌ خلف صورةٍ معتمة لا يُرى، وهو أوّل ما يجب أن يُرى.
+    this.frame.zIndex = 2;
+    this.root.addChild(this.frame);
+
+    const targets = this.focusTargets();
+    if (targets.length === 0) return;
+    // يبدأ من أقرب شيءٍ إلى وسط المسرح، لا من الأوّل تأليفاً (v1.0.24 §3.1).
+    const start = startingIndex(targets.map((t) => t.at), { x: DESIGN_WIDTH / 2, y: DESIGN_HEIGHT / 2 });
+    this.focusOn(targets[start]!, true);
+  }
+
+  /**
+   * كل ما يجوز أن يقع عليه الإطار: الأغراض غير المقفولة، وكل السلال.
+   *
+   * يُحسَب عند كل ضغطة لا يُخزَّن: المجموعة تتبدّل بالوضع وبالنجدة
+   * (v1.0.29)، وقائمةٌ محفوظة كانت ستُبقي الإطار على غرضٍ قُفل.
+   */
+  private focusTargets(): FocusTarget[] {
+    const targets: FocusTarget[] = [];
+    for (const item of this.items) {
+      if (item.locked) continue;
+      // ⚠️ ويدٌ ممتلئة تُقصي كل غرضٍ **سواه**: من يحمل شيئاً وجهته سلّة، و
+      // إطارٌ يقف على غرضٍ في سلّةٍ أخرى يعترض الطريق بلا أن يعني شيئاً.
+      //
+      // ويبقى المحمول نفسه في المجموعة: تأكيدٌ ثانٍ عليه **يضعه من اليد**.
+      // بدون ذلك يعلق الطفل حاملاً غرضاً أخطأ في التقاطه، بلا مخرج.
+      if (this.held && item !== this.held) continue;
+      targets.push({
+        key: `item:${item.id}`,
+        at: { x: item.sprite.x, y: item.sprite.y },
+        width: item.sprite.width,
+        height: item.sprite.height,
+        item
+      });
+    }
+    for (const bin of this.bins) {
+      targets.push({
+        key: `bin:${bin.bin.id}`,
+        at: { x: bin.rect.x, y: bin.rect.y },
+        width: bin.rect.width,
+        height: bin.rect.height,
+        bin
+      });
+    }
+    return targets;
+  }
+
+  private focusOn(target: FocusTarget, immediate = false): void {
+    if (!this.frame) return;
+    this.focusKey = target.key;
+    this.paint(this.frame, target.width, target.height, FRAME_COLOR);
+
+    // أوّل وضعٍ يُكتب مباشرةً: الحركة تحتاج إطاراتٍ تُصيَّر، ومحرّكٌ موقوف
+    // لحظة الإقلاع كان سيترك الإطار في الزاوية (0,0).
+    if (immediate) {
+      this.frame.position.set(target.at.x, target.at.y);
+      return;
+    }
+    this.track("sort-frame", this.frame, {
+      x: target.at.x,
+      y: target.at.y,
+      duration: 0.16,
+      ease: "power2.out"
+    });
+  }
+
+  private paint(g: Graphics, width: number, height: number, color: number): void {
+    const w = width + FRAME_PAD * 2;
+    const h = height + FRAME_PAD * 2;
+    g.clear()
+      .roundRect(-w / 2, -h / 2, w, h, 18)
+      .stroke({ color, width: 8, alignment: 0.5 });
+  }
+
+  /**
+   * ضغطةٌ قد تكون اتجاهاً. يُرجع `true` إن استُهلكت.
+   *
+   * الاستهلاك مهمّ: بدونه يصير الزرّ ٣ «يميناً» و«الغرض الثالث» معاً — وهو
+   * الدرس نفسه الذي سجّله `PickCorrectRunner`.
+   */
+  private handleDirection(payload: unknown): boolean {
+    if (!this.accepts()) return false;
+    const direction = readDirection(payload);
+    if (!direction) return false;
+
+    // ⚠️ الإطار يُستدعى بأوّل ضغطة، ولا يُشترط تأليفه (v1.0.30 §2، معدَّلة).
+    //
+    // ورثتُ «مؤلَّف لا تلقائي» عن `pick-correct` (v1.0.24 §2.1) بلا فحص،
+    // وحجّتها هناك أن الإطار **يعيد تعريف زرٍّ له معنى**: بغيره يختار
+    // الزرّ ٣ الخيارَ الثالث. وفي الفرز لا معنى للزرّ أصلاً — الموضع
+    // العاري مُهمَل (§4) — فلا شيء يُعاد تعريفه، ولا حجّة للتأليف.
+    //
+    // والضغطة الأولى **تستدعي ولا تفعل**: إطارٌ يظهر وينتقي في اللحظة
+    // نفسها يفعل شيئاً لم يره الطفل بعد.
+    if (!this.frame) {
+      this.buildFrame();
+      return true;
+    }
+
+    const targets = this.focusTargets();
+    if (targets.length === 0) return true;
+
+    let index = targets.findIndex((t) => t.key === this.focusKey);
+    if (index < 0) {
+      // اختفى ما كان تحته (قُفل أو وُضع): يُعاد إلى أقرب شيءٍ للوسط.
+      index = startingIndex(targets.map((t) => t.at), { x: DESIGN_WIDTH / 2, y: DESIGN_HEIGHT / 2 });
+      this.focusOn(targets[index]!, true);
+      if (direction !== "select") return true;
+    }
+
+    if (direction === "select") {
+      this.select(targets[index]!);
+      return true;
+    }
+
+    const next = nextInDirection(targets.map((t) => t.at), index, direction);
+    // لا شيء في ذلك الاتجاه: الإطار يسكن ولا يلتفّ (v1.0.24 §3.3).
+    if (next !== undefined) this.focusOn(targets[next]!);
+    return true;
+  }
+
+  /**
+   * تأكيدٌ على ما تحت الإطار.
+   *
+   * غرضٌ → يصير «في اليد» ويُعلَّم، **ولا يتحرّك**. فإن بدا للطفل أنه أخطأ
+   * الغرض، يكفي أن يؤكّد غيره — ولا حاجة إلى تراجعٍ لأنه لم يقع شيء.
+   *
+   * سلّةٌ → ما في اليد يهبط فيها، ويُحكَم كما لو سُحب إليها بالإصبع. وسلّةٌ
+   * ولا شيء في اليد: صمتٌ تامّ — «التحريك ليس إجابة» (v1.0.24 §3).
+   */
+  private select(target: FocusTarget): void {
+    if (target.item) {
+      // تأكيدٌ على المحمول نفسه = وضعُه من اليد، لا إعادةُ التقاطه.
+      if (this.held === target.item) {
+        this.held = null;
+        if (this.holdMark) this.holdMark.visible = false;
+        return;
+      }
+      this.held = target.item;
+      if (this.holdMark) {
+        this.paint(this.holdMark, target.width, target.height, HELD_COLOR);
+        this.holdMark.position.set(target.at.x, target.at.y);
+        this.holdMark.visible = true;
+      }
+      return;
+    }
+
+    const bin = target.bin;
+    const item = this.held;
+    if (!bin || !item) return;
+
+    this.held = null;
+    if (this.holdMark) this.holdMark.visible = false;
+
+    this.placeInBin(item, bin);
+    this.judge();
+    this.refocusAfterDrop();
+  }
+
+  /** بعد الوضع: الإطار ينتقل إلى أوّل غرضٍ لم يوضع بعد، إن بقي. */
+  private refocusAfterDrop(): void {
+    if (!this.frame) return;
+    const pending = this.focusTargets().find((t) => t.item && t.item.inBin === null);
+    if (pending) this.focusOn(pending);
   }
 
   hide(): void {
@@ -165,6 +405,12 @@ export class SortRunner extends ActivityBase {
     for (const id of this.tweenIds) this.animation.stop(id);
     this.tweenIds.clear();
     this.dragging = null;
+    this.wrongAttempts = 0;
+    this.held = null;
+    this.focusKey = null;
+    // الرسوم أبناء `root` ويُدمَّران معه أدناه — يكفي نسيانهما.
+    this.frame = null;
+    this.holdMark = null;
     this.bins = [];
     this.items = [];
     this.activity = null;
@@ -264,7 +510,9 @@ export class SortRunner extends ActivityBase {
         bin: item.bin,
         sprite,
         home,
-        inBin: null
+        inBin: null,
+        baseScale: sprite.scale.x,
+        locked: false
       };
       sprite.on("pointerdown", (e: FederatedPointerEvent) => this.onDragStart(live, e));
       this.root!.addChild(sprite);
@@ -286,9 +534,10 @@ export class SortRunner extends ActivityBase {
   // -----------------------------------------------------------------------
 
   private onDragStart(item: LiveItem, e: FederatedPointerEvent): void {
-    if (!this.accepts()) return;
+    if (!this.accepts() || item.locked) return;
     const parent = item.sprite.parent;
     if (!parent) return;
+    this.stopReturn(item);
     const local = e.getLocalPosition(parent);
     this.dragOffset.x = item.sprite.x - local.x;
     this.dragOffset.y = item.sprite.y - local.y;
@@ -326,9 +575,41 @@ export class SortRunner extends ActivityBase {
       return;
     }
 
-    item.inBin = landed.bin.id;
+    this.placeInBin(item, landed);
     this.judge();
   };
+
+  /**
+   * يُنزل الغرض في سلّة: خانةٌ داخلها ومقياسٌ يناسبها.
+   *
+   * الطريق الوحيد إلى `inBin` — يمرّ منه السحب والبطاقة والإطار معاً، فلا
+   * يمكن أن يستقرّ غرضٌ بثلاث هيئات مختلفة بحسب ما حرّكه.
+   */
+  private placeInBin(item: LiveItem, bin: LiveBin): void {
+    this.stopReturn(item);
+    const taken = this.items.filter((other) => other !== item && other.inBin === bin.bin.id).length;
+    const slot = slotInBin(bin.rect, taken);
+    item.inBin = bin.bin.id;
+
+    const scale = item.baseScale * (PLACED_HEIGHT / CHOICE_HEIGHT);
+    this.track(`sort-place-${item.id}`, item.sprite, {
+      x: slot.x,
+      y: slot.y,
+      duration: 0.28,
+      ease: "power2.out"
+    });
+    this.track(`sort-place-scale-${item.id}`, item.sprite.scale, {
+      x: scale,
+      y: scale,
+      duration: 0.28,
+      ease: "power2.out"
+    });
+    // الحالة تُكتب متزامنةً: الحركة تجميل، وما يقرؤه الحكم لا يتعلّق بما
+    // قد لا يعمل — القاعدة نفسها التي حكمت إبلاغ الأحجية.
+    item.sprite.x = slot.x;
+    item.sprite.y = slot.y;
+    item.sprite.scale.set(scale);
+  }
 
   /** الحكم على الفرز كلّه، حين لا يبقى غرضٌ خارج السلال (§3). */
   private judge(): void {
@@ -340,9 +621,121 @@ export class SortRunner extends ActivityBase {
       return;
     }
 
-    // ⚠️ لا شيء يُقلَب، ولا يُقال أيّها الخطأ (§3.1). والردّ وحده يُبثّ، ثم
-    // أيّ تحريكٍ بعده يُعيد الحكم — وهو إعادةُ تقديمٍ تختارها الطفلة.
+    this.wrongAttempts += 1;
+
+    // v1.0.35: المعلّمة اختارت أن يرى الطفل خطأه من أوّل حكم — كل غرضٍ في
+    // غير سلّته يهتزّ في مكانه (هذا هو) ثم يعود إلى الرفّ (ليس هنا).
+    // والإدخال موقوفٌ ما دام يهتزّ: غرضٌ يُسحب وهو يرتجف لا يُفهم.
+    if (this.activity?.wrongItems === "return") {
+      this.reportWrong(this.activityId, this.activity.wrongResponse ?? null, (done) => this.shakeWrong(done));
+      return;
+    }
+
+    // ⚠️ لا شيء يُقلَب عند الحكم الأوّل (v1.0.26 §3.1): الردّ وحده يُبثّ،
+    // وكل الأغراض تبقى حيث وضعتها الطفلة.
     this.reportWrong(this.activityId, this.activity?.wrongResponse ?? null, (done) => done());
+
+    // ومن الحكم **الثاني** فصاعداً تُنجَد (v1.0.29): «انظري مرّةً أخرى»
+    // قيلت مرّةً وفشلت، وتكرارها على طفلٍ عالق ليس صرامةً بل إهمال.
+    if (this.wrongAttempts >= 2) this.rescue();
+  }
+
+  /**
+   * هزّةٌ على كل غرضٍ في غير سلّته، ثم النجدة (v1.0.35 §3).
+   *
+   * الهزّة **لا تنقل** الغرض — يعود إلى النقطة نفسها — فالنجدة بعدها تقرأ
+   * حالةً لم تتغيّر. والتوقيت بمؤقّتٍ واحد لا بنهاية كل هزّة: غرضان
+   * خاطئان كانا سيستدعيان النجدة مرّتين.
+   */
+  private shakeWrong(done: () => void): void {
+    for (const item of this.items) {
+      if (item.inBin === null || item.inBin === item.bin) continue;
+      this.track(`sort-shake-${item.id}`, item.sprite, {
+        x: item.sprite.x - 14,
+        duration: 0.07,
+        yoyo: true,
+        repeat: 5,
+        ease: "sine.inOut"
+      });
+    }
+    this.track("sort-shake-wait", { v: 0 }, {
+      v: 1,
+      duration: SHAKE_SECONDS,
+      onComplete: () => {
+        this.rescue();
+        done();
+      }
+    });
+  }
+
+  /**
+   * النجدة: الخاطئ يعود إلى الرفّ، والصحيح يستقرّ ويُقفَل (v1.0.29 §3).
+   *
+   * ⚠️ **إلى الرفّ لا إلى السلّة الأخرى.** بسلّتين، نقلُ الغرض إلى الصحيحة
+   * يحلّ النشاط بدل الطفلة. وعودته إلى الرفّ تقول «ليس هنا» وتترك «أين؟»
+   * سؤالاً ما زال لها.
+   */
+  private rescue(): void {
+    for (const item of this.items) {
+      if (item.inBin === item.bin) {
+        this.settle(item);
+        continue;
+      }
+      item.inBin = null;
+      // ⚠️ انزلاقٌ لا قفزة: الموضع **لا يُكتب متزامناً** هنا، خلافاً
+      // لـ`placeInBin`. كتابته قبل الحركة كانت تجعلها من الرفّ إلى الرفّ —
+      // فيختفي الغرض من السلّة ويظهر على الرفّ، ولا يرى الطفل **من أين
+      // عاد**. والحالة التي يقرؤها الحكم (`inBin`) كُتبت أعلاه، فلا شيء
+      // ينتظر الحركة. ومن يُمسكه في طريقه يوقفها (`stopReturn`).
+      this.track(`sort-return-${item.id}`, item.sprite, {
+        x: item.home.x,
+        y: item.home.y,
+        duration: RETURN_SECONDS,
+        ease: "power2.inOut"
+      });
+      // ويعود إلى حجمه على الرفّ: غرضٌ يعود صغيراً يبدو غرضاً آخر.
+      this.track(`sort-return-scale-${item.id}`, item.sprite.scale, {
+        x: item.baseScale,
+        y: item.baseScale,
+        duration: RETURN_SECONDS,
+        ease: "power2.inOut"
+      });
+    }
+  }
+
+  /** يوقف عودة غرضٍ إلى الرفّ — حين يُمسَك أو يُوضع وهو في طريقه. */
+  private stopReturn(item: LiveItem): void {
+    this.animation.stop(`sort-return-${item.id}`);
+    this.animation.stop(`sort-return-scale-${item.id}`);
+  }
+
+  /**
+   * غرضٌ في سلّته: ومضةٌ خفيفة ثم يُقفَل.
+   *
+   * ⚠️ القفل يقول «هذه انتهت» لا «هذه صحيحة» — والفرق عمليّ لا لفظيّ: هو
+   * يمنع الطفلة من **نقض عملٍ صائب** وهي تصلح الخطأ، وهو أكثر ما يحدث حين
+   * تُعاد المحاولة على مجموعةٍ كاملة.
+   */
+  private settle(item: LiveItem): void {
+    if (item.locked) return;
+    item.locked = true;
+    // مقفولٌ يخرج من فضاء الإطار — فإن كان في اليد سقط منها.
+    if (this.held === item) {
+      this.held = null;
+      if (this.holdMark) this.holdMark.visible = false;
+    }
+    item.sprite.eventMode = "none";
+    item.sprite.cursor = "default";
+    // إلى المقياس الأساس لا إلى ١: الصور مقيسة إلى ارتفاعٍ موحّد عند
+    // البناء، وومضةٌ تنتهي عند ١ كانت ستكبّر الغرض فجأةً وتُبقيه كذلك.
+    this.track(`sort-settle-${item.id}`, item.sprite.scale, {
+      x: item.baseScale * 1.08,
+      y: item.baseScale * 1.08,
+      duration: 0.18,
+      yoyo: true,
+      repeat: 1,
+      ease: "power1.inOut"
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -361,23 +754,25 @@ export class SortRunner extends ActivityBase {
     const raw = (payload as { choice?: unknown })?.choice;
     if (typeof raw !== "string" || !raw) return;
 
+    // فجوة مقيسة: الموضع العاري («3») كان يُحلّ إلى الغرض الثالث فيوضع في
+    // سلّته **الصحيحة** — فطفلٌ يعبث بالأزرار يحلّ الفرز كلّه. والقاعدة
+    // التي تحسمها هي التي حسمت «الجواب المباشر» و«الترتيب»: **الموضع ليس
+    // معنى**. البطاقة تمرّ بجدول المنصّة فتصل حاملةً قصداً؛ والموضع لم يمرّ.
+    if (isStrayPosition(raw, this.items.map((i) => i.alias))) return;
+
     const item = resolveAddress(this.items, raw);
-    if (!item) return;
+    // ومقفولٌ لا يتحرّك ببطاقةٍ أيضاً — وإلّا كان للقفل بابان.
+    if (!item || item.locked) return;
 
     const target = this.bins.find((b) => b.bin.id === item.bin);
     if (!target) return;
 
-    item.inBin = item.bin;
-    this.track(`sort-card-${item.id}`, item.sprite, {
-      x: target.rect.x,
-      y: target.rect.y,
-      duration: 0.25,
-      ease: "power2.out"
-    });
+    this.placeInBin(item, target);
     this.judge();
   };
 
   handleKeyDown(payload: unknown): void {
+    if (this.handleDirection(payload)) return;
     const key = (payload as { key?: unknown })?.key;
     if (typeof key === "string") this.onIntent({ choice: key });
   }
@@ -427,6 +822,30 @@ export function layoutBins(bins: ReadonlyArray<SortBin>): Array<{ bin: SortBin; 
       height: Math.min(BIN_HEIGHT, DESIGN_HEIGHT - BIN_ROW_Y)
     }
   }));
+}
+
+/**
+ * أين يستقرّ الغرض **داخل** السلّة — لا في مركزها.
+ *
+ * ⚠️ عطلان يُصلحهما هذا، وكلاهما مقيس:
+ *
+ *   ١. أغراضٌ عدّة في سلّةٍ واحدة كانت تهبط في النقطة نفسها، فتتكدّس ولا
+ *      يُرى إلّا آخرها. سلّةٌ فيها ثلاثة تبدو فيها واحد.
+ *   ٢. وغرضٌ في مركز السلّة يتطابق موضعه مع موضعها، فيلتبس على الإطار
+ *      المتنقّل (v1.0.30) أيّهما يقصد — ويصير الوصول إلى السلّة متعذّراً.
+ *
+ * والملء من **اليمين**: الواجهة عربية، والصفّ الذي يمتلئ يساراً يُقرأ
+ * معكوساً.
+ */
+export function slotInBin(rect: BinRect, index: number): { x: number; y: number } {
+  const step = 110;
+  const perRow = Math.max(1, Math.floor((rect.width - 20) / step));
+  const row = Math.floor(index / perRow);
+  const col = index % perRow;
+  return {
+    x: rect.x + rect.width / 2 - step / 2 - 10 - col * step,
+    y: rect.y - rect.height / 2 + PLACED_HEIGHT / 2 + 20 + row * (PLACED_HEIGHT - 20)
+  };
 }
 
 /** مواضع البداية للأغراض غير الموضوعة — صفٌّ متوسّط فوق السلال (§5). */

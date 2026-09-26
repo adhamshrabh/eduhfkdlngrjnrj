@@ -295,3 +295,25 @@ describe("المصادقة", () => {
     expect(call!.headers.Authorization).toBe("Bearer test-token");
   });
 });
+
+describe("فحص التزامن — رقم النسخة يعني «ما قرأتُه من المحتوى»", () => {
+  it("قراءة حالة النشر لا تُحدّث رقم النسخة — وإلّا مرّ حفظُ نسخةٍ قديمة ودهس الأحدث", async () => {
+    // قرأ الاستوديو المحتوى في النسخة ٢…
+    await fetch("/__editor/read?storyId=duck&fileName=story.json");
+    // …ثم تقدّم الخادم إلى ٧ (إصلاحٌ من مكانٍ آخر)، وسُئل عن حالة النشر.
+    underlying.mockImplementation(async (input, init) => {
+      await defaultUnderlying(input, init);
+      return apiResponse({ data: { version: 7, is_published: false, can_edit: true } });
+    });
+    await fetch("/__editor/story-meta?storyId=duck");
+
+    captured = [];
+    await fetch("/__editor/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ storyId: "duck", storyJson: { id: "duck" } })
+    });
+    // يُرسل ٢ — فيرفضه الخادم ويقول «أعيدي التحميل» بدل أن يدهس النسخة ٧.
+    expect(captured.find((c) => c.method === "PATCH")!.body.version).toBe(2);
+  });
+});

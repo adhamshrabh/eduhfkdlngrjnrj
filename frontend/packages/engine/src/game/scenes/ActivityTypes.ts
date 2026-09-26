@@ -24,7 +24,8 @@
  * ever receives the shape it was registered for.
  */
 
-import type { ActivityEffects } from "@core/effects";
+import type { ActivityEffects, EffectPoint } from "@core/effects";
+import type { LetterPlace } from "@core/text";
 
 /** What every activity carries, whatever its type. */
 export interface ActivityBase {
@@ -63,6 +64,12 @@ export interface PickCorrectChoice {
   x?: number;
   y?: number;
   scale?: number;
+  /** A word written on the picture — «باب» on a balloon (v1.0.33 §5). */
+  label?: string;
+  /** Points the option floats THROUGH on its way in (v1.0.33 §5). The
+   *  first is where it appears; the curve ends at its x/y. Absent = it
+   *  fades in where it stands, as before. */
+  path?: EffectPoint[];
 }
 
 /**
@@ -94,6 +101,17 @@ export interface PickCorrectActivity extends ActivityBase {
    * وهو أيضاً ما يفكّ قيد «زرّ لكل خيار»: خمسة أزرار تكفي لاثني عشر حرفاً.
    */
   navigate?: boolean;
+  /**
+   * الحرف الذي يدور عليه السؤال (v1.0.33 §5). حين يُلمَس خيارٌ يحمل كلمة،
+   * يُضاء الحرف فيها: بالأخضر حيث يطلبه الدرس، وبالبرتقاليّ حيث يقع في
+   * موضعٍ آخر — «في كتاب باءٌ، لكنها في آخرها». فالخطأ يصير معلومة.
+   *
+   * ⚠️ لا يحكم بالصحّة: `correct` يبقى مؤلَّفاً. الاستوديو يقترحه من الحرف
+   * والموضع، والمتحقِّق يحذّر حين يتخالفان — لكن القرار للمعلّمة.
+   */
+  letter?: string;
+  /** أين يُطلب الحرف في الكلمة. بغيابه: أينما وقع. */
+  place?: LetterPlace;
 }
 
 /**
@@ -241,7 +259,26 @@ export interface SortActivity extends ActivityBase {
   bins: SortBin[];
   items: SortItem[];
   wrongResponse?: { text?: string; audio?: string };
+  /**
+   * يُفرَز بإطارٍ يتنقّل بأزرار الصندوق، لا بالسحب وحده (v1.0.30).
+   *
+   * ⚠️ الاسم نفسه الذي يحمله `pick-correct` (v1.0.24) عمداً: المؤلّفة
+   * تتعلّم مفهوماً واحداً — «الزرّ يحرّك إطاراً» — لا اثنين بمسمّيين.
+   *
+   * ومؤلَّف لا تلقائي للسبب نفسه: **يغيّر معنى الزرّ**. وبغيابه لا يعني
+   * الموضعُ العاري شيئاً في الفرز إطلاقاً (§4).
+   */
+  navigate?: boolean;
+  /**
+   * ما يحدث للأغراض الخاطئة عند الحكم (v1.0.35).
+   *
+   * `"return"` = من **أوّل** حكمٍ خاطئ يهتزّ كل غرضٍ في غير سلّته ثم يعود
+   * إلى الرفّ، ويُقفَل الصحيح. الغياب = ما قرّرته v1.0.29: الردّ وحده أوّلاً،
+   * والنجدة من الحكم الثاني.
+   */
+  wrongItems?: "return";
 }
+
 
 /**
  * علاقة المكان (v1.0.27 §4) — مفردات **مغلقة**.
@@ -262,8 +299,26 @@ export interface FindSpot {
   /** اسم المكان بالعربية كما يُقال: «السرير». منه تُبنى الجملة. */
   label?: string;
   relation?: SpatialRelation;
-  /** الموضع الذي يخبّئ المطلوب. */
+  /**
+   * الموضع يخبّئ مطلوباً.
+   *
+   * ⚠️ **قد يحمله أكثر من موضع** (v1.0.31): «اعثر على كل حروف الألف» —
+   * واحدٌ تحت النافذة وآخر فوق السرير. ولا يُبلَّغ النشاط محلولاً حتى
+   * يُعثَر على **كلّها**.
+   */
   correct?: boolean;
+  /**
+   * ما يظهر **عند هذا الموضع** حين يُعثَر عليه — اسمٌ في `assets[]`
+   * (v1.0.31 §3).
+   *
+   * ⚠️ رفضته v1.0.27 §7 («لا حقل لما يُوجَد») لأن `onSolved.showObject`
+   * كان يكفي: مطلوبٌ واحد، يظهر مرّةً في النهاية. ومع عدّة مطلوبات لم
+   * يعد يكفي — الطفل يحتاج أن يرى **ما وجده وأين** ليعرف ما بقي. فهذا
+   * ليس نقضاً للقرار بل انتهاءُ الشرط الذي قام عليه.
+   *
+   * وغيابه لا يعطّل شيئاً: تُقال الجملة المكانية، ويتقدّم العدّاد.
+   */
+  reveals?: string;
 }
 
 /**
@@ -277,34 +332,66 @@ export interface FindSpot {
  * الباب» و«نعم! تحت السرير» — فيضمن النشاط **بنيوياً** أن كلمةً مكانية
  * تُقال عند كل محاولة. وهو التدخّل بعينه لا تعليقاً عليه (§4).
  *
- * ولا حقل لما يُوجَد: الغرض الذي يظهر هو `onSolved.showObject` الموجود في
- * كل نوعٍ منذ v1.0.
+ * ⚠️ والمطلوب قد يكون **أكثر من واحد** (v1.0.31): كل موضعٍ بـ`correct`
+ * يخبّئ شيئاً، ولا يُبلَّغ النشاط محلولاً حتى يُعثَر على آخرها. وما يظهر
+ * عند كلٍّ هو `spots[].reveals`، وما يظهر في النهاية هو
+ * `onSolved.showObject` — كما في كل نوعٍ منذ v1.0.
  */
 export interface FindActivity extends ActivityBase {
   question?: { text?: string; audio?: string };
   spots: FindSpot[];
   wrongResponse?: { text?: string; audio?: string };
+  /**
+   * إطار أزرار الصندوق مرئيٌّ من أوّل لحظة (v1.0.34). الغياب = يظهر عند
+   * أوّل ضغطة زرّ — فالأزرار تعمل في كل مشهد «ابحث» بلا تأليف.
+   */
+  navigate?: boolean;
+}
+
+/** خيارٌ في تصويت الصفّ (v1.0.32 §2). */
+export interface AllRespondOption {
+  /** مولَّد لا مؤلَّف. */
+  id: string;
+  /** صورة الخيار **ومعنى بطاقته** معاً — كما في `pick-correct` (§2.2). */
+  alias: string;
+  /** الاسم العربي المعروض. الغياب = `alias`. */
+  label?: string;
+  /** يلمع عند الكشف. قد يحمله أكثر من خيار. */
+  correct?: boolean;
 }
 
 /**
- * «كل الأيدي» (v1.0.28) — الصفّ كلّه يجيب معاً.
+ * «كل الأيدي» (v1.0.28) — الصفّ كلّه يجيب معاً، وتصويتٌ بخياراتٍ مصوّرة
+ * منذ v1.0.32.
  *
  * ⚠️ أوّل نشاطٍ **لا ينتهي بإجابةٍ واحدة**. كل ما سبقه ينتهي بطفلٍ يلمس أو
  * يمرّر بطاقة، وفي غرفةٍ بشاشةٍ واحدة أمام عشرين طفلاً يعني ذلك تسعة عشر
  * متفرّجاً — تناقضٌ بين معمارية المنصّة ونموذج نشاطها (§1).
  *
- * ⚠️ ويُحلّ **دائماً**: لا فشل ولا إعادة ولا `wrongResponse`. بطاقةٌ لا
- * تطابق `answers` تُحتسَب وتُعرَض في التوزيع لأنها إجابةُ طفلٍ قصَدها،
- * ولا تُقابَل بردٍّ يقول «خطأ» أمام تسعة عشر آخرين (§4).
+ * ⚠️ ويُحلّ **دائماً**: لا فشل ولا إعادة ولا `wrongResponse`. صوتٌ لغير
+ * الخيار الصحيح يُعدّ ويُعرض في التوزيع، ولا يُقابَل بردٍّ يقول «خطأ» أمام
+ * تسعة عشر آخرين (v1.0.28 §4).
  *
- * ⚠️ والعدّاد **مجهول**: «وصلت ٧ من ١٢» ثم توزيعٌ على الإجابات. ولا يستطيع
+ * ⚠️ والعدّاد **مجهول**: نجمةٌ لكل بطاقة ثم توزيعٌ على الخيارات. ولا يستطيع
  * أن يقول من أجاب ماذا لأن المنصّة لا تعرف — البطاقة تحمل معنىً لا هويّة
  * (README §4: صفر بيانات شخصية عن الأطفال).
  */
 export interface AllRespondActivity extends ActivityBase {
   question?: { text?: string; audio?: string };
-  /** الأسماء التي تُحتسب صحيحة — الشكل نفسه الذي أرسته v1.0.20. */
-  answers: string[];
+  /**
+   * الخيارات المصوّرة التي يُصوَّت بينها (v1.0.32). من ٢ إلى ٤.
+   *
+   * ⚠️ مؤلَّفة لا مفتوحة: بطاقةٌ لا تخصّ خياراً لا تُعدّ. وهو ما يفصل
+   * البطاقة عن الضجيج — كانت `Enter` تُعدّ إجابةً في v1.0.28 (§1).
+   */
+  options?: AllRespondOption[];
+  /** سؤال رأي لا صواب فيه (v1.0.32 §2.1). */
+  poll?: boolean;
+  /**
+   * شكل v1.0.28: معانٍ بلا صور. يبقى مقروءاً، ويُبنى منه خيارٌ لكل معنى
+   * حين تغيب `options` (v1.0.32 §5).
+   */
+  answers?: string[];
   /**
    * كم بطاقة ننتظر اليوم. عددٌ صحيح ≥ ٢.
    *
@@ -317,7 +404,61 @@ export interface AllRespondActivity extends ActivityBase {
   waitSeconds?: number;
 }
 
+/** رأسٌ في عمود «وصل» — ما تُوصَل إليه العناصر (v1.0.36 §2). */
+export interface ConnectAnchor {
+  /** مولَّد لا مؤلَّف — عنوانٌ يربط العنصر برأسه. */
+  id: string;
+  /** ما يُكتب على الرأس: «بـ». الغياب = يُحسب من `letter` و`place`. */
+  label?: string;
+  /** الحرف الذي يمثّله الرأس. مع `place` يُكتب شكله («بـ») ويقترح
+   *  الاستوديو وصل الكلمات التي تطابقه. */
+  letter?: string;
+  place?: LetterPlace;
+  /** صورةٌ بدل النصّ أو معه — مدخل في `assets[]`. */
+  image?: string;
+  /** موضعه على المسرح. الغياب = عمودٌ على اليمين. */
+  x?: number;
+  y?: number;
+}
+
+/** عنصرٌ يُوصَل إلى رأسه (v1.0.36 §2). */
+export interface ConnectItem {
+  /** مولَّد لا مؤلَّف — عنوانٌ يقرؤه القصد. */
+  id: string;
+  /** مدخل في `assets[]`. */
+  alias: string;
+  /** الكلمة تحت الصورة — «بطّة». بها يقترح الاستوديو الرأس الصحيح. */
+  label?: string;
+  /** معرّف الرأس الصحيح. عنصرٌ بلا رأسٍ مطابق يُتخطّى (§8). */
+  anchor: string;
+  /** موضعه على المسرح. الغياب = عمودٌ على اليسار. */
+  x?: number;
+  y?: number;
+}
+
+/**
+ * «وصل» (v1.0.36) — عمودان، وخطٌّ يرسمه الطفل من رأسٍ إلى عنصر.
+ *
+ * ⚠️ الحكم **فوريّ على كل خطّ**، بخلاف `sort` الذي يسأل السؤال نفسه تقريباً:
+ * الخطّ الخاطئ يرتدّ ويهتزّ العنصر الذي وُصل إليه، والصحيح يبقى ويتوهّج
+ * طرفاه. هذا طلب المعلّمة صراحةً (§4) — والفرق عن الفرز أن الخطّ **ادّعاءٌ
+ * عن زوجٍ واحد** («بطّة ↔ بـ») تحمل الكلمةُ المكتوبة تحت الصورة دليلَه، لا
+ * انتماءً إلى قاعدةٍ في رأس الكبير.
+ */
+export interface ConnectActivity extends ActivityBase {
+  question?: { text?: string; audio?: string };
+  anchors: ConnectAnchor[];
+  items: ConnectItem[];
+  wrongResponse?: { text?: string; audio?: string };
+  /**
+   * إطار أزرار الصندوق مرئيٌّ من أوّل لحظة (v1.0.37). الغياب = يظهر عند
+   * أوّل ضغطة زرّ — فالأزرار تعمل في كل «وصل» بلا تأليف، كما في `sort`.
+   */
+  navigate?: boolean;
+}
+
 export type ActivityData =
+  | ConnectActivity
   | DragMatchActivity
   | PickCorrectActivity
   | CardAnswerActivity
@@ -335,6 +476,14 @@ export const JIGSAW_TYPE = "jigsaw";
 export const SORT_TYPE = "sort";
 export const FIND_TYPE = "find";
 export const ALL_RESPOND_TYPE = "all-respond";
+export const CONNECT_TYPE = "connect";
+
+/** تضييق بنيوي — `anchors` مصفوفة لا يحملها أي نوع آخر. و`items` يتقاسمها
+ *  مع `sort`، فالفرق `anchors` لا `bins`. */
+export function isConnect(activity: ActivityData): activity is ConnectActivity {
+  const candidate = activity as ConnectActivity;
+  return Array.isArray(candidate.anchors) && Array.isArray(candidate.items);
+}
 
 /** Structural narrowing — see the note above on why not `type`. */
 export function isPickCorrect(activity: ActivityData): activity is PickCorrectActivity {
@@ -408,7 +557,36 @@ export function spatialPhrase(spot: Pick<FindSpot, "relation" | "label">): strin
  */
 export function isAllRespond(activity: ActivityData): activity is AllRespondActivity {
   const candidate = activity as AllRespondActivity;
-  return typeof candidate.expect === "number" && Array.isArray(candidate.answers);
+  return (
+    typeof candidate.expect === "number" && (Array.isArray(candidate.options) || Array.isArray(candidate.answers))
+  );
+}
+
+/** أكثر ما يُرسم من الخيارات — خمسة لا يلتقطها طفل بعينه (v1.0.32 §6). */
+export const MAX_VOTE_OPTIONS = 4;
+
+/**
+ * الخيارات كما يعمل بها زمن التشغيل — صالحةً، بلا تكرار، ومحدودةً بأربعة.
+ *
+ * ⚠️ وشكل v1.0.28 (`answers` بلا `options`) يُقرأ خياراتٍ: معنىً لكل خيار،
+ * صورته واسمه المعنى نفسه، ولا صحيح فيه (v1.0.32 §5). فقصّةٌ قديمة تُلعب
+ * ولا تنتظر أن يُعاد تأليفها.
+ */
+export function readVoteOptions(activity: AllRespondActivity): AllRespondOption[] {
+  const authored = Array.isArray(activity.options)
+    ? activity.options
+    : Array.isArray(activity.answers)
+      ? activity.answers.map((answer, i) => ({ id: `answer_${i + 1}`, alias: answer }))
+      : [];
+
+  const seen = new Set<string>();
+  const usable: AllRespondOption[] = [];
+  for (const option of authored) {
+    if (!option || typeof option.alias !== "string" || !option.alias || seen.has(option.alias)) continue;
+    seen.add(option.alias);
+    usable.push(option);
+  }
+  return usable.slice(0, MAX_VOTE_OPTIONS);
 }
 
 /** يوحّد الخطوة إلى شكلها الكامل — النصّ اختصار (v1.0.22 §2.1). */

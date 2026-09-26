@@ -43,6 +43,8 @@ import type { AssetManager } from "@core/assets/AssetManager";
 import { EngineEvents } from "@core/events/EngineEvents";
 import type { EventBus } from "@core/events/EventBus";
 import type { TweenConfig } from "@shared/types";
+import { pathSampler } from "@core/effects/MotionPath";
+import { HIGHLIGHT_COLORS, attachWord, wordOf } from "@core/text";
 
 import type { ActivityData, PickCorrectActivity, PickCorrectChoice } from "./ActivityTypes";
 import { isPickCorrect } from "./ActivityTypes";
@@ -60,6 +62,11 @@ const DESIGN_HEIGHT = 1080;
 const FRAME_PAD = 14;
 /** لون الإطار — نفس أخضر «الترتيب» (v1.0.23)، فيتعلّم الطفل اللون مرّة. */
 const FRAME_COLOR = 0x3fb950;
+
+/** كم يستغرق خيارٌ ليطفو عبر مساره إلى موضعه (v1.0.33 §5). */
+const PATH_ENTRANCE_SECONDS = 2.2;
+/** وبين خيارٍ وتاليه — فتنزل البالونات واحداً بعد واحد، والعين تتبعها. */
+const PATH_STAGGER_SECONDS = 0.45;
 
 
 export class PickCorrectRunner extends ActivityBase {
@@ -80,6 +87,14 @@ export class PickCorrectRunner extends ActivityBase {
   private frame: Graphics | null = null;
   /** Every animation id started here, so teardown kills exactly its own. */
   private readonly tweens = new Set<string>();
+  /**
+   * الصحيحة التي اختيرت (v1.0.33 §5). لا يُحلّ النشاط حتى تُختار **كلّها**:
+   * «اختر كل الكلمات التي تبدأ بالباء» سؤالٌ واحد بجوابين، كما صار
+   * «ابحث» في v1.0.31.
+   */
+  private readonly found = new Set<string>();
+  /** خيارٌ أُضيء حرفه — يُضاء مرّة، ولمسةٌ ثانية لا تكدّس طبقةً فوق طبقة. */
+  private readonly lit = new Set<string>();
 
   constructor(
     container: Container,
@@ -125,6 +140,8 @@ export class PickCorrectRunner extends ActivityBase {
     if (incoming.question?.text) this.showPrompt(incoming.question.text);
 
     this.placed = [];
+    this.found.clear();
+    this.lit.clear();
     incoming.choices.forEach((choice, index) => {
       const sprite = this.buildChoice(choice, index, incoming.choices.length);
       if (!sprite) return;
@@ -247,8 +264,16 @@ export class PickCorrectRunner extends ActivityBase {
     sprite.cursor = "pointer";
     sprite.on("pointertap", (_e: FederatedPointerEvent) => this.pick(choice));
 
+    // v1.0.33 §5 — الكلمة ابنةُ الصورة، فتطفو معها وتكبر معها.
+    if (choice.label) attachWord(sprite, choice.label);
+
     sprite.alpha = 0;
     this.root!.addChild(sprite);
+
+    if (Array.isArray(choice.path) && choice.path.length > 0) {
+      this.floatIn(choice.id, sprite, choice.path, index);
+      return sprite;
+    }
     // Staggered entrance: the eye needs a path through the options rather
     // than all of them arriving at once.
     this.play(`choice-in-${choice.id}`, sprite, {
@@ -260,20 +285,80 @@ export class PickCorrectRunner extends ActivityBase {
     return sprite;
   }
 
+  /**
+   * يطفو الخيار عبر نقاطه إلى موضعه (v1.0.33 §5) — بالمنحنى نفسه الذي
+   * يرسمه `move` بمساره، فالبالون ينزل في النشاط كما ينزل في المشهد.
+   *
+   * ⚠️ يُلمَس في أثناء طيرانه: طفلٌ يفقأ بالوناً في الهواء لم يخطئ شيئاً،
+   * وإطفاء اللمس حتى الهبوط كان سيجعل أوّل لمسةٍ تضيع بلا تفسير.
+   */
+  private floatIn(id: string, sprite: Container, path: ReadonlyArray<{ x: number; y: number }>, index: number): void {
+    const landing = { x: sprite.x, y: sprite.y };
+    const at = pathSampler([...path, landing]);
+    const start = at(0);
+    sprite.position.set(start.x, start.y);
+    const progress = { t: 0 };
+    const delay = PATH_STAGGER_SECONDS * index;
+    this.play(`choice-fade-${id}`, sprite, { alpha: 1, duration: 0.3, delay, ease: "power1.out" });
+    this.play(`choice-in-${id}`, progress, {
+      t: 1,
+      duration: PATH_ENTRANCE_SECONDS,
+      delay,
+      ease: "power1.inOut",
+      onUpdate: () => {
+        const p = at(progress.t);
+        sprite.position.set(p.x, p.y);
+      },
+      onComplete: () => sprite.position.set(landing.x, landing.y)
+    });
+  }
+
+  /**
+   * يضيء حرف السؤال في كلمة الخيار (v1.0.33 §5): أخضر حيث يُطلب، وإلّا
+   * برتقاليّ حيث يقع. لا حرف في السؤال أو لا كلمة على الخيار: لا شيء.
+   */
+  private lightLetter(choice: PickCorrectChoice, asAnswer: boolean): void {
+    const letter = this.activity?.letter;
+    const sprite = this.sprites.get(choice.id);
+    if (!letter || !sprite || this.lit.has(choice.id)) return;
+    const label = wordOf(sprite);
+    if (!label) return;
+
+    const place = this.activity?.place;
+    // الصحيح يُضاء حيث يطلبه الدرس. والخاطئ حيث يقع **فعلاً** — وإن لم
+    // يكن فيه أصلاً فلا شيء يُضاء، وذلك جوابٌ أيضاً.
+    const found = asAnswer
+      ? label.reveal(letter, { place, color: HIGHLIGHT_COLORS.match })
+      : label.reveal(letter, { color: HIGHLIGHT_COLORS.elsewhere });
+    if (!found) return;
+    this.lit.add(choice.id);
+    this.play(`choice-letter-${choice.id}`, found.glow, { alpha: 1, duration: 0.35, ease: "power2.out" });
+  }
+
   private pick(choice: PickCorrectChoice): void {
     if (!this.accepts()) return;
 
     if (choice.correct === true) {
+      // اختير من قبل: لا يُعدّ ثانيةً ولا يُقابَل بشيء (v1.0.31 §2.1).
+      if (this.found.has(choice.id)) return;
+      this.found.add(choice.id);
       const sprite = this.sprites.get(choice.id);
       if (sprite) {
         this.play(`choice-correct-${choice.id}`, sprite.scale, {
           x: sprite.scale.x * 1.18, y: sprite.scale.y * 1.18, duration: 0.25, yoyo: true, repeat: 1
         });
       }
-      this.reportSolved(choice.id);
+      this.lightLetter(choice, true);
+      // الصحيحة المرسومة وحدها تُنتظَر: صحيحٌ بلا صورة لا يُختار أبداً،
+      // وانتظاره يُبقي الصفّ أمام نشاطٍ لا يُحلّ (درس `isSolvable`).
+      const remaining = [...this.sprites.keys()].filter((id) =>
+        this.activity?.choices.some((c) => c.id === id && c.correct === true) && !this.found.has(id)
+      );
+      if (remaining.length === 0) this.reportSolved(choice.id);
       return;
     }
 
+    this.lightLetter(choice, false);
     const sprite = this.sprites.get(choice.id);
     if (sprite) {
       // A shake, then the option stays. Removing it would turn a mistake
@@ -327,6 +412,8 @@ export class PickCorrectRunner extends ActivityBase {
     for (const id of this.tweens) this.animation.stop(id);
     this.tweens.clear();
     this.sprites.clear();
+    this.found.clear();
+    this.lit.clear();
     this.placed = [];
     this.cursor = -1;
     // يُهدَم مع `root` أدناه؛ المرجع وحده هو ما يُفلَت هنا.

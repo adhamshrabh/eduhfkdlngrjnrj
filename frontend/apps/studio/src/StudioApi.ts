@@ -17,9 +17,10 @@
  * That ordering is what changed the product: previously a save with no
  * dev server behind it had nowhere to go.
  *
- * Reads fall through the same way — ContentStore, then the dev server,
- * then the plain static file, so shipped stories still open with no
- * server running.
+ * Reads go the OTHER way: the server first, ContentStore only when there
+ * is no server or when it holds a save the server never received — see
+ * loadDocument() for the silent overwrite the old browser-first order
+ * caused.
  *
  * This module is the ONLY place in Studio that knows either mechanism.
  */
@@ -66,13 +67,38 @@ export class StudioApi {
    * so Studio always opens exactly what it last saved.
    */
   static async loadStory(storyId: string): Promise<Record<string, unknown>> {
-    const stored = await ContentStore.getDocument<Record<string, unknown>>(storyId, "story.json");
-    if (stored) return stored;
-
-    const fromDisk = await StudioApi.readFromDisk(storyId, "story.json");
-    if (fromDisk) return fromDisk;
-
+    const document = await StudioApi.loadDocument(storyId, "story.json");
+    if (document) return document;
     throw new Error(`تعذّر فتح القصة "${storyId}".`);
+  }
+
+  /**
+   * One document, **the server's copy first**.
+   *
+   * ⚠️ كان المتصفّح أولاً — وهو عطل فقدان بيانات صامت، قِيس على قصّة
+   * «بطّوطة والقارب الضائع»: أُصلح المحتوى على الخادم (النسخة ٤٥ ← ٤٦)،
+   * ففتحت المعلّمة القصّة، فقرأ الاستوديو نسخة IndexedDB القديمة، ثم
+   * ختمها `story-meta` برقم نسخة الخادم الجديد — فمرّ الحفظ التالي من فحص
+   * التزامن ودهس الإصلاح. وكل تعديلٍ من جهازٍ آخر أو معلّمةٍ أخرى كان
+   * سيلقى المصير نفسه.
+   *
+   * ولا يُلغى التأليف بلا اتصال: نسخة المتصفّح **تسبق** الخادم في حالة
+   * واحدة — أن تحمل حفظاً لم يصل إليه (`pending`، يكتبه `saveFile`). فعمل
+   * المعلّمة بلا شبكة لا يُدهس بنسخة الخادم الأقدم حين تعود الشبكة.
+   */
+  private static async loadDocument(storyId: string, fileName: string): Promise<Record<string, unknown> | null> {
+    const fromServer = await StudioApi.readFromDisk(storyId, fileName);
+    const local = await ContentStore.getDocument<Record<string, unknown>>(storyId, fileName);
+    const pending = await ContentStore.getDocument<boolean>(storyId, pendingKey(fileName));
+
+    if (local && pending === true) return local;
+    if (fromServer) {
+      // The browser copy follows the server, so working offline later
+      // starts from what is really there.
+      void ContentStore.saveDocument(storyId, fileName, fromServer);
+      return fromServer;
+    }
+    return local;
   }
 
   /**
@@ -368,9 +394,7 @@ export class StudioApi {
    * the Runtime).
    */
   static async loadLayout(storyId: string): Promise<Record<string, unknown> | null> {
-    const stored = await ContentStore.getDocument<Record<string, unknown>>(storyId, "layout.json");
-    if (stored) return stored;
-    return StudioApi.readFromDisk(storyId, "layout.json");
+    return StudioApi.loadDocument(storyId, "layout.json");
   }
 
   /** Write layout.json for `storyId`. */
@@ -558,6 +582,12 @@ export class StudioApi {
       };
     }
 
+    // Whether the browser copy is AHEAD of the server — see loadDocument().
+    // Reached the server: in step, nothing pending. Browser only (no server
+    // at all): pending, so the next open keeps this work instead of the
+    // server's older copy.
+    await ContentStore.saveDocument(storyId, pendingKey(fileName), !savedToDisk);
+
     // A stale legacy override would otherwise keep shadowing what was
     // just saved — the exact bug LocalOverrides' own header describes.
     LocalOverrides.clear(storyId, fileName);
@@ -566,4 +596,10 @@ export class StudioApi {
     // it to warn that the change is confined to this browser.
     return { ok: true, publicMirrorOk: savedToDisk ? publicMirrorOk : false };
   }
+}
+
+/** Where the browser records that its copy holds a save the server never
+ *  received (StudioApi.loadDocument). */
+function pendingKey(fileName: string): string {
+  return `${fileName}#pending`;
 }

@@ -36,10 +36,19 @@ This page is the map. Read the base first, then the patches that touch what you 
 | [v1.0.26](./Scene-Model-Specification-v1.0.26.md) | §6 | `sort` — classification, and a rule change authored as a second scene |
 | [v1.0.27](./Scene-Model-Specification-v1.0.27.md) | §6 | `find` — the scene's own elements are the search, and a spatial word is always said |
 | [v1.0.28](./Scene-Model-Specification-v1.0.28.md) | §6 | `all-respond` — the whole class answers at once, counted and never judged |
+| [v1.0.29](./Scene-Model-Specification-v1.0.29.md) | §3.1 amended | `sort` says "look again" once, then rescues: wrong items drift back to the shelf, right ones lock |
+| [v1.0.30](./Scene-Model-Specification-v1.0.30.md) | §6 | `navigate` on `sort` — a frame moves over items and bins; and a bare button position stops sorting for the child |
+| [v1.0.31](./Scene-Model-Specification-v1.0.31.md) | §6, amends v1.0.27 §7 | `find` looks for several things at once — and each one appears where it was hidden |
+| [v1.0.32](./Scene-Model-Specification-v1.0.32.md) | §6, amends v1.0.28 §2, §3, §6 | `all-respond` becomes a class vote — authored picture options, a shared star meter, and the split hidden until the reveal |
+| [v1.0.33](./Scene-Model-Specification-v1.0.33.md) | §2.1, §12, §6 | `move.path`, `elements[].word`, `highlight-letter` — a word on a picture, a letter lit inside it, a balloon on a curve; and `pick-correct` takes several correct answers |
+| [v1.0.34](./Scene-Model-Specification-v1.0.34.md) | §6, §7 | `navigate` on `find` — the box's buttons move a frame over the scene's own elements, appearing on the first press; and each found item gets a dashed frame and flies to a row at the top |
+| [v1.0.35](./Scene-Model-Specification-v1.0.35.md) | §4 | `wrongItems` on `sort` — the teacher chooses that a wrong item shakes and returns to the shelf from the first wrong verdict |
+| [v1.0.36](./Scene-Model-Specification-v1.0.36.md) | §6 | `connect` — two columns and a line drawn between them; each line judged the instant it lands, a named exception to v1.0.25 §5 |
+| [v1.0.37](./Scene-Model-Specification-v1.0.37.md) | §6, amends v1.0.36 §8 | `navigate` on `connect` — the box's arrows move a frame over items and anchors; two confirms draw a line the child chose |
 
 ## What every patch has kept true
 
-These held from v1.0 through v1.0.28, and a patch that breaks one is a patch to argue about before it is written.
+These held from v1.0 through v1.0.37, and a patch that breaks one is a patch to argue about before it is written.
 
 - **Every new field is optional.** Content authored before a patch behaves identically after it. There is no migration step, ever.
 - **`schemaVersion` stays `"1.0"`.** The patches clarify and extend one contract; they do not fork it.
@@ -51,7 +60,8 @@ These held from v1.0 through v1.0.28, and a patch that breaks one is a patch to 
   puzzle piece fits or it doesn't — the material tells you), and withheld to
   the end when the verdict is a rule the adult holds (the order of a word, a
   category). Stated in [v1.0.25 §5](./Scene-Model-Specification-v1.0.25.md),
-  and it governs every type after it.
+  and it governs every type after it. `connect` (v1.0.36 §4) is the one
+  named exception, taken at a teacher's request.
 - **The engine names no device.** RFID, WebSocket, camera and ESP32 appear in adapters and in prose, never in `core/` or `game/` code.
 
 ## Where each part lives
@@ -69,9 +79,12 @@ These held from v1.0 through v1.0.28, and a patch that breaks one is a patch to 
 | Sound beside the voice | v1.0.16 | `play-audio` in `EffectRunner`, on the `sfx` channel | «يُشغّل صوتًا» in the effect list |
 | Grouping and parenting | v1.0.17 | `Pixi.Container` via `SpriteRegistry.revealGroup` | «المجموعة» on the Element tab |
 | Assembling a picture | v1.0.25 | `game/scenes/JigsawRunner.ts` | «الأحجية» on the Activity tab |
-| Sorting into bins | v1.0.26 | `game/scenes/SortRunner.ts` | «الفرز» on the Activity tab |
-| Searching the scene itself | v1.0.27 | `game/scenes/FindRunner.ts` + `enableSpots` in `YaraBedScene` | «ابحث وقُل أين» on the Activity tab |
-| The whole class answering | v1.0.28 | `game/scenes/AllRespondRunner.ts` | «كل الأيدي» on the Activity tab |
+| Sorting into bins | v1.0.26, v1.0.29, v1.0.30, v1.0.35 | `game/scenes/SortRunner.ts` | «الفرز» on the Activity tab |
+| Searching the scene itself | v1.0.27, v1.0.31, v1.0.34 | `game/scenes/FindRunner.ts` + `enableSpots`/`frameSpot` in `YaraBedScene` | «ابحث وقُل أين» on the Activity tab |
+| Connecting two columns | v1.0.36, v1.0.37 | `game/scenes/ConnectRunner.ts` | «وصل» on the Activity tab |
+| The whole class answering | v1.0.28, v1.0.32 | `game/scenes/AllRespondRunner.ts` + `AllRespondView.ts` | «تصويت الصفّ» on the Activity tab |
+| A word on a picture, a letter in the word | v1.0.33 | `core/text/ArabicWord.ts` (place and shape) + `core/text/WordLabel.ts` (drawing) | «كلمة مكتوبة عليه» on the Element tab; «يُضيء حرفًا في كلمته» on the Effects tab |
+| Motion through waypoints | v1.0.33 | `core/effects/MotionPath.ts` + `move` in `EffectRunner` | «ارسم مسارًا بنقاط» under a move step; «ارسم مسار الدخول» per option |
 | Why an activity type exists at all | — | — | [`Activity-Evidence-Base.md`](./Activity-Evidence-Base.md) |
 | Validation | all | `core/content/SchemaValidator.ts` | the validation strip |
 

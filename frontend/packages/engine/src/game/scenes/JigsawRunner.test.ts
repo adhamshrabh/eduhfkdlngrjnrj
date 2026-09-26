@@ -13,6 +13,7 @@ import { Container, Rectangle } from "pixi.js";
 import { EngineEvents } from "@core/events/EngineEvents";
 import { EventBus } from "@core/events/EventBus";
 import type { JigsawActivity } from "./ActivityTypes";
+import { STAGE_FLOOR } from "./ActivityLayout";
 import { JigsawRunner, clampSide, fitFrame, readPieceAliases, trayPositions } from "./JigsawRunner";
 
 /** نسيجٌ يكفي `cutPiece`: أبعاد، ومصدر، وإطار. */
@@ -222,6 +223,34 @@ describe("دوالّ الأحجية الخالصة", () => {
     it("لا قطعتين في الموضع نفسه — تكديسٌ يُخفي قطعة", () => {
       const keys = trayPositions(12, 100, 100).map((p) => `${p.x}:${p.y}`);
       expect(new Set(keys).size).toBe(12);
+    });
+
+    /**
+     * ⚠️ الحارس الذي غاب فسقط الرفّ خارج المسرح.
+     *
+     * كان الموضع `DESIGN_HEIGHT - 80` يضع **مركز** القطعة عند ١٠٠٠، فحافّتها
+     * السفلى تتجاوز ١٠٨٠، وجزءٌ منها يختفي خلف صندوق الحوار (٨٦٠←١٠٤٠).
+     * والاختبارات القديمة كانت تفحص العدد والتفرّد والخلط — ولا شيء منها
+     * يرى أن القطعة خارج اللوحة.
+     */
+    it("لا قطعة تنزل تحت أرضيّة المسرح — ولا خلف صندوق الحوار", () => {
+      for (const [total, pieceH] of [
+        [2, 210],
+        [4, 210],
+        [9, 127],
+        [36, 57]
+      ] as Array<[number, number]>) {
+        for (const spot of trayPositions(total, 120, pieceH)) {
+          expect(spot.y + pieceH / 2, `${total} قطعة`).toBeLessThanOrEqual(STAGE_FLOOR);
+          expect(spot.y - pieceH / 2, `${total} قطعة`).toBeGreaterThan(0);
+        }
+      }
+    });
+
+    it("الصفّ الأخير يلامس الأرضيّة ولا يقصّر عنها — فلا تُهدَر مساحة", () => {
+      const pieceH = 210;
+      const lowest = Math.max(...trayPositions(4, 120, pieceH).map((p) => p.y));
+      expect(lowest + pieceH / 2).toBe(STAGE_FLOOR);
     });
 
     it("القطع لا تصل مرتّبةً — وإلّا حُلّت الأحجية بالنقل المتتابع", () => {

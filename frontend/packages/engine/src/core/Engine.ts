@@ -45,6 +45,10 @@ export class Engine {
   private _scenes!: SceneManager;
 
   private state: EngineState = "uninitialized";
+  /** True while a person paused the engine on purpose (the teacher's pause
+   *  button), as opposed to the tab being hidden. Coming back to the tab
+   *  must not undo a pause somebody chose. */
+  private heldByUser = false;
   private readonly visibilityHandler = (): void => this.onVisibilityChange();
   /** The element the canvas fills. Kept so resize can re-measure it. */
   private host: HTMLElement | null = null;
@@ -200,19 +204,24 @@ export class Engine {
     this.logger.info("Engine started.");
   }
 
-  /** Pause the engine (ticker + audio + animation). */
-  public pause(): void {
+  /** Pause the engine (ticker + audio + animation). `byUser` marks a pause
+   *  a person chose — only a `byUser` resume lifts it. */
+  public pause(options: { byUser?: boolean } = {}): void {
+    if (options.byUser) this.heldByUser = true;
     if (this.state !== "running") return;
     this.state = "paused";
     this.pixi?.ticker.stop();
     this._animation.pause();
     void this._audio.suspend();
-    this.eventBus.emit(EngineEvents.Engine.Pause, {});
+    this.eventBus.emit(EngineEvents.Engine.Pause, { byUser: this.heldByUser });
     this.logger.info("Engine paused.");
   }
 
-  /** Resume the engine. */
-  public resume(): void {
+  /** Resume the engine. Without `byUser` (the tab coming back into view)
+   *  a pause the teacher chose stays in place. */
+  public resume(options: { byUser?: boolean } = {}): void {
+    if (options.byUser) this.heldByUser = false;
+    else if (this.heldByUser) return;
     if (this.state !== "paused") return;
     this.state = "running";
     void this._audio.resume();

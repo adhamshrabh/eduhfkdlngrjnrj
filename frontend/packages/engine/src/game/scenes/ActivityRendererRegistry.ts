@@ -29,8 +29,10 @@ import { CardAnswerRunner, type CardAnswerHost } from "./CardAnswerRunner";
 import { SequenceRunner } from "./SequenceRunner";
 import { JigsawRunner } from "./JigsawRunner";
 import { SortRunner } from "./SortRunner";
+import { ConnectRunner } from "./ConnectRunner";
 import { FindRunner, type FindHost } from "./FindRunner";
 import { AllRespondRunner } from "./AllRespondRunner";
+import { PixiAllRespondView } from "./AllRespondView";
 import { PixiSequenceView } from "./SequenceView";
 import {
   CARD_ANSWER_TYPE,
@@ -40,6 +42,7 @@ import {
   SORT_TYPE,
   FIND_TYPE,
   ALL_RESPOND_TYPE,
+  CONNECT_TYPE,
   type ActivityData
 } from "./ActivityTypes";
 
@@ -216,19 +219,31 @@ ActivityRendererRegistry.register(
 );
 
 /**
- * «كل الأيدي» (v1.0.28).
+ * «كل الأيدي» (v1.0.28، وتصويتٌ مرسوم منذ v1.0.32).
  *
- * يتقاسم مضيف «الجواب المباشر» بلا زيادة: لا يرسم شيئاً، والعدّاد والتوزيع
- * يظهران في صندوق الحوار كما يظهر أي سطر. وغياب المضيف يسقط على الافتراضي
- * للسبب نفسه المشروح أعلاه.
+ * كـ«الترتيب»: مضيف «الجواب المباشر» للمؤقّتات وصندوق الحوار، ومنظرٌ يُبنى
+ * هنا للخيارات والعدّاد — فالمُصيِّر لا يعرف Pixi. وغياب المضيف يسقط على
+ * الافتراضي للسبب نفسه المشروح أعلاه.
  */
 ActivityRendererRegistry.register(
   ALL_RESPOND_TYPE,
-  (container, eventBus, animation, layout, _assets, host) => {
+  (container, eventBus, animation, layout, assets, host) => {
     if (!host) {
       console.warn('[ActivityRendererRegistry] "all-respond" needs a scene host — falling back.');
       return new PuzzleRunner(container, eventBus, animation, layout);
     }
-    return new AllRespondRunner(eventBus, host);
+    return new AllRespondRunner(eventBus, host, new PixiAllRespondView(container, assets, animation));
   }
+);
+
+/**
+ * «وصل» (v1.0.36).
+ *
+ * كالفرز: لوحةٌ وأصول، بلا `host`. العمودان ونقاط الوصل والخطوط يرسمها
+ * بنفسه، ولا شيء منه يحتاج مؤقّتات المشهد ولا صندوق الحوار.
+ */
+ActivityRendererRegistry.register(
+  CONNECT_TYPE,
+  (container, eventBus, animation, _layout, assets) =>
+    new ConnectRunner(container, eventBus, animation, assets)
 );

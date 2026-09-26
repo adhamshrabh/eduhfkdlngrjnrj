@@ -29,6 +29,7 @@ describe("validateEffect — primitives", () => {
       else if (type === "scale" || type === "rotate") base.to = 1.5;
       else if (type === "set-image") base.to = "shepherd_bored";
       else if (type === "play-audio") base.to = "sheep_bleat";
+      else if (type === "highlight-letter") base.to = "ب";
       const result = validateEffect(base);
       expect(result.errors, `type "${type}" should validate`).toEqual([]);
       expect(result.valid).toBe(true);
@@ -372,5 +373,43 @@ describe("play-audio (v1.0.16)", () => {
     const scaled = scaleEffectTo(chain, 30) as { effects: { duration: number }[] };
     expect(scaled.effects[0]!.duration).toBe(30);
     expect(scaled.effects[1]!.duration).toBe(0);
+  });
+});
+
+describe("validateEffect — v1.0.33", () => {
+  it("move accepts a path of points", () => {
+    expect(validateEffect({ type: "move", target: "b", to: { x: 1, y: 1 }, path: [{ x: 5, y: 5 }] }).valid).toBe(true);
+  });
+
+  it("a path of non-points is an error", () => {
+    const result = validateEffect({ type: "move", target: "b", to: { x: 1, y: 1 }, path: [{ x: "5" }] });
+    expect(result.errors[0]).toMatch(/"path" must be a list of points/);
+  });
+
+  it("path belongs to move only", () => {
+    expect(validateEffect({ type: "scale", target: "b", to: 2, path: [] }).errors[0]).toMatch(/belongs to "move" only/);
+  });
+
+  it("highlight-letter needs exactly one letter — a harakah travels with it", () => {
+    expect(validateEffect({ type: "highlight-letter", target: "b", to: "بَ" }).valid).toBe(true);
+    expect(validateEffect({ type: "highlight-letter", target: "b", to: "با" }).valid).toBe(false);
+    expect(validateEffect({ type: "highlight-letter", target: "b" }).valid).toBe(false);
+  });
+
+  it("highlight-letter's place is a closed vocabulary", () => {
+    expect(validateEffect({ type: "highlight-letter", target: "b", to: "ب", place: "first" }).valid).toBe(true);
+    expect(validateEffect({ type: "highlight-letter", target: "b", to: "ب", place: "start" }).errors[0]).toMatch(/unknown "place"/);
+  });
+});
+
+describe("validateEffect — a letter's colour (v1.0.33 §4.3)", () => {
+  it("accepts #rrggbb on highlight-letter", () => {
+    expect(validateEffect({ type: "highlight-letter", target: "b", to: "ب", color: "#e5484d" }).valid).toBe(true);
+  });
+  it("rejects anything looser — a typo would draw black on a balloon", () => {
+    expect(validateEffect({ type: "highlight-letter", target: "b", to: "ب", color: "red" }).errors[0]).toMatch(/"color" must be a colour/);
+  });
+  it("colour belongs to highlight-letter only", () => {
+    expect(validateEffect({ type: "pop", target: "b", color: "#ffffff" }).errors[0]).toMatch(/belongs to "highlight-letter" only/);
   });
 });

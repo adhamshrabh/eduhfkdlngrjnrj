@@ -159,9 +159,12 @@ async function handleStoryMeta(url: URL): Promise<Response> {
   if (!res.ok) return jsonResponse({ ok: false, error: await errorMessage(res, "تعذّرت القراءة.") }, res.status);
 
   const body = (await res.json()) as {
-    data?: { is_published?: boolean; version?: number; can_edit?: boolean };
+    data?: { is_published?: boolean; can_edit?: boolean };
   };
-  versionCache.set(storyId, body.data?.version ?? 1);
+  // ⚠️ لا يُحدَّث رقم النسخة هنا. الرقم يعني «هذا ما قرأتُه من المحتوى»،
+  // ولا يُقرأ هنا محتوى. تحديثه كان يختم نسخةً قديمة في المتصفّح برقم
+  // الخادم الجديد، فيمرّ حفظها من فحص التزامن ويدهس ما هو أحدث منها —
+  // وهو ما حدث فعلاً لقصّة «بطّوطة».
   // `can_edit` يُحسب على الخادم بنفس منطق `IsOwnerOrAdmin` — فلا تَعِد
   // الواجهة بما يرفضه، ولا تمنع ما يسمح به.
   return jsonResponse({

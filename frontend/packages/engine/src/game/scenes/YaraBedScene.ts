@@ -36,6 +36,42 @@ export { isRtlWord, computeLetterPositions } from "./LayoutApplier";
 const DESIGN_WIDTH = 1920;
 const DESIGN_HEIGHT = 1080;
 
+/** إطار «ابحث» — بألوان إطار `pick-correct` نفسها، فالطفل يتعلّمه مرّة. */
+const SPOT_FRAME_PAD = 14;
+const SPOT_FRAME_COLOR = 0x3fb950;
+
+/**
+ * شريط ما عُثر عليه في «ابحث» (v1.0.34 §7) — أعلى المسرح، تحت زرّ الرجوع
+ * وبعيداً عن صندوق الحوار في أسفله.
+ */
+const SHELF_Y = 150;
+const SHELF_SLOT_WIDTH = 240;
+const SHELF_SLOT_HEIGHT = 150;
+const COLLECT_PAD = 12;
+/** ذهبيّ لا أخضر: الأخضر إطار «أنا هنا»، وهذا «وجدتُه». */
+const COLLECT_COLOR = 0xffc83d;
+
+/** مستطيلٌ متقطّع — Pixi لا يرسم خطّاً متقطّعاً بنفسه. */
+function dashedRect(g: Graphics, x: number, y: number, w: number, h: number): void {
+  const DASH = 22;
+  const GAP = 12;
+  const edge = (x1: number, y1: number, x2: number, y2: number): void => {
+    const length = Math.hypot(x2 - x1, y2 - y1);
+    if (length <= 0) return;
+    const ux = (x2 - x1) / length;
+    const uy = (y2 - y1) / length;
+    for (let d = 0; d < length; d += DASH + GAP) {
+      const e = Math.min(d + DASH, length);
+      g.moveTo(x1 + ux * d, y1 + uy * d).lineTo(x1 + ux * e, y1 + uy * e);
+    }
+  };
+  edge(x, y, x + w, y);
+  edge(x + w, y, x + w, y + h);
+  edge(x + w, y + h, x, y + h);
+  edge(x, y + h, x, y);
+  g.stroke({ color: COLLECT_COLOR, width: 7, cap: "round" });
+}
+
 /**
  * Element roles from Scene-Model-Specification-v1.0.md §2. `elements[]`
  * entries predate this field entirely — every existing one on disk has no
@@ -344,6 +380,9 @@ interface SceneData {
     /** Small continuous motion so the scene is not frozen between beats
      *  (v1.0.15). Absent = perfectly still, as before. */
     idle?: string;
+    /** A word written ON the image — «بالون» on the balloon (v1.0.33 §3).
+     *  `y` is where its middle sits, as a fraction of the image height. */
+    word?: { text: string; y?: number; color?: string };
   }>;
   lines: Array<{
     id: string;
@@ -452,11 +491,19 @@ export class YaraBedScene extends Scene {
   /** True while a scene crossfade is in flight; a second transition
    *  during it would swap the scene out from under the fade. */
   private transitioning = false;
+  /** Scenes the story came through, for the teacher's «previous». A
+   *  history, not `index - 1`: in a branching story the scene before this
+   *  one in the array may be a branch this class never took. */
+  private sceneHistory: number[] = [];
+  /** True while the engine is paused. The clocks stop by themselves; this
+   *  only stops input from changing the story behind a frozen picture. */
+  private paused = false;
 
   // Bound handlers
   private readonly onKeyDown = (payload: unknown): void => this.onKeyPressed(payload);
   /** Bound so it can be unsubscribed on exit. */
   private readonly onChoiceIntent = (payload: unknown): void => {
+    if (this.paused) return;
     const intent = payload as { choice?: unknown; source?: unknown } | null;
     const choice = intent?.choice;
     if (typeof choice !== "string") return;
@@ -470,6 +517,7 @@ export class YaraBedScene extends Scene {
    *  the keyboard does, so a two-button box, a keypad and two card pads
    *  all behave identically and none of them is authored anywhere. */
   private readonly onHardwareEvent = (payload: unknown): void => {
+    if (this.paused) return;
     // بطاقةٌ أو زرّ يُنهي الوقفة كما يُنهيها الإصبع (§2.2): الوقفة
     // للمعلّمة، وقد تكون ممسكةً بالقارئ لا بالشاشة.
     if (this.releaseHold()) return;
@@ -670,17 +718,24 @@ export class YaraBedScene extends Scene {
       // v1.0.16 §4: authored sound is an EVENT IN THE WORLD, so it plays
       // on sfx. Never on voice — skipping a line cuts voice, and a child
       // who taps past narration should not also silence the sheep.
-      (alias) => void this.audio.play(alias, { channel: "sfx", volume: 0.9 })
+      (alias) => void this.audio.play(alias, { channel: "sfx", volume: 0.9 }),
+      // v1.0.33 §4: the word lives on the sprite, so the registry finds it.
+      (id, letter, options) => this.spriteRegistry.revealLetter(id, letter, options)
     );
     // v1.0.15. Given the SAME resolver the effects use, and a way to ask
     // the runner whether an element is spoken for — which is the whole of
     // the coordination between the two layers.
     this.idleMotion = new IdleMotion(
       (id) => this.spriteRegistry.get(id),
-      (target) => this.effectRunner.isAnimating(target)
+      (target) => this.effectRunner.isAnimating(target) || this.collecting.has(target as Container)
     );
     this.eventBus.on(EngineEvents.Puzzle.Solved, this.onPuzzleCorrect);
     this.eventBus.on(EngineEvents.Puzzle.Failed, this.onPuzzleWrong);
+    this.eventBus.on(EngineEvents.Story.RestartSceneRequested, this.onRestartScene);
+    this.eventBus.on(EngineEvents.Story.PreviousSceneRequested, this.onPreviousScene);
+    this.eventBus.on(EngineEvents.Story.NextSceneRequested, this.onNextScene);
+    this.eventBus.on(EngineEvents.Engine.Pause, this.onEnginePause);
+    this.eventBus.on(EngineEvents.Engine.Resume, this.onEngineResume);
 
     this.showStartPrompt();
   }
@@ -704,6 +759,11 @@ export class YaraBedScene extends Scene {
     this.inputMode = "any";
     this.eventBus.off(EngineEvents.Puzzle.Solved, this.onPuzzleCorrect);
     this.eventBus.off(EngineEvents.Puzzle.Failed, this.onPuzzleWrong);
+    this.eventBus.off(EngineEvents.Story.RestartSceneRequested, this.onRestartScene);
+    this.eventBus.off(EngineEvents.Story.PreviousSceneRequested, this.onPreviousScene);
+    this.eventBus.off(EngineEvents.Story.NextSceneRequested, this.onNextScene);
+    this.eventBus.off(EngineEvents.Engine.Pause, this.onEnginePause);
+    this.eventBus.off(EngineEvents.Engine.Resume, this.onEngineResume);
     this.effectRunner?.destroy();
     this.audio.stopAll();
     this.animation.stopAll();
@@ -966,6 +1026,7 @@ export class YaraBedScene extends Scene {
     // patch doc for why.
     this.currentSceneIndex = 0;
     this.currentLineIndex = 0;
+    this.sceneHistory = [];
     this.runCurrentScene();
   }
 
@@ -976,6 +1037,13 @@ export class YaraBedScene extends Scene {
       return;
     }
     console.log(`[YaraBedScene] Running scene: ${scene.id} (line ${this.currentLineIndex})`);
+    this.eventBus.emit(EngineEvents.Story.SceneEntered, {
+      id: scene.id,
+      index: this.currentSceneIndex,
+      total: this.scenes.length,
+      canGoBack: this.sceneHistory.length > 0,
+      canGoForward: this.resolveNextScene(scene) !== null
+    });
 
     this.updateSceneBackground(scene);
 
@@ -986,6 +1054,7 @@ export class YaraBedScene extends Scene {
     // Layout tab afterward. Cleared from the PREVIOUS scene first so
     // elements don't leak into a scene that never asked for them.
     for (const id of this.currentSceneElementIds) this.spriteRegistry.remove(id);
+    this.clearCollected();
     // The ids belong to the scene being left; keeping them would breathe
     // sprites that no longer exist.
     this.idleMotion.clear();
@@ -1160,6 +1229,7 @@ export class YaraBedScene extends Scene {
    * whatever comes next.
    */
   private skipLine(): void {
+    if (this.paused) return;
     // الوقفة أولاً: ضغطةُ المعلّمة التي تُنهي شرحها يجب ألّا يبتلعها
     // تخطّي سطر — والمشهد منتهٍ أصلاً فلا سطر يُتخطّى.
     if (this.releaseHold()) return;
@@ -1202,6 +1272,7 @@ export class YaraBedScene extends Scene {
    * device the intent seam serves with no hardware at all.
    */
   private onKeyPressed(payload: unknown): void {
+    if (this.paused) return;
     if (this.releaseHold()) return;
     if (this.pendingChoices.length > 0 && this.accepts("keyboard")) {
       const key = (payload as { key?: unknown } | null)?.key;
@@ -1257,7 +1328,7 @@ export class YaraBedScene extends Scene {
    * only inline and would have been skipped for anything delayed.
    */
   private revealSceneElement(
-    el: { id: string; alias: string; type?: SceneElementType; idle?: string; groupId?: string; onTap?: { audio?: string; effect?: EffectDefinition } },
+    el: { id: string; alias: string; type?: SceneElementType; idle?: string; groupId?: string; onTap?: { audio?: string; effect?: EffectDefinition }; word?: { text: string; y?: number; color?: string } },
     index: number,
     total: number
   ): void {
@@ -1303,6 +1374,10 @@ export class YaraBedScene extends Scene {
     // element has no saved entry yet.
     const sprite = this.spriteRegistry.get(el.id);
     if (sprite && sprite.zIndex === 0) sprite.zIndex = 1;
+    // v1.0.33 §3. A child of the sprite, so it rides every move, path and
+    // idle sway with it — and survives a set-image, which swaps only the
+    // texture under it.
+    if (el.word?.text) this.spriteRegistry.setWord(el.id, el.word.text, el.word.y, el.word.color);
 
     this.wireTapResponse(el);
     // v1.0.15. Registered at reveal, not at scene start: a delayed element
@@ -1446,6 +1521,91 @@ export class YaraBedScene extends Scene {
      * (`!this.puzzle.isActive`) يمنع اللمس أثناء أي نشاط — وهو بالضبط
      * الوقت الذي يجب أن يُقبل فيه اللمس هنا.
      */
+    /**
+     * يُظهر صورةً فوق موضعٍ في المشهد (v1.0.31 §3).
+     *
+     * فوقه بقليل لا عليه تماماً: الشيء الذي يظهر **في** السرير يختفي
+     * خلفه، والطفل لا يرى ما عثر عليه.
+     */
+    revealAtSpot: (alias: string, spotAlias: string): void => {
+      const spotId = this.spriteRegistry.idForAlias(spotAlias);
+      const host = spotId ? this.spriteRegistry.get(spotId) : undefined;
+      if (!host) return;
+      // معرّفٌ مركّب: الصورة نفسها قد تظهر عند موضعين (حرفان متشابهان)،
+      // ومعرّفٌ بالاسم وحده كان سيجعل الثانية تستبدل الأولى.
+      this.spriteRegistry.reveal(`${spotAlias}__${alias}`, alias, {
+        x: host.x,
+        y: host.y - host.height / 2,
+        scale: 0.5,
+        anchorX: 0.5,
+        anchorY: 0.5
+      });
+    },
+
+    /**
+     * مركز عنصر الموضع في إحداثيات المسرح (v1.0.34 §3).
+     *
+     * من حدوده المرسومة لا من `x/y`: مرساة العنصر قد تكون قدمه لا وسطه،
+     * و«يمين السرير» يُقاس من حيث يراه الطفل.
+     */
+    spotCentre: (alias: string): { x: number; y: number } | null => {
+      const box = this.spotBox(alias);
+      return box ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : null;
+    },
+
+    /**
+     * يحيط الإطار بعنصر الموضع، أو يزيله بـ`null` (v1.0.34 §3).
+     *
+     * ⚠️ أوّل وضعٍ يُكتب مباشرةً لا بحركة — العلّة نفسها في
+     * `PickCorrectRunner.moveCursorTo`: محرّكٌ موقوف لحظة الإقلاع كان سيترك
+     * الإطار في الزاوية (0,0).
+     */
+    frameSpot: (alias: string | null): void => {
+      if (alias === null) {
+        this.animation.stop("find-frame");
+        if (this.spotFrame && !this.spotFrame.destroyed) this.spotFrame.destroy();
+        this.spotFrame = null;
+        return;
+      }
+      const box = this.spotBox(alias);
+      if (!box) return;
+
+      const first = !this.spotFrame || this.spotFrame.destroyed;
+      if (first) {
+        this.spotFrame = new Graphics();
+        // فوق العناصر كلّها: إطارٌ خلف السرير لا يُرى.
+        this.spotFrame.zIndex = 10_000;
+        this.root.addChild(this.spotFrame);
+      }
+      const frame = this.spotFrame!;
+      const width = box.width + SPOT_FRAME_PAD * 2;
+      const height = box.height + SPOT_FRAME_PAD * 2;
+      frame
+        .clear()
+        .roundRect(-width / 2, -height / 2, width, height, 18)
+        .stroke({ color: SPOT_FRAME_COLOR, width: 8, alignment: 0.5 });
+
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      if (first) {
+        frame.position.set(x, y);
+        return;
+      }
+      this.animation.play("find-frame", frame, { x, y, duration: 0.16, ease: "power2.out" });
+    },
+
+    /**
+     * يُعلِّم ما عُثر عليه بإطارٍ متقطّع ويرفعه إلى شريطٍ أعلى الشاشة
+     * (v1.0.34 §7). المرفوع هو ما وُجد: الصورة المكشوفة إن وُجدت، وإلّا
+     * عنصر الموضع نفسه.
+     */
+    collectSpot: (spotAlias: string, reveals: string | undefined, slot: number, total: number): void => {
+      const revealed = reveals ? this.spriteRegistry.get(`${spotAlias}__${reveals}`) : undefined;
+      const spotId = this.spriteRegistry.idForAlias(spotAlias);
+      const display = revealed ?? (spotId ? this.spriteRegistry.get(spotId) : undefined);
+      if (display) this.collect(display, slot, total);
+    },
+
     enableSpots: (
       aliases: string[],
       onTap: (alias: string) => void
@@ -1474,6 +1634,102 @@ export class YaraBedScene extends Scene {
       };
     }
   };
+
+  /** إطار «ابحث» بالأزرار (v1.0.34). لا يُبنى إلّا بـ`navigate`. */
+  private spotFrame: Graphics | null = null;
+
+  /** إطارات ما رُفع إلى الشريط — تُزال مع عناصر المشهد عند مغادرته. */
+  private collectFrames: Graphics[] = [];
+  /** ما يطير الآن إلى الشريط: الحيويّة تتنحّى عنه، وإلّا أعادت مقياسه. */
+  private readonly collecting = new Set<Container>();
+
+  /** حدود عنصر الموضع كما تُرى، في إحداثيات المسرح لا الشاشة. */
+  private spotBox(alias: string): { x: number; y: number; width: number; height: number } | null {
+    const id = this.spriteRegistry.idForAlias(alias);
+    const display = id ? this.spriteRegistry.get(id) : undefined;
+    return display ? this.boxOf(display) : null;
+  }
+
+  /**
+   * يرفع ما عُثر عليه إلى خانته في الشريط (v1.0.34 §7).
+   *
+   * الخانات تُملأ من اليمين — الاتجاه الذي تُقرأ به الصفحة — والمقياس
+   * يصغر ليسع الخانة ولا يكبر: غرضٌ صغير يبقى بحجمه.
+   *
+   * ⚠️ الموضع يُحسب في إحداثيات **الأب** لا المسرح: العنصر قد يكون عضواً
+   * في مجموعة (v1.0.17)، ومن كتب إحداثيات المسرح في `position` نقله إلى
+   * مكانٍ آخر.
+   */
+  private collect(display: Container, slot: number, total: number): void {
+    const parent = display.parent;
+    const box = this.boxOf(display);
+    if (!parent || !box) return;
+
+    const gap = Math.min(SHELF_SLOT_WIDTH, 1500 / Math.max(total, 1));
+    const target = { x: DESIGN_WIDTH / 2 + ((total - 1) / 2 - slot) * gap, y: SHELF_Y };
+    const k = Math.min(1, SHELF_SLOT_HEIGHT / box.height, (gap - 30) / box.width);
+
+    const p0 = { x: display.x, y: display.y };
+    const s0 = { x: display.scale.x, y: display.scale.y };
+    const pivot = this.root.toLocal(parent.toGlobal(p0));
+    const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const landing = {
+      x: target.x - (centre.x - pivot.x) * k,
+      y: target.y - (centre.y - pivot.y) * k
+    };
+    const p1 = parent.toLocal(this.root.toGlobal(landing));
+
+    const frame = new Graphics();
+    frame.zIndex = 9_999;
+    this.root.addChild(frame);
+    this.collectFrames.push(frame);
+    const redraw = (): void => {
+      const now = this.boxOf(display);
+      if (!now || frame.destroyed) return;
+      dashedRect(frame.clear(), now.x - COLLECT_PAD, now.y - COLLECT_PAD, now.width + COLLECT_PAD * 2, now.height + COLLECT_PAD * 2);
+    };
+    redraw();
+
+    this.collecting.add(display);
+    const progress = { t: 0 };
+    this.animation.play(`find-collect-${slot}`, progress, {
+      t: 1,
+      // وقفةٌ قبل الطيران: الطفل يرى الإطار **حيث وجده** أوّلاً.
+      delay: 0.35,
+      duration: 0.7,
+      ease: "power2.inOut",
+      onUpdate: () => {
+        if (display.destroyed) return;
+        const t = progress.t;
+        display.position.set(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t);
+        const f = 1 + (k - 1) * t;
+        display.scale.set(s0.x * f, s0.y * f);
+        redraw();
+      },
+      onComplete: () => {
+        this.collecting.delete(display);
+        redraw();
+      }
+    });
+  }
+
+  /** يزيل إطارات الشريط — عند مغادرة المشهد أو إعادته. */
+  private clearCollected(): void {
+    for (const frame of this.collectFrames) if (!frame.destroyed) frame.destroy();
+    this.collectFrames = [];
+    this.collecting.clear();
+  }
+
+  /** حدود ما يُرى، في إحداثيات المسرح لا الشاشة. */
+  private boxOf(display: Container): { x: number; y: number; width: number; height: number } | null {
+    if (display.destroyed) return null;
+    const bounds = display.getBounds();
+    if (!(bounds.width > 0 && bounds.height > 0)) return null;
+    // الجذر مُكبَّرٌ ومُزاح ليملأ الشاشة (`fitToScreen`)؛ الحدود عالمية.
+    const a = this.root.toLocal({ x: bounds.x, y: bounds.y });
+    const b = this.root.toLocal({ x: bounds.x + bounds.width, y: bounds.y + bounds.height });
+    return { x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y };
+  }
 
   /** Immediate feedback the instant a correct answer registers —
    *  distinct from onSolved, which fires after the completion sequence
@@ -1564,6 +1820,85 @@ export class YaraBedScene extends Scene {
   }
 
   // -------------------------------------------------------------------------
+  // Teacher controls (EngineEvents.Story)
+  // -------------------------------------------------------------------------
+
+  /** Bound so they can be unsubscribed on exit. */
+  private readonly onRestartScene = (): void => this.restartScene();
+  private readonly onPreviousScene = (): void => this.previousScene();
+  private readonly onNextScene = (): void => this.nextScene();
+  private readonly onEnginePause = (): void => {
+    this.paused = true;
+  };
+  private readonly onEngineResume = (): void => {
+    this.paused = false;
+  };
+
+  /** أداة المعلّمة: يُعاد المشهد الحاليّ من سطره الأول. */
+  private restartScene(): void {
+    const scene = this.scenes[this.currentSceneIndex];
+    if (scene) this.teacherJump(scene.id, false);
+  }
+
+  /**
+   * أداة المعلّمة: المشهد الذي جاءت منه القصّة فعلاً — لا الذي قبله في
+   * المصفوفة (انظر `sceneHistory`). والرجوع لا يُسجَّل في التاريخ، وإلّا
+   * صار «السابق» ذهاباً وإياباً بين مشهدين.
+   */
+  private previousScene(): void {
+    if (!this.canTeacherJump()) return;
+    const back = this.sceneHistory.pop();
+    const scene = back === undefined ? undefined : this.scenes[back];
+    if (scene) this.teacherJump(scene.id, false);
+  }
+
+  /**
+   * أداة المعلّمة: المشهد الذي كانت القصّة ستذهب إليه لو انتهى هذا —
+   * بالقاعدة نفسها (`resolveSceneExit`). وفي المشهد الأخير لا شيء: إنهاء
+   * القصّة قرارُ نهايتها، لا زرٌّ يُضغط خطأً أمام الصف.
+   */
+  private nextScene(): void {
+    const scene = this.scenes[this.currentSceneIndex];
+    const nextId = scene ? this.resolveNextScene(scene) : null;
+    if (nextId) this.teacherJump(nextId, true);
+  }
+
+  /** قبل البدء لا مشهد، وضغطةُ «ابدأ» للطفل لا للمعلّمة. ووسط التلاشي أو
+   *  والمحرّك متوقّف لا يُبدَّل المشهد من تحت صورةٍ لا تتحرّك. */
+  private canTeacherJump(): boolean {
+    return this.hasStarted && !this.transitioning && !this.paused;
+  }
+
+  /**
+   * القفزة التي تمرّ منها أدوات المعلّمة الثلاث.
+   *
+   * تمرّ من `transitionToScene` نفسه — لا آلية ثانية لتشغيل مشهد — لكنها
+   * تُطفئ قبله ما لا يُطفئه الانتقال العاديّ لأنه لا يحتاج ذلك: انتقالٌ
+   * عاديّ يحدث حين يكون المشهد قد انتهى، وهذه تحدث **في أيّ لحظة** —
+   * وسط نشاط، أو أمام أزرار فرع، أو أثناء عدّ وقفة المغادرة.
+   *
+   * ⚠️ `scene-hold` و`menu-return-delay` تحديداً: كلاهما مؤقّتٌ بلا رمز
+   * سطر يحرسه، فلو بقي لانتُزع المشهد الذي اختارته المعلّمة بعد ثوانٍ إلى
+   * التالي أو إلى القائمة.
+   */
+  private teacherJump(sceneId: string, record: boolean): void {
+    if (!this.canTeacherJump()) return;
+
+    this.animation.stop("scene-hold");
+    this.animation.stop("menu-return-delay");
+    this.pendingChoices = [];
+    this.dialogue.clearChoiceButtons();
+    this.inputMode = "any";
+    this.respondingElements.clear();
+    this.activeActivity = null;
+    this.effectRunner.stopAll();
+    this.audio.stopAll("voice");
+    this.audio.stopAll("sfx");
+
+    this.transitionToScene(sceneId, record);
+  }
+
+  // -------------------------------------------------------------------------
   // Phase 6: Scene Transitions
   // -------------------------------------------------------------------------
 
@@ -1577,7 +1912,7 @@ export class YaraBedScene extends Scene {
    *
    * The swap itself is unchanged; only its timing moved inside the fade.
    */
-  private transitionToScene(sceneId: string): void {
+  private transitionToScene(sceneId: string, record = true): void {
     const index = this.scenes.findIndex((s) => s.id === sceneId);
     if (index < 0) {
       console.warn(`[YaraBedScene] Scene "${sceneId}" not found.`);
@@ -1595,6 +1930,10 @@ export class YaraBedScene extends Scene {
     // التالي تُنفّذ انتقالاً قديماً.
     this.pendingHold = null;
     const swap = (): void => {
+      // Every forward move is remembered for the teacher's «previous» —
+      // branches and solved activities included, since they come through
+      // here too. Re-entering the same scene is not a step.
+      if (record && index !== this.currentSceneIndex) this.sceneHistory.push(this.currentSceneIndex);
       this.currentSceneIndex = index;
       this.currentLineIndex = 0;
       this.puzzle.reset();

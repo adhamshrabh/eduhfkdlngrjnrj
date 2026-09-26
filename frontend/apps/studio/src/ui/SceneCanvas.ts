@@ -29,6 +29,8 @@
 
 import { Application, Assets, Container as PixiContainer, Graphics, Sprite, type Container, type FederatedPointerEvent, type Texture } from "pixi.js";
 import { AssetUrls } from "@core/content";
+import { pathSampler, type EffectPoint } from "@core/effects";
+import { attachWord } from "@core/text";
 import type { DraftPosition } from "../LayoutDraft";
 
 const DESIGN_WIDTH = 1920;
@@ -74,6 +76,9 @@ export interface SceneCanvasElement {
   /** Draw inside this group's container instead of the scene root
    *  (v1.0.17). Its x/y are then LOCAL to that container. */
   groupId?: string;
+  /** A word written on the picture (v1.0.33 §3) — drawn by the engine's
+   *  own WordLabel, so the stage shows exactly what the child will see. */
+  word?: { text: string; y?: number; color?: string };
 }
 
 /**
@@ -91,7 +96,30 @@ export interface SceneCanvasChoice {
   x?: number;
   y?: number;
   scale?: number;
+  /** The word on the option's picture (v1.0.33 §5). */
+  label?: string;
 }
+
+/** One path being drawn or shown (v1.0.33 §2, §5). `from` and `to` are
+ *  fixed ends the author does not click — where the element already is,
+ *  or where an option lands. */
+export interface CanvasPath {
+  from?: EffectPoint;
+  points: EffectPoint[];
+  to?: EffectPoint;
+}
+
+/** What the path tool hands back to the Studio while it is open. */
+export interface PathPicking {
+  finish(): void;
+  cancel(): void;
+  undo(): void;
+}
+
+/** Two clicks this close in time and space are a double-click: finish. */
+const DOUBLE_CLICK_MS = 320;
+const DOUBLE_CLICK_PX = 8;
+const PATH_COLOR = 0x2f6fed;
 
 export interface SceneCanvasOptions {
   backgroundUrl?: string;
@@ -159,6 +187,10 @@ export class SceneCanvas {
    *  that need those must not reach one by accident. */
   private readonly groupsById = new Map<string, PixiContainer>();
   private readonly selectionOutline = new Graphics();
+  /** The path shown for the step being edited (v1.0.33 §2). One at a time. */
+  private readonly pathOverlay = new Graphics();
+  /** Abandons a path being drawn — set while one is open. */
+  private pathCancel: (() => void) | null = null;
 
   private constructor(
     private readonly app: Application,
@@ -211,6 +243,9 @@ export class SceneCanvas {
     this.selectionOutline.zIndex = 10000;
     this.selectionOutline.eventMode = "none";
     this.root.addChild(this.selectionOutline);
+    this.pathOverlay.zIndex = 9000;
+    this.pathOverlay.eventMode = "none";
+    this.root.addChild(this.pathOverlay);
 
     // Clicking anywhere that isn't an interactive sprite hits the stage
     // itself (draggable elements stop propagation in wireDrag) — that's
@@ -249,13 +284,14 @@ export class SceneCanvas {
     const startX = ELEMENT_CENTER_X - ((total - 1) * ELEMENT_SPACING) / 2;
     for (const [index, element] of options.elements.entries()) {
       if (this.destroyed) return;
-      await this.addSprite(element.url, element.id, options, {
+      const sprite = await this.addSprite(element.url, element.id, options, {
         x: startX + index * ELEMENT_SPACING,
         y: ELEMENT_DEFAULT_Y,
         scale: ELEMENT_DEFAULT_SCALE,
         anchorX: 0.5,
         anchorY: 1.0
       }, { draggable: true, zIndex: 1, parent: element.groupId });
+      if (sprite && element.word?.text) attachWord(sprite, element.word.text, element.word.y, element.word.color);
     }
 
     // Activity options, on top of the scene — the layer the child picks
@@ -310,6 +346,7 @@ export class SceneCanvas {
     sprite.zIndex = 50;
     sprite.interactive = true;
     sprite.cursor = "grab";
+    if (choice.label) attachWord(sprite, choice.label);
     this.root.addChild(sprite);
 
     let dragging = false;
@@ -345,16 +382,16 @@ export class SceneCanvas {
     options: SceneCanvasOptions,
     fallback: DefaultPos,
     flags: { draggable: boolean; zIndex: number; stretchToDesign?: boolean; parent?: string }
-  ): Promise<void> {
+  ): Promise<Sprite | null> {
     let texture: Texture;
     try {
       // pixiSource(): a blob: URL needs its parser named explicitly.
       texture = await Assets.load<Texture>(AssetUrls.pixiSource(url) as never);
     } catch (err) {
       console.warn(`[SceneCanvas] Failed to load "${url}":`, err);
-      return;
+      return null;
     }
-    if (this.destroyed) return;
+    if (this.destroyed) return null;
 
     if (flags.stretchToDesign) {
       fallback = { ...fallback, scale: DESIGN_WIDTH / texture.width, scaleY: DESIGN_HEIGHT / texture.height };
@@ -379,6 +416,99 @@ export class SceneCanvas {
 
     const parent = flags.parent ? this.groupsById.get(flags.parent) : undefined;
     (parent ?? this.root).addChild(sprite);
+    return sprite;
+  }
+
+  /**
+   * Rewrites the word on an element that is already on stage (v1.0.33 §3),
+   * without a remount — typing a word must not blank the stage per letter,
+   * the same reason updateTransform() exists.
+   */
+  setWord(id: string, text: string, y?: number, color?: string): boolean {
+    const sprite = this.spritesById.get(id);
+    if (!sprite) return false;
+    attachWord(sprite, text, y, color);
+    return true;
+  }
+
+  /**
+   * Shows a path on the stage, or clears it with `null` (v1.0.33 §2). Drawn
+   * as the SAME curve the engine will follow — pathSampler, not straight
+   * legs — so what the author sees is where the balloon will go.
+   */
+  showPath(path: CanvasPath | null): void {
+    this.pathOverlay.clear();
+    if (path) drawPath(this.pathOverlay, path);
+  }
+
+  /**
+   * «Walk through these points» — the author clicks them on the stage, in
+   * order (v1.0.33 §2).
+   *
+   * Many clicks, not one: pickPoint()'s catcher, kept up until the author
+   * says she is done. Each click adds a point and redraws the curve, so
+   * she sees the path grow under her hand. Enter or a double-click
+   * finishes, Backspace takes the last point back, Escape abandons it.
+   *
+   * `onDone` receives the clicked points (not `from`/`to`), or null when
+   * abandoned. Destroying the canvas abandons it too — the mode can never
+   * be left stuck on.
+   */
+  pickPath(ends: { from?: EffectPoint; to?: EffectPoint }, onDone: (points: EffectPoint[] | null) => void): PathPicking {
+    const catcher = new Graphics();
+    catcher.rect(0, 0, DESIGN_WIDTH, DESIGN_HEIGHT).fill({ color: PATH_COLOR, alpha: 0.06 });
+    catcher.zIndex = 20000;
+    catcher.eventMode = "static";
+    catcher.cursor = "crosshair";
+    this.root.addChild(catcher);
+
+    const points: EffectPoint[] = [];
+    let last = { at: 0, x: Number.NaN, y: Number.NaN };
+    let done = false;
+    const redraw = (): void => this.showPath({ ...ends, points });
+
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Enter") finish();
+      else if (e.key === "Escape") end(null);
+      else if (e.key === "Backspace") {
+        e.preventDefault();
+        undo();
+      }
+    };
+    const end = (result: EffectPoint[] | null): void => {
+      if (done) return;
+      done = true;
+      this.pathCancel = null;
+      window.removeEventListener("keydown", onKey);
+      if (!catcher.destroyed) catcher.destroy();
+      onDone(result);
+    };
+    const finish = (): void => end(points.length > 0 ? [...points] : null);
+    const undo = (): void => {
+      points.pop();
+      redraw();
+    };
+    window.addEventListener("keydown", onKey);
+
+    catcher.on("pointerdown", (e: FederatedPointerEvent) => {
+      // Stop the stage's own deselect handler from also firing.
+      e.stopPropagation();
+      const local = this.root.toLocal(e.global);
+      const point = { x: Math.round(local.x), y: Math.round(local.y) };
+      const now = performance.now();
+      const isDouble = now - last.at < DOUBLE_CLICK_MS && Math.hypot(point.x - last.x, point.y - last.y) < DOUBLE_CLICK_PX;
+      last = { at: now, ...point };
+      if (isDouble) {
+        finish();
+        return;
+      }
+      points.push(point);
+      redraw();
+    });
+
+    this.pathCancel = () => end(null);
+    redraw();
+    return { finish, cancel: () => end(null), undo };
   }
 
   /**
@@ -590,10 +720,36 @@ export class SceneCanvas {
    *  shared cache (not unloaded) since other scenes likely reuse them. */
   destroy(): void {
     this.destroyed = true;
+    this.pathCancel?.();
     // The maps hold references to display objects the app is about to
     // free; a remount would otherwise resolve ids to destroyed sprites.
     this.spritesById.clear();
     this.groupsById.clear();
     this.app.destroy(true, { children: true, texture: false });
   }
+}
+
+/**
+ * The path as the engine will fly it: the curve through every point, a
+ * dot on each one the author clicked, a ring where it starts and a solid
+ * disc where it ends.
+ */
+function drawPath(g: Graphics, path: CanvasPath): void {
+  const all = [...(path.from ? [path.from] : []), ...path.points, ...(path.to ? [path.to] : [])];
+  if (all.length === 0) return;
+  if (all.length > 1) {
+    const at = pathSampler(all);
+    const first = at(0);
+    g.moveTo(first.x, first.y);
+    for (let i = 1; i <= 120; i++) {
+      const p = at(i / 120);
+      g.lineTo(p.x, p.y);
+    }
+    g.stroke({ width: 5, color: PATH_COLOR, alpha: 0.85, cap: "round", join: "round" });
+  }
+  for (const p of path.points) g.circle(p.x, p.y, 11).fill({ color: 0xffffff }).stroke({ width: 4, color: PATH_COLOR });
+  const start = all[0]!;
+  const finish = all[all.length - 1]!;
+  g.circle(start.x, start.y, 16).stroke({ width: 5, color: PATH_COLOR });
+  if (all.length > 1) g.circle(finish.x, finish.y, 14).fill({ color: PATH_COLOR });
 }

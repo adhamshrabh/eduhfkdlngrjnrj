@@ -10,13 +10,16 @@
  * تعرضه الصورة في «اختر الإجابة الصحيحة» — `PickCorrectRunner` يطابق عليه
  * مباشرةً، فلا طبقة ترجمة ثالثة بين ما تكتبه المعلّمة وما يفهمه المحرّك.
  */
-import { useEffect, useState, type FormEvent } from "react";
-import { Cpu, Plug, Plus, PlugZap, RadioTower, Trash2, Usb, Wifi, WifiOff } from "lucide-react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Cpu, Pencil, Plug, Plus, PlugZap, RadioTower, Trash2, Usb, Wifi, WifiOff } from "lucide-react";
 
 import { Badge, Button, Card, EmptyState, ErrorNote, Field, Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
 import { ar } from "@/lib/i18n";
 import { useToast } from "@/lib/toast";
+import type { StorySummary } from "@/lib/types";
+
+import { AssetLabelPicker, loadAllStories } from "./AssetLabelPicker";
 
 import { useCardReader } from "./useCardReader";
 import { useSerialReader } from "./useSerialReader";
@@ -85,9 +88,15 @@ export function DevicesPage(): JSX.Element {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [stories, setStories] = useState<StorySummary[] | null>(null);
+  // القصّة تبقى مختارة بين بطاقة وأخرى: المعلّمة تجهّز قصّةً كاملة في جلسة
+  // واحدة، وإعادة اختيارها مع كل مسحة هي البطء الذي تُزيله القائمتان.
+  const [storySlug, setStorySlug] = useState("");
+  const [editingCardId, setEditingCardId] = useState<number | null>(null);
   const toast = useToast();
 
   const selected = devices?.find((d) => d.id === selectedId) ?? devices?.[0] ?? null;
+  const boundLabels = useMemo(() => new Set(selected?.cards.map((c) => c.label)), [selected]);
 
   // ── الوسيلة تُقرأ من العنوان، لا من حقل ثالث ─────────────────────────
   //
@@ -118,6 +127,11 @@ export function DevicesPage(): JSX.Element {
   };
 
   useEffect(load, []);
+  useEffect(() => {
+    loadAllStories()
+      .then(setStories)
+      .catch(() => setStories([]));
+  }, []);
 
   const addDevice = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -136,12 +150,8 @@ export function DevicesPage(): JSX.Element {
     }
   };
 
-  const bindCard = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
-    event.preventDefault();
+  const bindCard = async (label: string): Promise<void> => {
     if (!selected || !lastCard) return;
-    const form = new FormData(event.currentTarget);
-    const label = String(form.get("label") ?? "").trim();
-    if (!label) return;
     try {
       await api.post(`/api/devices/${selected.id}/cards/`, { uid: lastCard, label });
       clearSignals();
@@ -176,6 +186,19 @@ export function DevicesPage(): JSX.Element {
     try {
       await api.delete(`/api/devices/${selected.id}/buttons/${button.id}/`);
       load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : ar.common.error);
+    }
+  };
+
+  /** تبديل معنى بطاقة مربوطة دون إعادة مسحها — البطاقة في الدرج لا في اليد. */
+  const relabel = async (card: DeviceCard, label: string): Promise<void> => {
+    if (!selected) return;
+    try {
+      await api.patch(`/api/devices/${selected.id}/cards/${card.id}/`, { label });
+      setEditingCardId(null);
+      load();
+      toast.show(`صارت البطاقة تعني «${label}».`);
     } catch (err) {
       setError(err instanceof Error ? err.message : ar.common.error);
     }
@@ -322,16 +345,21 @@ export function DevicesPage(): JSX.Element {
               )}
 
               {lastCard ? (
-                <form onSubmit={bindCard} className="grid gap-3 sm:grid-cols-[1fr_auto] items-end">
-                  <Field
-                    name="label"
-                    label={`المعنى — اسم الصورة التي تعنيها البطاقة (${lastCard})`}
-                    placeholder="تفاحة"
-                    autoFocus
-                    required
+                <div className="space-y-2">
+                  <div className="text-label text-slate-600">
+                    البطاقة <span className="font-mono" dir="ltr">{lastCard}</span>
+                    {selected.cards.find((c) => c.uid === lastCard) &&
+                      ` — تعني الآن «${selected.cards.find((c) => c.uid === lastCard)?.label}»، والربط يستبدله`}
+                  </div>
+                  <AssetLabelPicker
+                    stories={stories}
+                    storySlug={storySlug}
+                    onStoryChange={setStorySlug}
+                    boundLabels={boundLabels}
+                    submitLabel="ربط"
+                    onSubmit={bindCard}
                   />
-                  <Button type="submit">ربط</Button>
-                </form>
+                </div>
               ) : (
                 connected && <p className="text-label text-slate-500">بانتظار بطاقة…</p>
               )}
@@ -410,14 +438,37 @@ export function DevicesPage(): JSX.Element {
               ) : (
                 <ul className="divide-y divide-slate-100">
                   {selected.cards.map((card) => (
-                    <li key={card.id} className="flex items-center justify-between gap-3 py-2">
-                      <div>
-                        <div className="text-body text-slate-800">{card.label}</div>
-                        <div className="text-label text-slate-400 font-mono" dir="ltr">{card.uid}</div>
+                    <li key={card.id} className="py-2 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-body text-slate-800">{card.label}</div>
+                          <div className="text-label text-slate-400 font-mono" dir="ltr">{card.uid}</div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            onClick={() => setEditingCardId((id) => (id === card.id ? null : card.id))}
+                            aria-label={`تبديل معنى ${card.label}`}
+                          >
+                            <Pencil size={16} />
+                          </Button>
+                          <Button variant="ghost" onClick={() => void unbind(card)} aria-label={`فكّ ${card.label}`}>
+                            <Trash2 size={16} />
+                          </Button>
+                        </div>
                       </div>
-                      <Button variant="ghost" onClick={() => void unbind(card)} aria-label={`فكّ ${card.label}`}>
-                        <Trash2 size={16} />
-                      </Button>
+                      {editingCardId === card.id && (
+                        <AssetLabelPicker
+                          stories={stories}
+                          storySlug={storySlug}
+                          onStoryChange={setStorySlug}
+                          boundLabels={boundLabels}
+                          submitLabel="تبديل"
+                          initialLabel={card.label}
+                          onSubmit={(label) => relabel(card, label)}
+                          onCancel={() => setEditingCardId(null)}
+                        />
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -18,6 +18,7 @@
  */
 
 import { Text, TextStyle, Container, Graphics } from "pixi.js";
+import { DIALOGUE_BOX_HEIGHT, DIALOGUE_BOX_OFFSET } from "./ActivityLayout";
 import type { AudioManager } from "@core/audio/AudioManager";
 
 export interface DialoguePlayerConfig {
@@ -47,11 +48,11 @@ export class DialoguePlayer {
     this.designWidth = designWidth;
     const box = new Container();
     box.x = 40;
-    box.y = designHeight - 220;
+    box.y = designHeight - DIALOGUE_BOX_OFFSET;
     box.visible = false;
 
     const bg = new Graphics();
-    bg.rect(0, 0, designWidth - 80, 180).fill({ color: 0x000000, alpha: 0.75 });
+    bg.rect(0, 0, designWidth - 80, DIALOGUE_BOX_HEIGHT).fill({ color: 0x000000, alpha: 0.75 });
     box.addChild(bg);
     box.interactive = true;
     box.cursor = "pointer";

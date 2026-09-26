@@ -20,6 +20,8 @@
  *     GSAP syntax — see EASE_TO_GSAP in EffectRunner.ts for the mapping.
  */
 
+import { LETTER_PLACES, letterUnits, type LetterPlace } from "../text/ArabicWord";
+
 /** Primitive effect types — the closed set §5.1 of the spec defines. */
 export const PRIMITIVE_EFFECT_TYPES = [
   "move",
@@ -35,7 +37,11 @@ export const PRIMITIVE_EFFECT_TYPES = [
   // composes with everything: "walk in, THEN look frightened" is one
   // sequence, in one editor, through one validator.
   "set-image",
-  "play-audio"
+  "play-audio",
+  // Lights one letter up inside the word written on the target
+  // (v1.0.33 §4), and optionally lifts it out in the shape it takes
+  // there — «بـ» out of «بالون». `to` names the letter.
+  "highlight-letter"
 ] as const;
 
 /** Composition types — group other effects rather than animating anything. */
@@ -93,6 +99,27 @@ export interface PrimitiveEffect {
   /** bounce/pop only — how far it overshoots (px for bounce, scale
    *  multiplier for pop). */
   strength?: number;
+
+  /** move only — points the element passes THROUGH, in order, on its
+   *  way to `to` (v1.0.33 §2). A smooth curve through every one of them,
+   *  not straight legs between. Absent = the straight move it always was. */
+  path?: EffectPoint[];
+  /** highlight-letter only — light the letter only where the lesson asks
+   *  for it (v1.0.33 §4). Absent = every place it occurs. */
+  place?: LetterPlace;
+  /** highlight-letter only — also lift the letter out of the word, in the
+   *  shape it takes there. */
+  lift?: boolean;
+  /** highlight-letter only — the colour the letter lights in, "#rrggbb".
+   *  Absent = the lesson green. Several steps, several colours: that is
+   *  how a word gets each of its letters coloured (v1.0.33 §4.3). */
+  color?: string;
+}
+
+/** An authored colour: "#rrggbb" and nothing looser, so a typo is caught
+ *  in the Studio instead of drawing black on a balloon. */
+export function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
 }
 
 export interface CompositeEffect {
@@ -138,6 +165,8 @@ export const DEFAULT_DURATIONS: Record<PrimitiveEffectType, number> = {
   // Triggering a clip takes no time. The clip's own length is not the
   // effect's length — the beat carries on while it sounds (v1.0.16 §6).
   "play-audio": 0,
+  // Long enough for a class to see WHICH letter lit up before it rises.
+  "highlight-letter": 0.8,
   "fade-in": 0.3,
   "fade-out": 0.3,
   shake: 0.4,
@@ -248,6 +277,36 @@ function validatePrimitive(
       errors.push(`${context}: "to" must name an audio clip, e.g. "sheep_bleat".`);
     }
     return;
+  }
+
+  // v1.0.33 §4: `to` names ONE letter, and the rest is about where.
+  if (type === "highlight-letter") {
+    const letter = typeof effect.to === "string" ? letterUnits(effect.to.trim()) : [];
+    if (letter.length !== 1) {
+      errors.push(`${context}: "to" must be exactly one letter, e.g. "ب".`);
+    }
+    if (effect.place !== undefined && !(LETTER_PLACES as readonly string[]).includes(effect.place as string)) {
+      errors.push(`${context}: unknown "place" "${String(effect.place)}" — supported: ${LETTER_PLACES.join(", ")}.`);
+    }
+    if (effect.lift !== undefined && typeof effect.lift !== "boolean") {
+      errors.push(`${context}: "lift" must be true or false.`);
+    }
+    if (effect.color !== undefined && !isHexColor(effect.color)) {
+      errors.push(`${context}: "color" must be a colour like "#e5484d".`);
+    }
+    return;
+  }
+  if (effect.color !== undefined) {
+    errors.push(`${context}: "color" belongs to "highlight-letter" only.`);
+  }
+
+  // v1.0.33 §2: waypoints, on `move` only.
+  if (effect.path !== undefined) {
+    if (type !== "move") {
+      errors.push(`${context}: "path" belongs to "move" only.`);
+    } else if (!Array.isArray(effect.path) || !effect.path.every((p) => isPlainObject(p) && Number.isFinite(p.x) && Number.isFinite(p.y))) {
+      errors.push(`${context}: "path" must be a list of points with numeric x and y.`);
+    }
   }
 
   // set-image's destination is an image ALIAS, not a number or a point.

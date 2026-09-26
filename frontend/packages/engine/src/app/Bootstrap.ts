@@ -242,6 +242,13 @@ export class Bootstrap {
       }
     });
 
+    // Teacher pause. The engine owns every clock (Pixi ticker, GSAP, audio),
+    // so pausing it stops the story mid-sentence exactly where it is —
+    // scenes need no pause logic of their own. `byUser` keeps a hidden-then-
+    // shown tab from lifting a pause the teacher chose.
+    eventBus.on(EngineEvents.Story.PauseRequested, () => engine.pause({ byUser: true }));
+    eventBus.on(EngineEvents.Story.ResumeRequested, () => engine.resume({ byUser: true }));
+
     // --- Hardware (optional) -------------------------------------------
     let esp32: ESP32Adapter | null = null;
     if (options.esp32) {

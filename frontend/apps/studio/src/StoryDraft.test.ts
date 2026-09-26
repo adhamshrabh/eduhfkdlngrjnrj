@@ -1361,6 +1361,30 @@ describe("StoryDraft.duplicateScene", () => {
     expect(member.groupId).not.toBe("grp_1");
   });
 
+  it("يعيد توجيه target في كل المؤثّرات إلى العنصر المنسوخ", () => {
+    // بلا ذلك تبحث النسخة عن «bird_77» فلا تجده: تتوقّف تبدّلات الوضعيات
+    // وحركة الدخول فيها بصمت، والأصل سليم.
+    const raw = realisticStory();
+    const scene = scenesOf(raw)[0]!;
+    scene.elements = [{ id: "bird_77", alias: "bird" }];
+    scene.effects = { onEnter: { type: "move", target: "bird_77", to: { x: 1, y: 2 } } };
+    (scene.lines as Array<Record<string, unknown>>)[0]!.effects = {
+      type: "sequence",
+      effects: [{ type: "set-image", target: "bird_77", to: "bird" }]
+    };
+    const draft = StoryDraft.fromJson(raw);
+    const result = draft.duplicateScene("scene01")!;
+    const fresh = result.elementIds[0]![1];
+    const copy = scenesOf(draft.toJson() as Record<string, unknown>).find((s) => s.id === result.sceneId)!;
+
+    const json = JSON.stringify(copy);
+    expect(json).not.toContain('"target":"bird_77"');
+    expect((copy.effects as { onEnter: { target: string } }).onEnter.target).toBe(fresh);
+    // والأصل لم يُمسّ، واسم الصورة `to` ليس معرّف عنصر فيبقى
+    expect(JSON.stringify(draft.getScene("scene01"))).toContain('"target":"bird_77"');
+    expect(json).toContain('"to":"bird"');
+  });
+
   // ── الفخّ ٢: السقوط التتابعي ──────────────────────────────────────
   it("يثبّت مخرج الأصل قبل الإدراج — النسخ لا يغيّر ما يعيشه الطفل", () => {
     // `scene02` بلا `nextScene` صريح: كان آخر مشهد فتنتهي القصّة عنده.
@@ -1973,6 +1997,76 @@ describe("StoryDraft — «الفرز»", () => {
   });
 });
 
+describe("StoryDraft — «وصل»", () => {
+  const connectDraft = () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setActivityType("scene02", "connect");
+    return draft;
+  };
+
+  it("تبديل النوع يُنشئ رأسين — رأسٌ واحد لا اختيار فيه", () => {
+    const activity = connectDraft().getActivity("scene02");
+    expect(activity?.anchors).toHaveLength(2);
+    expect(activity?.items).toEqual([]);
+  });
+
+  it("الحرف والموضع يُكتبان، و`null` يحذف الموضع", () => {
+    const draft = connectDraft();
+    const id = draft.getActivity("scene02")!.anchors![0]!.id;
+    draft.updateConnectAnchor("scene02", id, { letter: "ب", place: "first" });
+    expect(draft.getActivity("scene02")!.anchors![0]).toMatchObject({ letter: "ب", place: "first" });
+    draft.updateConnectAnchor("scene02", id, { place: null });
+    expect(draft.getActivity("scene02")!.anchors![0]!.place).toBeUndefined();
+  });
+
+  it("الرأس الجديد يرث الحرف، والعنصر يُنقل بين الرؤوس ولا يتكرّر", () => {
+    const draft = connectDraft();
+    const [a, b] = draft.getActivity("scene02")!.anchors!;
+    draft.updateConnectAnchor("scene02", a!.id, { letter: "ب" });
+    const c = draft.addConnectAnchor("scene02")!;
+    expect(draft.getActivity("scene02")!.anchors!.find((x) => x.id === c)!.letter).toBe("ب");
+
+    draft.addConnectItem("scene02", "yara-doll", a!.id);
+    draft.addConnectItem("scene02", "yara-doll", b!.id);
+    const items = draft.getActivity("scene02")!.items!;
+    expect(items).toHaveLength(1);
+    expect(items[0]!.anchor).toBe(b!.id);
+  });
+
+  it("حذف رأسٍ يحذف عناصره، ولا يُبقي أقلّ من رأسين", () => {
+    const draft = connectDraft();
+    const [a] = draft.getActivity("scene02")!.anchors!;
+    expect(draft.removeConnectAnchor("scene02", a!.id)).toBe(false);
+    const c = draft.addConnectAnchor("scene02")!;
+    draft.addConnectItem("scene02", "yara-doll", c);
+    expect(draft.removeConnectAnchor("scene02", c)).toBe(true);
+    expect(draft.getActivity("scene02")!.items).toEqual([]);
+  });
+
+  it("الاقتراح يصل كل كلمة برأس حرفها في موضعه — ولا يلمس الملتبس", () => {
+    const draft = connectDraft();
+    const [first, middle] = draft.getActivity("scene02")!.anchors!;
+    draft.updateConnectAnchor("scene02", first!.id, { letter: "ب", place: "first" });
+    draft.updateConnectAnchor("scene02", middle!.id, { letter: "ب", place: "middle" });
+    draft.addConnectItem("scene02", "yara-doll", first!.id);
+    draft.addConnectItem("scene02", "yara-bg", first!.id);
+    const [doll, bg] = draft.getActivity("scene02")!.items!;
+    draft.updateConnectItem("scene02", doll!.id, { label: "حبل" });
+    draft.updateConnectItem("scene02", bg!.id, { label: "كتاب" }); // الباء في آخرها: لا رأس لها
+
+    expect(draft.suggestConnectAnchors("scene02")).toBe(1);
+    const items = draft.getActivity("scene02")!.items!;
+    expect(items[0]!.anchor).toBe(middle!.id);
+    expect(items[1]!.anchor).toBe(first!.id);
+  });
+
+  it("صور العناصر تُحتسب مراجع أصول", () => {
+    const draft = connectDraft();
+    draft.addConnectItem("scene02", "yara-doll", draft.getActivity("scene02")!.anchors![0]!.id);
+    expect(draft.findAssetUsage("yara-doll").join(" ")).toContain("وصل");
+  });
+});
+
 /**
  * «ابحث وقُل أين» (v1.0.27).
  */
@@ -2014,18 +2108,52 @@ describe("StoryDraft — «ابحث»", () => {
     expect(draft.getActivity("scene02")!.spots![0]!.relation).toBeUndefined();
   });
 
-  it("موضعٌ صحيح واحد فقط — «أين هو؟» سؤالٌ بجوابٍ واحد", () => {
-    const draft = findDraft();
-    draft.addFindSpot("scene02", "yara-doll");
-    draft.addFindSpot("scene02", "yara-bg");
-    const [first, second] = draft.getActivity("scene02")!.spots!;
+  /**
+   * ⚠️ كان هذا الاختبار يثبّت «موضعٌ صحيح واحد فقط» نقلاً عن v1.0.27 §7.
+   * ورُفع القيد في v1.0.31: «اعثر على كل حروف الألف» سؤالٌ واحد بعدّة
+   * مطلوبات، لا عدّة أسئلة.
+   */
+  describe("مواضع تخبّئ مطلوبات (v1.0.31)", () => {
+    const withTwo = () => {
+      const draft = findDraft();
+      draft.addFindSpot("scene02", "yara-doll");
+      draft.addFindSpot("scene02", "yara-bg");
+      return { draft, ids: draft.getActivity("scene02")!.spots!.map((s) => s.id) };
+    };
 
-    draft.setFindCorrectSpot("scene02", first!.id);
-    draft.setFindCorrectSpot("scene02", second!.id);
+    it("أكثر من موضعٍ يخبّئ مطلوباً", () => {
+      const { draft, ids } = withTwo();
+      draft.toggleFindCorrectSpot("scene02", ids[0]!);
+      draft.toggleFindCorrectSpot("scene02", ids[1]!);
+      expect(draft.getActivity("scene02")!.spots!.filter((s) => s.correct)).toHaveLength(2);
+    });
 
-    const spots = draft.getActivity("scene02")!.spots!;
-    expect(spots.filter((spot) => spot.correct)).toHaveLength(1);
-    expect(spots[1]!.correct).toBe(true);
+    it("والقلب يعمل في الاتجاهين", () => {
+      const { draft, ids } = withTwo();
+      draft.toggleFindCorrectSpot("scene02", ids[0]!);
+      draft.toggleFindCorrectSpot("scene02", ids[1]!);
+      draft.toggleFindCorrectSpot("scene02", ids[1]!);
+      expect(draft.getActivity("scene02")!.spots!.filter((s) => s.correct)).toHaveLength(1);
+    });
+
+    it("ولا يُنزَع آخر مطلوب — نشاطٌ بلا شيءٍ يُبحث عنه لا يُحلّ أبداً", () => {
+      const { draft, ids } = withTwo();
+      draft.toggleFindCorrectSpot("scene02", ids[0]!);
+      expect(draft.toggleFindCorrectSpot("scene02", ids[0]!)).toBe(false);
+      expect(draft.getActivity("scene02")!.spots![0]!.correct).toBe(true);
+    });
+
+    it("ونزعُ المطلوب يأخذ معه ما كان يظهر عنده", () => {
+      const { draft, ids } = withTwo();
+      draft.toggleFindCorrectSpot("scene02", ids[0]!);
+      draft.toggleFindCorrectSpot("scene02", ids[1]!);
+      draft.setFindSpotReveals("scene02", ids[1]!, "yara-doll");
+      expect(draft.getActivity("scene02")!.spots![1]!.reveals).toBe("yara-doll");
+
+      draft.toggleFindCorrectSpot("scene02", ids[1]!);
+      // صورةٌ لموضعٍ لم يعد يخبّئ شيئاً لا تُعرَض — فلا تبقى في المحتوى.
+      expect(draft.getActivity("scene02")!.spots![1]!.reveals).toBeUndefined();
+    });
   });
 
   it("الحذف بالمعرّف", () => {
@@ -2038,7 +2166,7 @@ describe("StoryDraft — «ابحث»", () => {
 });
 
 /**
- * «كل الأيدي» (v1.0.28).
+ * «كل الأيدي» (v1.0.28)، وتصويتٌ بخيارات منذ v1.0.32.
  */
 describe("StoryDraft — «كل الأيدي»", () => {
   const allDraft = () => {
@@ -2046,11 +2174,12 @@ describe("StoryDraft — «كل الأيدي»", () => {
     draft.setActivityType("scene02", "all-respond");
     return draft;
   };
+  const options = (draft: StoryDraft) => draft.getActivity("scene02")?.options ?? [];
 
-  it("تبديل النوع يكتب `expect` — وبغيره يقرأ المحرّك النشاط نوعاً آخر", () => {
+  it("تبديل النوع يكتب `expect` وخياراتٍ فارغة", () => {
     const activity = allDraft().getActivity("scene02");
     expect(activity?.expect).toBe(12);
-    expect(activity?.answers).toEqual([]);
+    expect(activity?.options).toEqual([]);
   });
 
   it("العدد يُقصّ إلى اثنين فأكثر", () => {
@@ -2067,11 +2196,286 @@ describe("StoryDraft — «كل الأيدي»", () => {
     expect(draft.getActivity("scene02")?.waitSeconds).toBe(180);
   });
 
+  describe("الخيارات (v1.0.32)", () => {
+    it("أربعة الحدّ، ولا يتكرّر اسم", () => {
+      const draft = allDraft();
+      for (const alias of ["a", "b", "a", "c", "d", "e"]) draft.addVoteOption("scene02", alias);
+      expect(options(draft).map((o) => o.alias)).toEqual(["a", "b", "c", "d"]);
+    });
+
+    it("الاسم العربي يُملأ من اسمٍ عربيّ — ولا يُنسخ اسمٌ إنجليزي", () => {
+      const draft = allDraft();
+      draft.addVoteOption("scene02", "قبّعة");
+      draft.addVoteOption("scene02", "hat");
+      expect(options(draft).map((o) => o.label)).toEqual(["قبّعة", undefined]);
+    });
+
+    it("الاسم الفارغ يحذف الحقل", () => {
+      const draft = allDraft();
+      draft.addVoteOption("scene02", "hat");
+      const id = options(draft)[0]!.id;
+      draft.updateVoteOption("scene02", id, { label: "  قبّعة " });
+      expect(options(draft)[0]!.label).toBe("قبّعة");
+      draft.updateVoteOption("scene02", id, { label: "" });
+      expect(options(draft)[0]!.label).toBeUndefined();
+    });
+
+    it("أكثر من صحيح مسموح — بخلاف «اختيار الإجابة الصحيحة»", () => {
+      const draft = allDraft();
+      draft.addVoteOption("scene02", "a");
+      draft.addVoteOption("scene02", "b");
+      for (const o of options(draft)) draft.updateVoteOption("scene02", o.id, { correct: true });
+      expect(options(draft).every((o) => o.correct)).toBe(true);
+    });
+
+    it("«رأي» يمحو كل صحيح، ووسمُ صحيحٍ يُخرجه من الرأي", () => {
+      const draft = allDraft();
+      draft.addVoteOption("scene02", "a");
+      draft.addVoteOption("scene02", "b");
+      const [a] = options(draft);
+      draft.updateVoteOption("scene02", a!.id, { correct: true });
+
+      draft.setVotePoll("scene02", true);
+      expect(draft.getActivity("scene02")?.poll).toBe(true);
+      expect(options(draft).some((o) => o.correct)).toBe(false);
+
+      draft.updateVoteOption("scene02", a!.id, { correct: true });
+      expect(draft.getActivity("scene02")?.poll).toBeUndefined();
+    });
+
+    it("النقل يغيّر الترتيب — وهو ما يختاره زرّ الصندوق", () => {
+      const draft = allDraft();
+      for (const alias of ["a", "b", "c"]) draft.addVoteOption("scene02", alias);
+      const b = options(draft)[1]!.id;
+      draft.moveVoteOption("scene02", b, -1);
+      expect(options(draft).map((o) => o.alias)).toEqual(["b", "a", "c"]);
+      draft.moveVoteOption("scene02", b, -1);
+      expect(options(draft).map((o) => o.alias)).toEqual(["b", "a", "c"]);
+    });
+
+    it("الحذف بالمعرّف", () => {
+      const draft = allDraft();
+      draft.addVoteOption("scene02", "a");
+      draft.removeVoteOption("scene02", options(draft)[0]!.id);
+      expect(options(draft)).toEqual([]);
+    });
+  });
+
+  it("تحويل شكل v1.0.28: خيارٌ لكل معنى، رأيٌ، ولا يبقى `answers`", () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setActivityType("scene02", "card-answer");
+    draft.setActivityAnswers("scene02", ["asad", "ananas"]);
+    draft.setActivityType("scene02", "all-respond");
+    // النوع وحده لا يُعيد التأليف — `answers` القديمة تبقى حتى يُطلب التحويل.
+    expect(draft.getActivity("scene02")?.options).toBeUndefined();
+
+    draft.convertAnswersToOptions("scene02");
+    const activity = draft.getActivity("scene02")!;
+    expect(activity.options!.map((o) => o.alias)).toEqual(["asad", "ananas"]);
+    expect(activity.poll).toBe(true);
+    expect(activity.answers).toBeUndefined();
+  });
+
   it("الحفظ يُخرج ما يقبله المُتحقِّق", () => {
     const draft = allDraft();
-    draft.setActivityAnswers("scene02", ["shoe"]);
+    draft.addVoteOption("scene02", "hat");
+    draft.addVoteOption("scene02", "scarf");
     const saved = draft.toJson() as Record<string, any>;
     const activity = saved.story.scenes[1].activity;
-    expect(activity).toMatchObject({ type: "all-respond", answers: ["shoe"], expect: 12 });
+    expect(activity).toMatchObject({
+      type: "all-respond",
+      expect: 12,
+      options: [
+        { id: "op_1", alias: "hat" },
+        { id: "op_2", alias: "scarf" }
+      ]
+    });
+  });
+});
+
+/**
+ * «الفرز»: إضافة غرضٍ إلى سلّة = وضعُه فيها أو **نقلُه** إليها.
+ *
+ * هذا ما يُغني الواجهة عن قائمةٍ منسدلة لكل غرض: «أضفه إلى هذه السلّة»
+ * تعني نقله بداهةً.
+ */
+describe("StoryDraft — نقل غرض الفرز بالإضافة", () => {
+  const draftWithBins = () => {
+    const draft = StoryDraft.fromJson(realisticStory());
+    draft.setActivityType("scene02", "sort");
+    return draft;
+  };
+
+  it("غرضٌ جديد يُضاف إلى السلّة المسمّاة", () => {
+    const draft = draftWithBins();
+    const bins = draft.getActivity("scene02")!.bins!;
+    draft.addSortItem("scene02", "yara-doll", bins[0]!.id);
+    expect(draft.getActivity("scene02")!.items).toEqual([
+      { id: "it_1", alias: "yara-doll", bin: bins[0]!.id }
+    ]);
+  });
+
+  it("وغرضٌ موجود يُنقَل ولا يتكرّر", () => {
+    const draft = draftWithBins();
+    const bins = draft.getActivity("scene02")!.bins!;
+    draft.addSortItem("scene02", "yara-doll", bins[0]!.id);
+    draft.addSortItem("scene02", "yara-doll", bins[1]!.id);
+
+    const items = draft.getActivity("scene02")!.items!;
+    // ⚠️ التكرار كان سيضع الصورة نفسها على المسرح مرّتين، صحيحةً في
+    // سلّتين، وعنوانُ بطاقتها ملتبساً بينهما.
+    expect(items).toHaveLength(1);
+    expect(items[0]!.bin).toBe(bins[1]!.id);
+    expect(items[0]!.id).toBe("it_1"); // ومعرّفه ثابت، فلا تنكسر إشارةٌ إليه
+  });
+
+  it("ولا يتأثّر غرضٌ آخر بالنقل", () => {
+    const draft = draftWithBins();
+    const bins = draft.getActivity("scene02")!.bins!;
+    draft.addSortItem("scene02", "yara-doll", bins[0]!.id);
+    draft.addSortItem("scene02", "yara-bg", bins[0]!.id);
+    draft.addSortItem("scene02", "yara-doll", bins[1]!.id);
+
+    const items = draft.getActivity("scene02")!.items!;
+    expect(items).toHaveLength(2);
+    expect(items.find((i) => i.alias === "yara-bg")!.bin).toBe(bins[0]!.id);
+  });
+});
+
+/**
+ * «ابحث»: مطلوب أو مشتّت — ووضعُ عنصرٍ في قائمةٍ **ينقله** من الأخرى.
+ */
+describe("StoryDraft — دور العنصر في «ابحث»", () => {
+  const draft = () => {
+    const d = StoryDraft.fromJson(realisticStory());
+    d.addElement("scene02", { id: "doll", alias: "yara-doll" });
+    d.addElement("scene02", { id: "bg2", alias: "yara-bg" });
+    d.setActivityType("scene02", "find");
+    return d;
+  };
+  const spots = (d: StoryDraft) => d.getActivity("scene02")!.spots!;
+
+  it("مطلوبٌ جديد يُكتب بـcorrect، ومشتّتٌ جديد بدونها", () => {
+    const d = draft();
+    d.setFindSpotRole("scene02", "yara-doll", "target");
+    d.setFindSpotRole("scene02", "yara-bg", "distractor");
+    expect(spots(d).map((s) => [s.alias, s.correct === true])).toEqual([
+      ["yara-doll", true],
+      ["yara-bg", false]
+    ]);
+  });
+
+  it("ولا يُكتب اسمٌ فارغ — القائمتان لا تفرضان كلمة المكان", () => {
+    const d = draft();
+    d.setFindSpotRole("scene02", "yara-doll", "target");
+    expect(spots(d)[0]).toEqual({ id: "sp_1", alias: "yara-doll", correct: true });
+  });
+
+  it("والعنصر ينتقل بين القائمتين ولا يتكرّر", () => {
+    const d = draft();
+    d.setFindSpotRole("scene02", "yara-doll", "target");
+    d.setFindSpotRole("scene02", "yara-doll", "distractor");
+    expect(spots(d)).toHaveLength(1);
+    expect(spots(d)[0]!.correct).toBeUndefined();
+  });
+
+  it("ونقلُ مطلوبٍ إلى المشتّتات يأخذ معه صورة الكشف", () => {
+    const d = draft();
+    d.setFindSpotRole("scene02", "yara-doll", "target");
+    d.setFindSpotReveals("scene02", "sp_1", "yara-bg");
+    d.setFindSpotRole("scene02", "yara-doll", "distractor");
+    expect(spots(d)[0]!.reveals).toBeUndefined();
+  });
+});
+
+describe("v1.0.33 — words, letters, paths", () => {
+  type Raw = { story: { scenes: Array<Record<string, unknown>> } };
+  function balloonStory() {
+    const raw = realisticStory();
+    const scenes = (raw as unknown as Raw).story.scenes;
+    scenes[0]!.elements = [{ id: "balloon_1", alias: "balloon" }];
+    scenes[1]!.activity = {
+      type: "pick-correct",
+      choices: [
+        { id: "c1", alias: "balloon", correct: true },
+        { id: "c2", alias: "balloon" },
+        { id: "c3", alias: "balloon" }
+      ]
+    };
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("writes a word on an element, and removing it leaves no trace", () => {
+    const draft = balloonStory();
+    draft.setElementWord("scene01", "balloon_1", "  بالون ");
+    expect(draft.getScene("scene01")!.elements[0]!.word).toEqual({ text: "بالون" });
+    draft.setElementWord("scene01", "balloon_1", "بالون", 0.3);
+    expect(draft.getScene("scene01")!.elements[0]!.word).toEqual({ text: "بالون", y: 0.3 });
+    draft.setElementWord("scene01", "balloon_1", "");
+    const saved = (draft.toJson() as unknown as Raw).story.scenes[0]!.elements as Array<Record<string, unknown>>;
+    expect("word" in saved[0]!).toBe(false);
+  });
+
+  it("several options may be correct — marking one no longer clears another", () => {
+    const draft = balloonStory();
+    draft.updateActivityChoice("scene02", "c3", { correct: true });
+    const correct = draft.getActivity("scene02")!.choices!.filter((c) => c.correct).map((c) => c.id);
+    expect(correct).toEqual(["c1", "c3"]);
+  });
+
+  it("a letter suggests which words are correct: باب and بيت, not كتاب", () => {
+    const draft = balloonStory();
+    draft.updateActivityChoice("scene02", "c1", { label: "باب" });
+    draft.updateActivityChoice("scene02", "c2", { label: "كتاب" });
+    draft.updateActivityChoice("scene02", "c3", { label: "بيت" });
+    draft.setActivityLetter("scene02", "ب", "first");
+    const activity = draft.getActivity("scene02")!;
+    expect(activity.letter).toBe("ب");
+    expect(activity.place).toBe("first");
+    expect(activity.choices!.map((c) => c.correct === true)).toEqual([true, false, true]);
+    expect(draft.validate().warnings.filter((w) => /v1\.0\.33/.test(w))).toEqual([]);
+  });
+
+  it("the author may overturn a suggestion — editing another option leaves hers alone", () => {
+    const draft = balloonStory();
+    draft.updateActivityChoice("scene02", "c1", { label: "باب" });
+    draft.updateActivityChoice("scene02", "c2", { label: "كتاب" });
+    draft.setActivityLetter("scene02", "ب", "first");
+    draft.updateActivityChoice("scene02", "c2", { correct: true });   // she disagrees
+    draft.updateActivityChoice("scene02", "c1", { label: "بطة" });
+    expect(draft.getActivity("scene02")!.choices!.find((c) => c.id === "c2")!.correct).toBe(true);
+  });
+
+  it("an option's path is stored rounded, and an empty path removes it", () => {
+    const draft = balloonStory();
+    draft.updateActivityChoice("scene02", "c1", { path: [{ x: 10.4, y: -99.6 }] });
+    expect(draft.getActivity("scene02")!.choices![0]!.path).toEqual([{ x: 10, y: -100 }]);
+    draft.updateActivityChoice("scene02", "c1", { path: [] });
+    expect(draft.getActivity("scene02")!.choices![0]!.path).toBeUndefined();
+  });
+});
+
+describe("v1.0.33 — the word's colour", () => {
+  type Raw = { story: { scenes: Array<Record<string, unknown>> } };
+  function draftWithBalloon() {
+    const raw = realisticStory();
+    (raw as unknown as Raw).story.scenes[0]!.elements = [{ id: "balloon_1", alias: "balloon" }];
+    return StoryDraft.fromJson(raw);
+  }
+
+  it("keeps the colour when only the text or position changes", () => {
+    const draft = draftWithBalloon();
+    draft.setElementWord("scene01", "balloon_1", "بالون", undefined, "#e5484d");
+    draft.setElementWord("scene01", "balloon_1", "بالونة");
+    draft.setElementWord("scene01", "balloon_1", "بالونة", 0.3);
+    expect(draft.getScene("scene01")!.elements[0]!.word).toEqual({ text: "بالونة", y: 0.3, color: "#e5484d" });
+  });
+
+  it("clearing the colour returns the word to white — no field left behind", () => {
+    const draft = draftWithBalloon();
+    draft.setElementWord("scene01", "balloon_1", "بالون", undefined, "#e5484d");
+    draft.setElementWord("scene01", "balloon_1", "بالون", undefined, null);
+    expect(draft.getScene("scene01")!.elements[0]!.word).toEqual({ text: "بالون" });
+    expect(draft.validate().errors).toEqual([]);
   });
 });

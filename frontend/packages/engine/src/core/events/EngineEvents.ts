@@ -120,6 +120,24 @@ export const EngineEvents = {
   Content: {
     Loaded: "content:loaded",
     RunRequested: "content:run-requested"
+  },
+
+  // Story — teacher controls.
+  //   Input events (host UI → the running story). The teacher stands beside
+  //   the screen, so these are commands, not intents a child can send: no
+  //   input mode filters them and no device maps onto them. A story that is
+  //   not running (menu, start prompt) ignores them silently.
+  //   Output: SceneEntered — where the story is, so the controls can say
+  //   which of them would do anything right now.
+  //   Pause/resume are handled by the Engine itself (it owns the clocks),
+  //   and announced on Engine.Pause / Engine.Resume.
+  Story: {
+    RestartSceneRequested: "story:restart-scene",
+    PreviousSceneRequested: "story:previous-scene",
+    NextSceneRequested: "story:next-scene",
+    PauseRequested: "story:pause",
+    ResumeRequested: "story:resume",
+    SceneEntered: "story:scene-entered"
   }
 } as const;
 

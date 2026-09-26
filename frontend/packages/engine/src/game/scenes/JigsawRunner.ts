@@ -47,11 +47,9 @@ import type { AssetManager } from "@core/assets/AssetManager";
 import { Logger } from "@shared/utils";
 
 import { ActivityBase, resolveAddress } from "./ActivityBase";
-import { DESIGN_WIDTH } from "./ActivityLayout";
+import { DESIGN_WIDTH, STAGE_FLOOR } from "./ActivityLayout";
 import type { ActivityData, JigsawActivity } from "./ActivityTypes";
 import { isJigsaw } from "./ActivityTypes";
-
-const DESIGN_HEIGHT = 1080;
 
 /** نصف قطر الالتقاط حين لا يُؤلَّف (v1.0.25 §2). */
 const DEFAULT_MATCH_TOLERANCE = 60;
@@ -252,7 +250,7 @@ export class JigsawRunner extends ActivityBase {
       sprite.width = pieceW;
       sprite.height = pieceH;
 
-      const home = tray[cell - 1] ?? { x: DESIGN_WIDTH / 2, y: DESIGN_HEIGHT - 120 };
+      const home = tray[cell - 1] ?? { x: DESIGN_WIDTH / 2, y: STAGE_FLOOR - pieceH / 2 };
       sprite.x = home.x;
       sprite.y = home.y;
       sprite.eventMode = "static";
@@ -467,6 +465,14 @@ export function trayPositions(total: number, pieceW: number, pieceH: number): Ar
   const rowH = pieceH + 16;
   const rowCount = Math.ceil(total / perRow);
 
+  // ⚠️ يُقاس من **حافّة** أدنى قطعة لا من مركزها، وسقفُه أعلى صندوق الحوار.
+  //
+  // درسٌ مقيس: كان `DESIGN_HEIGHT - 80` يضع **المركز** عند ١٠٠٠ — داخل
+  // صندوق الحوار (٨٦٠←١٠٤٠) — وحافّةَ القطعة السفلى عند ١٠٠٠ + نصف
+  // ارتفاعها، أي **خارج المسرح**. فكان جزءٌ من القطع يختفي خلف الصندوق،
+  // وجزءٌ يسقط من اللوحة، والطفل يبحث عن قطعةٍ لا وجود لها على الشاشة.
+  const bottomCenter = STAGE_FLOOR - pieceH / 2;
+
   const slots: Array<{ x: number; y: number }> = [];
   for (let i = 0; i < total; i++) {
     const row = Math.floor(i / perRow);
@@ -476,7 +482,7 @@ export function trayPositions(total: number, pieceW: number, pieceH: number): Ar
     const startX = DESIGN_WIDTH / 2 - rowWidth / 2 + pieceW / 2;
     slots.push({
       x: startX + inRow * (pieceW + gap),
-      y: DESIGN_HEIGHT - 80 - (rowCount - 1 - row) * rowH
+      y: bottomCenter - (rowCount - 1 - row) * rowH
     });
   }
 

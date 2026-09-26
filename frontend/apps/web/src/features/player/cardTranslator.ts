@@ -121,7 +121,19 @@ export function attachCardTranslator(app: BootstrappedApp, bindings: Map<string,
   }
   console.info(`[edu-device] الجدول جاهز: ${[...bindings.values()].join("، ")}`);
 
+  // المعلّمة أوقفت القصّة: بطاقةٌ تُمسح الآن لا تُجيب نشاطاً متجمّداً على
+  // الشاشة. المشهد يتجاهل ما يصله مباشرةً، لكن مُصيِّرات النشاط تُصغي لهذا
+  // القصد بنفسها — فالحارس هنا، عند المصدر الوحيد للبطاقات.
+  let paused = false;
+  const onPause = (): void => {
+    paused = true;
+  };
+  const onResume = (): void => {
+    paused = false;
+  };
+
   const onHardware = (payload: unknown): void => {
+    if (paused) return;
     const uid = readCardUid(payload);
     if (!uid) return;
     const label = bindings.get(uid);
@@ -154,5 +166,11 @@ export function attachCardTranslator(app: BootstrappedApp, bindings: Map<string,
   };
 
   app.eventBus.on(EngineEvents.Hardware.Event, onHardware);
-  return () => app.eventBus.off(EngineEvents.Hardware.Event, onHardware);
+  app.eventBus.on(EngineEvents.Engine.Pause, onPause);
+  app.eventBus.on(EngineEvents.Engine.Resume, onResume);
+  return () => {
+    app.eventBus.off(EngineEvents.Hardware.Event, onHardware);
+    app.eventBus.off(EngineEvents.Engine.Pause, onPause);
+    app.eventBus.off(EngineEvents.Engine.Resume, onResume);
+  };
 }

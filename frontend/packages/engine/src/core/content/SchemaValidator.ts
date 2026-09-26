@@ -28,7 +28,8 @@
 // where tsconfig path aliases are not resolved. EffectContract is itself
 // dependency-free, so importing it preserves the "loads anywhere"
 // property described above.
-import { validateActivityEffects, validateEffect } from "../effects/EffectContract";
+import { isHexColor, validateActivityEffects, validateEffect } from "../effects/EffectContract";
+import { LETTER_PLACES, hasLetterAt, letterUnits, type LetterPlace } from "../text/ArabicWord";
 import { IDLE_KINDS, isIdleKind } from "./IdleKinds";
 
 export const SUPPORTED_SCHEMA_VERSIONS = ["1.0"];
@@ -262,6 +263,69 @@ function validateElement(
   if (el.onTap !== undefined) {
     validateTapResponse(el.onTap, `Scene "${sceneId}": elements[${index}] ("${String(el.id)}")`, errors, warnings);
   }
+  // A word written on the picture (v1.0.33 §3).
+  if (el.word !== undefined) {
+    const context = `Scene "${sceneId}": elements[${index}] ("${String(el.id)}")`;
+    if (!isPlainObject(el.word) || !isNonEmptyString(el.word.text)) {
+      errors.push(`${context}: "word" must be an object with a non-empty "text" (v1.0.33 §3).`);
+    } else {
+      const y = el.word.y;
+      if (y !== undefined && (typeof y !== "number" || !Number.isFinite(y) || y < 0 || y > 1)) {
+        errors.push(`${context}: "word.y" must be a fraction of the picture's height, 0 to 1 (v1.0.33 §3).`);
+      }
+      if (el.word.color !== undefined && !isHexColor(el.word.color)) {
+        errors.push(`${context}: "word.color" must be a colour like "#1f2937" (v1.0.33 §3).`);
+      }
+      if (isGroup) {
+        warnings.push(`${context}: a group draws no picture, so its "word" is never shown (v1.0.33 §3).`);
+      }
+    }
+  }
+}
+
+/**
+ * «اختر الإجابة الصحيحة» بكلماتها وحرفها ومساراتها (v1.0.33 §5).
+ *
+ * ⚠️ التخالف بين الحرف و`correct` تحذيرٌ لا خطأ: قد تقصد المعلّمة سؤالاً
+ * بالصوت لا بالكتابة — «الشمس» تبدأ كتابةً بالألف وتُسمَع بالشين، والمتحقِّق
+ * يرى الكتابة وحدها. لكنه يقول ما رآه، لأن التخالف في الغالب سهو.
+ */
+function validatePickCorrectWords(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const letter = activity.letter;
+  if (letter !== undefined && (typeof letter !== "string" || letterUnits(letter.trim()).length !== 1)) {
+    errors.push(`Scene "${sceneId}": activity.letter must be exactly one letter, e.g. "ب" (v1.0.33 §5).`);
+  }
+  const place = activity.place;
+  if (place !== undefined && !(LETTER_PLACES as readonly string[]).includes(place as string)) {
+    errors.push(`Scene "${sceneId}": activity.place "${String(place)}" is not one of ${LETTER_PLACES.join(", ")} (v1.0.33 §5).`);
+  }
+  if (place !== undefined && letter === undefined) {
+    warnings.push(`Scene "${sceneId}": activity.place is set but no activity.letter — there is nothing to place (v1.0.33 §5).`);
+  }
+
+  if (!Array.isArray(activity.choices)) return;
+  const usableLetter = typeof letter === "string" && letterUnits(letter.trim()).length === 1 ? letter.trim() : null;
+  const usablePlace = (LETTER_PLACES as readonly string[]).includes(place as string) ? (place as LetterPlace) : undefined;
+
+  activity.choices.forEach((choice, i) => {
+    if (!isPlainObject(choice)) return;
+    const where = `Scene "${sceneId}": activity.choices[${i}]`;
+    if (choice.label !== undefined && typeof choice.label !== "string") {
+      errors.push(`${where}: "label" must be text (v1.0.33 §5).`);
+    }
+    if (choice.path !== undefined) {
+      const ok = Array.isArray(choice.path) && choice.path.every((p) => isPlainObject(p) && Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (!ok) errors.push(`${where}: "path" must be a list of points with numeric x and y (v1.0.33 §5).`);
+    }
+    if (!usableLetter || !isNonEmptyString(choice.label)) return;
+    const has = hasLetterAt(choice.label, usableLetter, usablePlace);
+    const at = usablePlace ? ` ${usablePlace === "first" ? "at its start" : usablePlace === "last" ? "at its end" : "in its middle"}` : "";
+    if (choice.correct === true && !has) {
+      warnings.push(`${where}: "${choice.label}" is marked correct but has no "${usableLetter}"${at} (v1.0.33 §5).`);
+    } else if (choice.correct !== true && has) {
+      warnings.push(`${where}: "${choice.label}" has "${usableLetter}"${at} but is not marked correct (v1.0.33 §5).`);
+    }
+  });
 }
 
 /** Validates one entry of a DialogueLine's optional `actions[]`
@@ -686,6 +750,111 @@ function validateSort(activity: Record<string, unknown>, sceneId: string, errors
   if (activity.question === undefined) {
     warnings.push(`Scene "${sceneId}": a "sort" activity with no "question" never says which rule to sort by (v1.0.26 §8).`);
   }
+
+  // «يُفرَز بالإطار» (v1.0.30 §5). البنية وحدها: أمّا وجود صندوقٍ مربوط
+  // فسؤالٌ لا يعرفه مشهد — يفحصه الاستوديو ويحذّر منه.
+  if (activity.navigate !== undefined && typeof activity.navigate !== "boolean") {
+    errors.push(`Scene "${sceneId}": activity.navigate must be true or false when present (v1.0.30 §5).`);
+  }
+  // v1.0.35 §4 — مفرداتٌ مغلقة: قيمةٌ لا يعرفها المحرّك كانت ستُسقط بصمت
+  // على السلوك الافتراضي، والمعلّمة تظنّ أنها اختارت غيره.
+  if (activity.wrongItems !== undefined && activity.wrongItems !== "return") {
+    errors.push(`Scene "${sceneId}": activity.wrongItems is "${String(activity.wrongItems)}" — supported: return (v1.0.35 §4).`);
+  }
+}
+
+/**
+ * «وصل» (v1.0.36 §7) — البنية، ومعها فحصٌ واحد يخصّه: كلمةٌ تحت صورةٍ
+ * لا تطابق حرف رأسها وموضعه. خطأ تأليفٍ يعلّم الطفل عكس الدرس، ويُرى هنا
+ * قبل أن يُرى أمام الصفّ.
+ */
+function validateConnect(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const anchors = activity.anchors;
+  const byId = new Map<string, Record<string, unknown>>();
+
+  if (!Array.isArray(anchors) || anchors.length < 2) {
+    // رأسٌ واحد يصله كل شيء — لا اختيار فيه.
+    errors.push(`Scene "${sceneId}": a "connect" activity needs an "anchors" array with at least two anchors (v1.0.36 §7).`);
+  } else {
+    anchors.forEach((anchor, i) => {
+      if (!isPlainObject(anchor)) {
+        errors.push(`Scene "${sceneId}": activity.anchors[${i}] must be an object (v1.0.36 §7).`);
+        return;
+      }
+      if (!isNonEmptyString(anchor.id)) {
+        errors.push(`Scene "${sceneId}": activity.anchors[${i}] is missing a string "id" (v1.0.36 §7).`);
+      } else if (byId.has(anchor.id)) {
+        errors.push(`Scene "${sceneId}": activity.anchors[${i}] repeats the id "${anchor.id}" (v1.0.36 §7).`);
+      } else {
+        byId.set(anchor.id, anchor);
+      }
+      if (anchor.place !== undefined && !(LETTER_PLACES as readonly string[]).includes(anchor.place as string)) {
+        errors.push(`Scene "${sceneId}": activity.anchors[${i}].place "${String(anchor.place)}" is not one of ${LETTER_PLACES.join(", ")} (v1.0.36 §7).`);
+      }
+      if (!isNonEmptyString(anchor.label) && !isNonEmptyString(anchor.letter) && !isNonEmptyString(anchor.image)) {
+        warnings.push(`Scene "${sceneId}": activity.anchors[${i}] has no "label", "letter" or "image" — an empty box says nothing to connect to (v1.0.36 §7).`);
+      }
+      validatePlacement(anchor, `Scene "${sceneId}": activity.anchors[${i}]`, errors);
+    });
+  }
+
+  const items = activity.items;
+  if (!Array.isArray(items) || items.length === 0) {
+    errors.push(`Scene "${sceneId}": a "connect" activity needs a non-empty "items" array (v1.0.36 §7).`);
+    return;
+  }
+
+  const used = new Set<string>();
+  const aliases = new Set<string>();
+  items.forEach((item, i) => {
+    if (!isPlainObject(item)) {
+      errors.push(`Scene "${sceneId}": activity.items[${i}] must be an object (v1.0.36 §7).`);
+      return;
+    }
+    if (!isNonEmptyString(item.alias)) {
+      errors.push(`Scene "${sceneId}": activity.items[${i}].alias must be a non-empty asset alias (v1.0.36 §7).`);
+    } else if (aliases.has(item.alias)) {
+      // تحذير: يُلعب، لكنّ البطاقة تصل أوّلهما وحده.
+      warnings.push(`Scene "${sceneId}": "${item.alias}" appears on two items — a card can only reach the first (v1.0.36 §7).`);
+    } else {
+      aliases.add(item.alias);
+    }
+
+    if (!isNonEmptyString(item.anchor)) {
+      errors.push(`Scene "${sceneId}": activity.items[${i}].anchor must name the anchor it connects to (v1.0.36 §7).`);
+    } else if (byId.size > 0 && !byId.has(item.anchor)) {
+      errors.push(`Scene "${sceneId}": activity.items[${i}].anchor is "${item.anchor}", which no anchor declares (v1.0.36 §7).`);
+    } else {
+      used.add(item.anchor);
+      const anchor = byId.get(item.anchor);
+      const letter = anchor?.letter;
+      const place = anchor?.place as LetterPlace | undefined;
+      if (
+        anchor &&
+        isNonEmptyString(item.label) &&
+        isNonEmptyString(letter) &&
+        (place === undefined || (LETTER_PLACES as readonly string[]).includes(place)) &&
+        !hasLetterAt(item.label, letter, place)
+      ) {
+        warnings.push(`Scene "${sceneId}": item "${item.label}" connects to "${letter}"${place ? ` (${place})` : ""}, but the word has no such letter there (v1.0.36 §7).`);
+      }
+    }
+    validatePlacement(item, `Scene "${sceneId}": activity.items[${i}]`, errors);
+  });
+
+  for (const id of byId.keys()) {
+    if (!used.has(id)) {
+      warnings.push(`Scene "${sceneId}": nothing connects to anchor "${id}" — it is a distractor with no right line (v1.0.36 §7).`);
+    }
+  }
+
+  if (activity.question === undefined) {
+    warnings.push(`Scene "${sceneId}": a "connect" activity with no "question" never says what to connect (v1.0.36 §7).`);
+  }
+
+  if (activity.navigate !== undefined && typeof activity.navigate !== "boolean") {
+    errors.push(`Scene "${sceneId}": activity.navigate must be true or false when present (v1.0.37 §4).`);
+  }
 }
 
 /** موضعٌ على المسرح — القاعدة نفسها التي يفرضها `validateStepVisuals`. */
@@ -759,11 +928,30 @@ function validateFind(
       warnings.push(`Scene "${sceneId}": activity.spots[${i}] has a "relation" but no "label" — no spatial sentence can be generated for it (v1.0.27 §4).`);
     }
 
-    if (spot.correct === true) hasCorrect = true;
+    if (spot.correct === true) {
+      hasCorrect = true;
+      // v1.0.31 §3: بعدّة مطلوبات، `reveals` هو ما يُري الطفل **ما وجده
+      // وأين**. وبدونه يتقدّم عدّادٌ بلا أن يتغيّر شيء على المسرح.
+      if (spot.reveals !== undefined && !isNonEmptyString(spot.reveals)) {
+        errors.push(`Scene "${sceneId}": activity.spots[${i}].reveals must be a non-empty asset alias when present (v1.0.31 §5).`);
+      }
+    }
   });
 
   if (!hasCorrect) {
     errors.push(`Scene "${sceneId}": no spot is marked "correct" — a "find" activity with nothing to find can never be solved (v1.0.27 §8).`);
+  }
+
+  // عدّة مطلوبات بلا `reveals` على أيٍّ منها: يُلعب، لكنّ الطفل لا يرى ما
+  // وجده — والعدّاد وحده تجريدٌ لا يقرؤه ابن الخامسة (v1.0.31 §5).
+  const targets = spots.filter((spot) => isPlainObject(spot) && spot.correct === true);
+  if (targets.length > 1 && !targets.some((spot) => isNonEmptyString((spot as Record<string, unknown>).reveals))) {
+    warnings.push(`Scene "${sceneId}": ${targets.length} spots are "correct" but none has "reveals" — nothing appears where the child finds something (v1.0.31 §5).`);
+  }
+
+  // «يُجاب بالإطار وأزرار الصندوق» (v1.0.34 §5) — كما في `pick-correct`.
+  if (activity.navigate !== undefined && typeof activity.navigate !== "boolean") {
+    errors.push(`Scene "${sceneId}": activity.navigate must be true or false when present (v1.0.34 §5).`);
   }
 
   if (activity.question === undefined) {
@@ -777,21 +965,27 @@ function validateFind(
 }
 
 /**
- * «كل الأيدي» (v1.0.28) — البنية وحدها.
+ * «كل الأيدي» (v1.0.28، وخياراته منذ v1.0.32) — البنية وحدها.
  *
- * ⚠️ وأنّ في الغرفة `expect` بطاقةً مربوطة سؤالٌ لا يجيب عنه مشهد؛ يفحصه
- * الاستوديو، وهو الوحيد الذي يملك جدول البطاقات.
+ * ⚠️ وأنّ لكل خيارٍ بطاقةً مربوطة سؤالٌ لا يجيب عنه مشهد؛ يفحصه الاستوديو،
+ * وهو الوحيد الذي يملك جدول البطاقات.
  */
 function validateAllRespond(activity: Record<string, unknown>, sceneId: string, errors: string[], warnings: string[]): void {
+  const options = activity.options;
   const answers = activity.answers;
-  if (!Array.isArray(answers) || answers.length === 0) {
-    errors.push(`Scene "${sceneId}": an "all-respond" activity needs a non-empty "answers" array (v1.0.28 §8).`);
-  } else {
+
+  if (options !== undefined) {
+    validateVoteOptions(options, activity.poll, sceneId, errors, warnings);
+  } else if (Array.isArray(answers) && answers.length > 0) {
+    // شكل v1.0.28: يُلعب، ويُقترح تحويله (v1.0.32 §5).
     answers.forEach((answer, i) => {
       if (!isNonEmptyString(answer)) {
         errors.push(`Scene "${sceneId}": activity.answers[${i}] must be a non-empty card meaning (v1.0.28 §8).`);
       }
     });
+    warnings.push(`Scene "${sceneId}": "all-respond" uses the v1.0.28 "answers" shape — convert it to "options" in Studio so the class sees pictures (v1.0.32 §5).`);
+  } else {
+    errors.push(`Scene "${sceneId}": an "all-respond" activity needs "options" — 2 to 4 pictures to vote between (v1.0.32 §6).`);
   }
 
   // مطلوب لا اختياري (§2.1): بغيره لا تعرف الشاشة متى «أجاب الجميع»، وهو
@@ -816,6 +1010,47 @@ function validateAllRespond(activity: Record<string, unknown>, sceneId: string, 
   // لا يُقرأ في هذا النوع — ومؤلّفةٌ كتبته تظنّ أن الشاشة سترّد على الخطأ.
   if (activity.wrongResponse !== undefined) {
     warnings.push(`Scene "${sceneId}": "all-respond" never answers back — nobody loses, so "wrongResponse" is ignored (v1.0.28 §4).`);
+  }
+}
+
+/** خيارات التصويت (v1.0.32 §6). */
+function validateVoteOptions(
+  options: unknown,
+  poll: unknown,
+  sceneId: string,
+  errors: string[],
+  warnings: string[]
+): void {
+  if (!Array.isArray(options) || options.length < 2 || options.length > 4) {
+    errors.push(`Scene "${sceneId}": activity.options must hold 2 to 4 options — one is not a vote, and five no child can take in (v1.0.32 §6).`);
+    if (!Array.isArray(options)) return;
+  }
+
+  if (poll !== undefined && typeof poll !== "boolean") {
+    errors.push(`Scene "${sceneId}": activity.poll must be true or false when present (v1.0.32 §2).`);
+  }
+
+  const seen = new Set<string>();
+  let anyCorrect = false;
+  options.forEach((option, i) => {
+    if (!isPlainObject(option) || !isNonEmptyString(option.alias)) {
+      errors.push(`Scene "${sceneId}": activity.options[${i}] needs an "alias" — its picture and its card (v1.0.32 §6).`);
+      return;
+    }
+    if (seen.has(option.alias)) {
+      errors.push(`Scene "${sceneId}": "${option.alias}" is on two options — one card cannot pick both (v1.0.32 §6).`);
+    }
+    seen.add(option.alias);
+    if (!isNonEmptyString(option.label)) {
+      warnings.push(`Scene "${sceneId}": option "${option.alias}" has no "label" — the class sees the asset name instead (v1.0.32 §6).`);
+    }
+    if (option.correct === true) anyCorrect = true;
+  });
+
+  if (poll === true && anyCorrect) {
+    warnings.push(`Scene "${sceneId}": a "poll" has no right answer — "correct" is ignored (v1.0.32 §2.1).`);
+  } else if (poll !== true && !anyCorrect) {
+    warnings.push(`Scene "${sceneId}": no option is "correct" and this is not a "poll" — nothing lights up at the reveal (v1.0.32 §6).`);
   }
 }
 
@@ -845,22 +1080,101 @@ function validateActivity(
     validateJigsaw(activity, sceneId, errors, warnings);
   } else if (activity.type === "sort") {
     validateSort(activity, sceneId, errors, warnings);
+  } else if (activity.type === "connect") {
+    validateConnect(activity, sceneId, errors, warnings);
   } else if (activity.type === "find") {
     validateFind(activity, sceneId, elementAliases, errors, warnings);
   } else if (activity.type === "all-respond") {
     validateAllRespond(activity, sceneId, errors, warnings);
-  } else if (activity.type === "pick-correct" && activity.navigate !== undefined) {
+  } else if (activity.type === "pick-correct") {
     // «يُجاب بالإطار والأزرار» (v1.0.24 §5). البنية وحدها: أمّا وجود صندوق
     // مربوط فسؤالٌ لا يعرفه مشهد — يفحصه الاستوديو ويحذّر منه.
-    if (typeof activity.navigate !== "boolean") {
+    if (activity.navigate !== undefined && typeof activity.navigate !== "boolean") {
       errors.push(`Scene "${sceneId}": activity.navigate must be true or false when present (v1.0.24 §5).`);
     }
+    validatePickCorrectWords(activity, sceneId, errors, warnings);
   }
   // Lifecycle effects (Scene-Model-Specification-v1.0.4.md). Optional —
   // absent means the activity behaves exactly as it did before effects
   // existed, so no existing content gains an error from this check.
   const effects = validateActivityEffects(activity.effects, `Scene "${sceneId}": activity.effects`);
   errors.push(...effects.errors);
+}
+
+/**
+ * Ids a sprite can have that OUTLIVE the scene revealing them: a line's
+ * `showObject`/`showCharacter`, an activity's reward, the story's main
+ * character. Scene `elements[]` are the opposite — removed when their
+ * scene is left — so they are deliberately NOT in this set.
+ */
+function storyWideSpriteIds(story: Record<string, unknown>): Set<string> {
+  const ids = new Set<string>(["doll"]);   // the legacy line.showPuzzleObject reveal
+  if (isNonEmptyString(story.mainCharacterId)) ids.add(story.mainCharacterId);
+  for (const scene of Array.isArray(story.scenes) ? story.scenes : []) {
+    if (!isPlainObject(scene)) continue;
+    for (const line of Array.isArray(scene.lines) ? scene.lines : []) {
+      if (!isPlainObject(line)) continue;
+      if (isNonEmptyString(line.showObject)) ids.add(line.showObject);
+      if (isNonEmptyString(line.showCharacter)) ids.add(line.showCharacter);
+    }
+    const onSolved = isPlainObject(scene.activity) ? scene.activity.onSolved : undefined;
+    if (isPlainObject(onSolved)) {
+      if (isNonEmptyString(onSolved.showObject)) ids.add(onSolved.showObject);
+      if (isNonEmptyString(onSolved.characterArrival)) ids.add(onSolved.characterArrival);
+    }
+  }
+  return ids;
+}
+
+/**
+ * An effect whose `target` is nothing on this scene's stage.
+ *
+ * ⚠️ The Runtime SKIPS such an effect — correctly, a decorative effect must
+ * never stop a lesson — and says so only in the console, which no teacher
+ * reads. So the one symptom anyone sees is "the character stopped
+ * talking": every pose swap silently gone, with nothing pointing at why.
+ *
+ * Measured, twice, on one story: a duplicated scene whose effects still
+ * named the original's element, and an element deleted while its move
+ * step stayed behind. A warning, not an error: the story still plays.
+ */
+function warnDanglingTargets(
+  scene: Record<string, unknown>,
+  sceneId: string,
+  persistentIds: ReadonlySet<string>,
+  warnings: string[]
+): void {
+  const own = new Set(
+    (Array.isArray(scene.elements) ? scene.elements : [])
+      .filter(isPlainObject)
+      .map((el) => el.id)
+      .filter(isNonEmptyString)
+  );
+  const missing = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) node.forEach(walk);
+    else if (isPlainObject(node)) {
+      if (isNonEmptyString(node.type) && isNonEmptyString(node.target) && !own.has(node.target) && !persistentIds.has(node.target)) {
+        missing.add(node.target);
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key !== "target") walk(value);
+      }
+    }
+  };
+  // Only where effects live — actions (`showElement` and friends) name
+  // rewards and backgrounds by alias and are not effects.
+  if (isPlainObject(scene.effects)) walk(scene.effects);
+  for (const line of Array.isArray(scene.lines) ? scene.lines : []) {
+    if (isPlainObject(line)) walk(line.effects);
+  }
+  if (isPlainObject(scene.activity)) walk(scene.activity.effects);
+  for (const el of Array.isArray(scene.elements) ? scene.elements : []) {
+    if (isPlainObject(el) && isPlainObject(el.onTap)) walk(el.onTap.effect);
+  }
+  for (const target of missing) {
+    warnings.push(`Scene "${sceneId}": an effect targets "${target}", which is not an element of this scene — the engine skips it, so it never plays. Point it at an element here, or remove it.`);
+  }
 }
 
 function validateScene(
@@ -1054,9 +1368,13 @@ export function validateStorySchema(data: unknown): SchemaValidationResult {
       for (const scene of story.scenes) {
         if (isPlainObject(scene) && isNonEmptyString(scene.id)) knownSceneIds.add(scene.id);
       }
+      const persistentIds = storyWideSpriteIds(story);
       story.scenes.forEach((scene, i) => {
         const sceneId = isPlainObject(scene) && typeof scene.id === "string" ? scene.id : undefined;
-        const run = () => validateScene(scene, i, knownSceneIds, errors, warnings, trail);
+        const run = () => {
+          validateScene(scene, i, knownSceneIds, errors, warnings, trail);
+          if (isPlainObject(scene)) warnDanglingTargets(scene, sceneId ?? `#${i}`, persistentIds, warnings);
+        };
         if (sceneId) trail.scope({ sceneId }, run);
         else run();
       });

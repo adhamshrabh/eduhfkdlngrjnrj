@@ -35,7 +35,7 @@ import {
   type PrimitiveEffectType,
   authoredSpan
 } from "@core/effects";
-import { StoryDraft, type DraftActivity, type DraftChoice, type DraftElement, type DraftLine, type DraftScene, type DraftSequenceStep, type DraftSequenceStepObject } from "./StoryDraft";
+import { StoryDraft, type DraftActivity, type DraftActivityChoice, type DraftChoice, type DraftElement, type DraftFindSpot, type DraftLine, type DraftScene, type DraftSequenceStep, type DraftSequenceStepObject } from "./StoryDraft";
 import { buildStoryMap, rowOf } from "./StoryMap";
 import { fromSteps, stepLabel, toSteps, type EffectStep } from "./EffectSteps";
 import { localToWorldTransform, type Transform2D } from "@core/content/GroupTransform";
@@ -45,12 +45,13 @@ import { LayoutDraft, degreesToRadians, radiansToDegrees, type DraftPosition } f
 import { StudioApi } from "./StudioApi";
 import { loadCardLabels } from "./deviceCards";
 import { isValidStoryId } from "./storyScaffold";
-import { SceneCanvas, type SceneCanvasChoice, type SceneCanvasElement } from "./ui/SceneCanvas";
+import { SceneCanvas, type PathPicking, type SceneCanvasChoice, type SceneCanvasElement } from "./ui/SceneCanvas";
+import { DEFAULT_WORD_Y, LETTER_PLACES, formAt, formOf, hasLetterAt, letterUnits, occurrences, type LetterPlace } from "@core/text";
 import { ActivityPreview } from "./ui/ActivityPreview";
 import { assetChooser } from "./ui/AssetPicker";
 import { AudioRecorder, aliasFromFileName, pickFile, safeFileName } from "./ui/AudioRecorder";
 import { CharacterSheetImporter } from "./ui/CharacterSheetImporter";
-import { bar, button, checkboxField, el, tag, numberField, panel, row, selectField, spacer, status, tabBar, textField } from "./ui/components";
+import { bar, button, checkboxField, colorField, el, tag, numberField, panel, row, selectField, spacer, status, tabBar, textField } from "./ui/components";
 
 type PropertiesTab = "scene" | "element" | "activity" | "effects";
 
@@ -154,7 +155,8 @@ const EFFECT_TYPE_LABELS: Record<PrimitiveEffectType, string> = {
   "fade-out": "اختفاء تدريجي",
   move: "تحريك",
   scale: "تكبير / تصغير",
-  rotate: "تدوير"
+  rotate: "تدوير",
+  "highlight-letter": "يُضيء حرفًا في كلمته"
 };
 const EFFECT_TYPE_OPTIONS = PRIMITIVE_EFFECT_TYPES.map((t) => ({ value: t, label: EFFECT_TYPE_LABELS[t] }));
 
@@ -170,6 +172,33 @@ const EASE_LABELS: Record<EaseName, string> = {
   "elastic-out": "مطاطي"
 };
 const EASE_OPTIONS = EASE_NAMES.map((e) => ({ value: e, label: EASE_LABELS[e] }));
+
+/** Where in the word a letter is asked for (v1.0.33). Empty = anywhere. */
+const PLACE_LABELS: Record<LetterPlace, string> = {
+  first: "في أوّل الكلمة",
+  middle: "في وسطها",
+  last: "في آخرها"
+};
+const PLACE_OPTIONS = [
+  { value: "", label: "أينما وقع" },
+  ...LETTER_PLACES.map((p) => ({ value: p, label: PLACE_LABELS[p] }))
+];
+
+/** The shape the letter will rise out in — shown to the author before she
+ *  plays it, so «كتاب» giving a detached «ب» is no surprise. */
+function liftPreview(word: string, letter: string, place?: LetterPlace): string {
+  const index = occurrences(word, letter, place)[0];
+  return index === undefined ? `لا «${letter}» ${place ? PLACE_LABELS[place] : "فيها"}` : formOf(word, index);
+}
+
+/** What a «وصل» anchor shows (v1.0.36): the authored text, else the
+ *  letter's form in its place, else the bare letter. Mirrors the engine's
+ *  `anchorText` — the Studio does not import `@game`. */
+function connectAnchorText(anchor: { label?: string; letter?: string; place?: LetterPlace }): string {
+  if (anchor.label) return anchor.label;
+  if (anchor.letter && anchor.place) return formAt(anchor.letter, anchor.place);
+  return anchor.letter ?? "";
+}
 
 /** A newly-picked effect, complete enough to be contract-valid the
  *  instant it is created — move/scale/rotate would otherwise fail
@@ -194,6 +223,9 @@ function defaultEffectFor(
   if (type === "scale") effect.to = 1.2;
   else if (type === "rotate") effect.to = 15;
   else if (type === "move") effect.to = here ? { x: Math.round(here.x), y: Math.round(here.y) } : { x: 960, y: 540 };
+  // A letter is needed to be valid at all; the Arabic alphabet's first is
+  // as good a placeholder as any, and the field under it says to change it.
+  else if (type === "highlight-letter") effect.to = "ا";
   return effect;
 }
 
@@ -348,6 +380,8 @@ export class StudioApp {
   /** Cancels an in-progress "point at the stage" pick, so the mode can
    *  never be left stuck on when the panel re-renders. */
   private cancelPointPick: (() => void) | null = null;
+  /** The multi-point path tool, while it is open (v1.0.33 §2). */
+  private pathPicking: PathPicking | null = null;
 
   /** The Properties panel's body — a stable node rebuilt by
    *  renderPropertiesBody() alone (tab switches, selection changes),
@@ -1138,6 +1172,11 @@ export class StudioApp {
     const host = this.propertiesHost;
     if (!host) return;
     host.replaceChildren();
+    // A path belongs to the step on screen; whichever step draws next puts
+    // its own back (v1.0.33 §2). A path still being drawn is abandoned.
+    this.pathPicking?.cancel();
+    this.pathPicking = null;
+    this.activeCanvas?.showPath(null);
 
     const scene = this.selectedSceneId ? this.draft?.getScene(this.selectedSceneId) : undefined;
 
@@ -2727,6 +2766,61 @@ export class StudioApp {
       el("div", "s-item__meta", "حركة صغيرة مستمرة تُبقي المشهد حيًّا بين الأحداث. تتوقّف تلقائيًا أثناء أي تأثير.")
     );
 
+    // ---------- a word written on it (v1.0.33 §3) ----------------------
+    // Live on the stage as she types — through the canvas, not a remount,
+    // so the picture does not blink once per letter.
+    if (element.type !== "group") {
+      wrap.appendChild(el("div", "s-field__label", "كلمة مكتوبة عليه"));
+      wrap.appendChild(
+        textField(
+          "الكلمة",
+          element.word?.text ?? "",
+          (value) => {
+            draft.setElementWord(scene.id, element.id, value);
+            const word = draft.getScene(scene.id)?.elements.find((e) => e.id === element.id)?.word;
+            this.activeCanvas?.setWord(element.id, value.trim(), word?.y, word?.color);
+            this.markEdited();
+          },
+          "مثل: بالون"
+        )
+      );
+      if (element.word?.text) {
+        const current = (): { text: string; y?: number; color?: string } =>
+          draft.getScene(scene.id)?.elements.find((e) => e.id === element.id)?.word ?? { text: "" };
+        wrap.appendChild(
+          numberField(
+            "موضعها من أعلى الصورة (٠–١)",
+            element.word.y ?? DEFAULT_WORD_Y,
+            (y) => {
+              const word = current();
+              draft.setElementWord(scene.id, element.id, word.text, y);
+              this.activeCanvas?.setWord(element.id, word.text, y, word.color);
+              this.markEdited();
+            },
+            2,
+            0
+          )
+        );
+        wrap.appendChild(
+          colorField(
+            "لون الكلمة",
+            element.word.color ?? "",
+            (color) => {
+              const word = current();
+              draft.setElementWord(scene.id, element.id, word.text, undefined, color || null);
+              this.activeCanvas?.setWord(element.id, word.text, word.y, color || undefined);
+              this.markEdited();
+              this.renderPropertiesBody();
+            },
+            "أبيض (الافتراضي)"
+          )
+        );
+      }
+      wrap.appendChild(
+        el("div", "s-item__meta", "تُكتب فوق الصورة وتتحرّك معها. ويُضاء حرفٌ فيها بتأثير «يُضيء حرفًا في كلمته».")
+      );
+    }
+
     // ---------- what it does when the child touches it (v1.0.11 §14) ----
     // The one thing in a scene that happens BECAUSE of the child rather
     // than TO them. "لا شيء" is offered as a real option, not as an empty
@@ -2838,7 +2932,8 @@ export class StudioApp {
       { value: "jigsaw", label: "الأحجية (تركيب صورة)" },
       { value: "sort", label: "الفرز (سلال ومعايير)" },
       { value: "find", label: "ابحث وقُل أين (مواضع في المشهد)" },
-      { value: "all-respond", label: "كل الأيدي (يجيب الصفّ كلّه)" }
+      { value: "all-respond", label: "تصويت الصفّ (كل الأيدي)" },
+      { value: "connect", label: "وصل (عمودان وخطوط)" }
     ];
 
     if (!KNOWN_TYPES.some((t) => t.value === activity.type)) {
@@ -2893,6 +2988,11 @@ export class StudioApp {
 
     if (activity.type === "find") {
       wrap.appendChild(this.renderFindEditor(scene, activity));
+      return wrap;
+    }
+
+    if (activity.type === "connect") {
+      wrap.appendChild(this.renderConnectEditor(scene, activity));
       return wrap;
     }
 
@@ -2956,106 +3056,7 @@ export class StudioApp {
       })
     );
 
-    // --- 2. on success (existing onSolved outcome fields only) ------
-    wrap.appendChild(el("div", "s-field__label", "٢ · عند الحل الصحيح"));
-
-    // Where the story goes leads this group, ahead of the decorative
-    // outcomes: it is the only one that changes what the child sees next.
-    // Its "auto" label resolves the SAME way the Runtime does
-    // (resolveNextScene: this field → the scene's own next → the scene
-    // after it in the array), so the option never claims a destination
-    // the engine won't actually take.
-    {
-      const otherScenes = draft.scenes.filter((s) => s.id !== scene.id);
-      const fallbackId = scene.nextScene ?? draft.getSequentialNextScene(scene.id)?.id ?? null;
-      const fallback = fallbackId ? draft.scenes.find((s) => s.id === fallbackId) : undefined;
-      const autoLabel = fallback ? `تلقائي ← ${fallback.name ?? fallback.id}` : "تلقائي ← نهاية القصة";
-      wrap.appendChild(
-        selectField(
-          "المشهد التالي",
-          activity.onSolved?.nextScene ?? "",
-          [{ value: "", label: autoLabel }, ...otherScenes.map((s) => ({ value: s.id, label: s.name ?? s.id }))],
-          (value) => {
-            draft.updateActivityOnSolved(scene.id, { nextScene: value });
-            this.markEdited();
-            this.render();
-          }
-        )
-      );
-    }
-
-    // A reward is an object that APPEARS on solve — a backdrop never is,
-    // and listing every backdrop here both bloated the grid and offered
-    // choices that make no sense as a reward. Excluded by what the
-    // content actually declares as a backdrop (see
-    // StoryDraft.backgroundAliases), not by guessing at names.
-    const backgroundAliases = draft.backgroundAliases;
-    const rewardAssets = draft.assets.filter((a) => isImageAsset(a.src) && !backgroundAliases.has(a.alias));
-    if (rewardAssets.length > 0) {
-      wrap.appendChild(
-        assetChooser(
-          "عنصر المكافأة",
-          rewardAssets.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
-          activity.onSolved?.showObject,
-          (alias) => {
-            draft.updateActivityOnSolved(scene.id, { showObject: alias ?? "" });
-            this.markEdited();
-            this.render();
-          },
-          { allowNone: true, noneLabel: "بدون", triggerLabel: "بدون مكافأة" }
-        )
-      );
-    }
-
-    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
-    wrap.appendChild(
-      selectField(
-        "صوت النجاح",
-        activity.onSolved?.playAudio ?? "",
-        [{ value: "", label: "بدون" }, ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))],
-        (value) => {
-          draft.updateActivityOnSolved(scene.id, { playAudio: value });
-          this.markEdited();
-        }
-      )
-    );
-
-    // The Runtime runs a success animation ON the reward object —
-    // translateOnSolvedToActions() (game/scenes/ActionExecutor.ts) needs
-    // `showObject` as the animation's target and silently skips the
-    // action (console warning only) when there isn't one. Surfacing that
-    // here rather than letting the control quietly do nothing.
-    wrap.appendChild(
-      selectField(
-        "حركة عنصر المكافأة",
-        activity.onSolved?.animation ?? "",
-        [{ value: "", label: "بدون" }, ...ANIMATION_PRESETS],
-        (value) => {
-          draft.updateActivityOnSolved(scene.id, { animation: value });
-          this.markEdited();
-          this.render();
-        }
-      )
-    );
-    if (activity.onSolved?.animation && !activity.onSolved?.showObject) {
-      wrap.appendChild(
-        status("warn", "اختر «عنصر المكافأة» أعلاه — التأثير الحركي يُطبَّق عليه، وبدونه لن يعمل.")
-      );
-    }
-
-    if (scene.elements.length > 0) {
-      wrap.appendChild(
-        selectField(
-          "وصول شخصية (تحليق للداخل)",
-          activity.onSolved?.characterArrival ?? "",
-          [{ value: "", label: "بدون" }, ...scene.elements.map((e) => ({ value: e.id, label: e.id }))],
-          (value) => {
-            draft.updateActivityOnSolved(scene.id, { characterArrival: value });
-            this.markEdited();
-          }
-        )
-      );
-    }
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "٢ · عند الحل الصحيح"));
 
     // Effects used to live here, which is what made motion look like a
     // feature of matching. They now have their own tab — including this
@@ -3483,6 +3484,15 @@ export class StudioApp {
           numberField("إلى Y", to.y, (y) => patch({ to: { ...to, y } }))
         )
       );
+
+      // ── the path (v1.0.33 §2) ────────────────────────────────────────
+      // Clicked, not typed, for the same reason as the destination above.
+      // The LAST click is the destination and every one before it a point
+      // to pass through — so one gesture sets both, and a path of one
+      // click is simply "move here", which is what it looks like.
+      wrap.appendChild(this.renderMovePathControls(effect, patch));
+    } else if (effect.type === "highlight-letter") {
+      wrap.appendChild(this.renderHighlightLetterFields(effect, patch));
     } else if (effect.type === "set-image") {
       // Thumbnails, not a list of names: the author is choosing a picture,
       // and every image the story has is a legitimate choice.
@@ -3577,6 +3587,173 @@ export class StudioApp {
   }
 
   /**
+   * The word on one option and the path it floats in by (v1.0.33 §5).
+   *
+   * The word commits on change, not per keystroke: it may flip `correct`
+   * (a suggestion from the letter), and the row's button must say so —
+   * which takes a render, and a render per letter would steal focus.
+   *
+   * Every click here is a point the balloon passes, the first being where
+   * it appears; the curve always ends where the option has been placed,
+   * so the landing is set by dragging, as it always was.
+   */
+  private renderChoiceWordAndPath(scene: DraftScene, choice: DraftActivityChoice): HTMLElement {
+    const draft = this.draft!;
+    const box = el("div", "s-stack s-stack--indent");
+
+    const wordField = textField("الكلمة على الصورة", choice.label ?? "", () => {}, "مثل: باب");
+    wordField.querySelector("input")?.addEventListener("change", (e) => {
+      draft.updateActivityChoice(scene.id, choice.id, { label: (e.target as HTMLInputElement).value });
+      this.markEdited();
+      this.render();
+    });
+    box.appendChild(wordField);
+
+    const path = choice.path ?? [];
+    const landing = choice.x !== undefined && choice.y !== undefined ? { x: choice.x, y: choice.y } : undefined;
+    const drawBtn = button(
+      path.length > 0 ? "أعد رسم مسار الدخول" : "ارسم مسار الدخول",
+      () => {
+        const canvas = this.activeCanvas;
+        if (!canvas) return;
+        if (this.pathPicking) {
+          this.pathPicking.finish();
+          return;
+        }
+        drawBtn.textContent = "انقر من أين يبدأ ثم نقاط مروره… Enter للإنهاء";
+        drawBtn.classList.add("s-btn--primary");
+        this.pathPicking = canvas.pickPath({ to: landing }, (points) => {
+          this.pathPicking = null;
+          if (points && points.length > 0) {
+            draft.updateActivityChoice(scene.id, choice.id, { path: points });
+            this.markEdited();
+          }
+          this.render();
+        });
+      },
+      "ghost",
+      "target"
+    );
+    const controls = [drawBtn];
+    if (path.length > 0) {
+      controls.push(
+        button("إظهار", () => this.activeCanvas?.showPath({ points: path, to: landing }), "ghost"),
+        button("امسح", () => {
+          draft.updateActivityChoice(scene.id, choice.id, { path: [] });
+          this.markEdited();
+          this.render();
+        }, "danger")
+      );
+    }
+    box.appendChild(row(...controls));
+    if (!landing) {
+      box.appendChild(el("div", "s-item__meta", "اسحبه على المسرح أولًا ليُعرف أين يهبط — وإلّا هبط في موضعه التلقائي."));
+    }
+    return box;
+  }
+
+  /**
+   * «ارسم المسار» for a `move` step (v1.0.33 §2).
+   *
+   * The curve starts where the element stands on the stage now — the same
+   * place the engine starts it — so the preview line is the flight.
+   */
+  private renderMovePathControls(effect: PrimitiveEffect, patch: (changes: Partial<PrimitiveEffect>) => void): HTMLElement {
+    const box = el("div", "s-stack");
+    const canvas = this.activeCanvas;
+    const from = canvas?.getTransform(effect.target) ?? undefined;
+    const to = effect.to as EffectPoint | undefined;
+    const path = Array.isArray(effect.path) ? effect.path : [];
+    if (canvas && (path.length > 0 || to)) canvas.showPath({ from, points: path, to });
+
+    const drawBtn = button(
+      path.length > 0 ? "أعد رسم المسار" : "ارسم مسارًا بنقاط",
+      () => {
+        const live = this.activeCanvas;
+        if (!live) return;
+        if (this.pathPicking) {
+          this.pathPicking.finish();
+          return;
+        }
+        drawBtn.textContent = "انقر النقاط بالترتيب… اضغط هنا أو Enter للإنهاء";
+        drawBtn.classList.add("s-btn--primary");
+        this.pathPicking = live.pickPath({ from }, (points) => {
+          this.pathPicking = null;
+          if (!points || points.length === 0) {
+            this.renderPropertiesBody();
+            return;
+          }
+          const destination = points[points.length - 1]!;
+          const through = points.slice(0, -1);
+          patch({ to: destination, path: through.length > 0 ? through : undefined });
+        });
+      },
+      "ghost",
+      "target"
+    );
+    drawBtn.style.width = "100%";
+    box.appendChild(drawBtn);
+
+    if (path.length > 0) {
+      box.appendChild(
+        row(
+          el("div", "s-item__meta", `يمرّ بـ${path.length} ${path.length === 1 ? "نقطة" : "نقاط"} قبل وجهته.`),
+          button("امسح المسار", () => patch({ path: undefined }), "danger")
+        )
+      );
+    }
+    box.appendChild(
+      el("div", "s-item__meta", "آخر نقرة هي الوجهة، وما قبلها نقاطٌ يمرّ بها بمنحنى ناعم. Backspace يحذف آخر نقطة، وEsc يلغي.")
+    );
+    return box;
+  }
+
+  /**
+   * «يُضيء حرفًا في كلمته» (v1.0.33 §4): which letter, where in the word,
+   * and whether it rises out in its shape.
+   */
+  private renderHighlightLetterFields(effect: PrimitiveEffect, patch: (changes: Partial<PrimitiveEffect>) => void): HTMLElement {
+    const box = el("div", "s-stack");
+    const letter = typeof effect.to === "string" ? effect.to : "";
+    const scene = this.selectedSceneId ? this.draft?.getScene(this.selectedSceneId) : undefined;
+    const word = scene?.elements.find((e) => e.id === effect.target)?.word?.text;
+
+    if (!word) {
+      box.appendChild(status("warn", "الهدف بلا كلمة مكتوبة عليه — اكتبها من تبويب «العنصر» أولًا، وإلّا لن يُضاء شيء."));
+    }
+    const letterField = textField("الحرف", letter, (value) => {
+      // Written only when it is one letter: a half-typed «با» would turn
+      // the validation strip red for a keystroke's worth of nothing.
+      if (letterUnits(value.trim()).length === 1) patch({ to: value.trim() });
+    }, "مثل: ب");
+    box.appendChild(letterField);
+    box.appendChild(
+      selectField("أين في الكلمة", effect.place ?? "", PLACE_OPTIONS, (value) =>
+        patch({ place: (LETTER_PLACES as readonly string[]).includes(value) ? (value as LetterPlace) : undefined })
+      )
+    );
+    box.appendChild(
+      colorField("لون الحرف", effect.color ?? "", (color) => patch({ color: color || undefined }), "أخضر الدرس (الافتراضي)")
+    );
+    box.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "لتلوين كل حرفٍ بلون: أضيفي خطوةً لكل حرف واختاري لكلٍّ لونه. وعلّمي «مع السابقة في وقت واحد» لتُضاء معًا، أو اتركيها لتُضاء واحدًا بعد واحد."
+      )
+    );
+    box.appendChild(
+      checkboxField(
+        "يخرج الحرف من الكلمة بشكله",
+        effect.lift === true,
+        (checked) => patch({ lift: checked || undefined }),
+        word && letter ? `في «${word}» يخرج هكذا: ${liftPreview(word, letter, effect.place)}` : "مثل «بـ» من «بالون» — المحرّك يعرف الشكل من موضع الحرف."
+      )
+    );
+    return box;
+  }
+
+  /**
    * "Try it" — runs this activity for real on the stage, using the
    * engine's own PuzzleRunner (see ui/ActivityPreview.ts for why that is
    * a reuse, not a second implementation). Reads the CURRENT draft, so an
@@ -3600,9 +3777,10 @@ export class StudioApp {
    *    no gain. The stage draws the options alongside the scene, which is
    *    also the only way to judge whether they overlap the character.
    *
-   * 2. **Exactly one option is correct** — marking a new one clears the
-   *    others (StoryDraft enforces it). Two correct answers is not a
-   *    richer question; it is a question the author did not finish.
+   * 2. **Several options may be correct** since v1.0.33 §5 — «choose
+   *    every word that starts with ب» is one question with two answers,
+   *    solved when all of them are picked. Until then it was exactly one,
+   *    and that rule was right for the questions that existed.
    *
    * 3. **What happens after a correct answer is NOT here.** It is the
    *    existing «التأثيرات» tab and «المشهد التالي» — the same fields
@@ -3757,6 +3935,9 @@ export class StudioApp {
       )
     );
 
+
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "عند الجواب الصحيح"));
+
     return wrap;
   }
 
@@ -3777,6 +3958,145 @@ export class StudioApp {
    * والقطع تُقصّ وقت التشغيل (§3) — فالمؤلّفة تختار صورةً وشبكةً، وانتهى.
    * وهذا ما يجعل النوع مستعمَلاً في روضةٍ بلا مصمّم.
    */
+  /**
+   * ما يحدث حين يُحلّ النشاط — لكل نوعٍ لا لـ`drag-match` وحده.
+   *
+   * ⚠️ كان هذا القسم محبوساً في مسار `drag-match` في `renderActivityTab`:
+   * كل نوعٍ آخر يعود من فرعه **قبل** أن يبلغه. ونتيجته أن سبعة أنواع من
+   * ثمانية لا تملك في الاستوديو صوتَ نجاح ولا عنصر مكافأة ولا وجهةً
+   * صريحة — تُؤلَّف في JSON أو لا تُؤلَّف.
+   *
+   * ولم يظهر العطل لأن القصّة **تمضي** بدونه: `resolveNextScene` يسقط على
+   * `scene.nextScene` ثم على التالي في المصفوفة. فالنشاط ينتهي، ولا يحتفل
+   * بشيء — وهو أسوأ من أن يتعطّل، لأن لا أحد يشتكي.
+   *
+   * @param reward هل يُعرض «عنصر المكافأة»؟ يُطفأ لمن يملك اختياراً خاصّاً
+   *               به أصلاً (مثل «ابحث»: الغرض الذي يُعثَر عليه).
+   */
+  private renderSolvedOutcome(
+    scene: DraftScene,
+    activity: DraftActivity,
+    heading: string,
+    reward = true
+  ): HTMLElement {
+    const draft = this.draft!;
+    const out = el("div", "s-stack");
+    // --- 2. on success (existing onSolved outcome fields only) ------
+    out.appendChild(el("div", "s-field__label", heading));
+
+    // ⚠️ **لا «مشهد تالٍ» هنا.** وجهةُ القصّة تُؤلَّف في السيناريو وحده.
+    //
+    // كان هذا الحقل يكتب `onSolved.nextScene`، وهو يتقدّم على
+    // `scene.nextScene` في `resolveNextScene`. فسطحان لقرارٍ واحد،
+    // وأحدهما **يتجاوز الآخر بصمت**: تضبط المؤلّفة الوجهة في السيناريو،
+    // فلا تتغيّر، ولا شيء يقول لها لماذا.
+    //
+    // وما يبرّر حقلاً ثانياً هو أن يقول شيئاً لا يقوله الأوّل — والنشاط
+    // له مخرجٌ واحد (حُلَّ)، فلا فرع ولا زيادة معنى. فالحقل تكرارٌ لا خيار.
+    //
+    // ولا يُمحى من العقد: محتوىً قديم يحمله ما زال يعمل كما كان. وما
+    // يُعرَض هنا بدله **إشعارٌ بوجوده وزرٌّ لإزالته** — فلا تبقى حالةٌ
+    // خفيّة تتجاوز ما ضبطته المؤلّفة بيدها.
+    if (activity.onSolved?.nextScene) {
+      const target = draft.scenes.find((sc) => sc.id === activity.onSolved?.nextScene);
+      const row = el("div", "s-item");
+      row.appendChild(
+        el(
+          "div",
+          "s-item__meta s-item__meta--warn",
+          `هذا النشاط يحمل وجهةً خاصّة إلى «${target?.name ?? activity.onSolved.nextScene}» تتجاوز «المشهد التالي» في السيناريو.`
+        )
+      );
+      const clear = el("button", "s-btn") as HTMLButtonElement;
+      clear.type = "button";
+      clear.textContent = "أزل الوجهة الخاصّة";
+      clear.onclick = () => {
+        draft.updateActivityOnSolved(scene.id, { nextScene: "" });
+        this.markEdited();
+        this.render();
+      };
+      row.appendChild(clear);
+      out.appendChild(row);
+    }
+
+    // A reward is an object that APPEARS on solve — a backdrop never is,
+    // and listing every backdrop here both bloated the grid and offered
+    // choices that make no sense as a reward. Excluded by what the
+    // content actually declares as a backdrop (see
+    // StoryDraft.backgroundAliases), not by guessing at names.
+    const backgroundAliases = draft.backgroundAliases;
+    const rewardAssets = draft.assets.filter((a) => isImageAsset(a.src) && !backgroundAliases.has(a.alias));
+    if (reward && rewardAssets.length > 0) {
+      out.appendChild(
+        assetChooser(
+          "عنصر المكافأة",
+          rewardAssets.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          activity.onSolved?.showObject,
+          (alias) => {
+            draft.updateActivityOnSolved(scene.id, { showObject: alias ?? "" });
+            this.markEdited();
+            this.render();
+          },
+          { allowNone: true, noneLabel: "بدون", triggerLabel: "بدون مكافأة" }
+        )
+      );
+    }
+
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    out.appendChild(
+      selectField(
+        "صوت النجاح",
+        activity.onSolved?.playAudio ?? "",
+        [{ value: "", label: "بدون" }, ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))],
+        (value) => {
+          draft.updateActivityOnSolved(scene.id, { playAudio: value });
+          this.markEdited();
+        }
+      )
+    );
+
+    // The Runtime runs a success animation ON the reward object —
+    // translateOnSolvedToActions() (game/scenes/ActionExecutor.ts) needs
+    // `showObject` as the animation's target and silently skips the
+    // action (console warning only) when there isn't one. Surfacing that
+    // here rather than letting the control quietly do nothing.
+    if (reward) {
+      out.appendChild(
+      selectField(
+        "حركة عنصر المكافأة",
+        activity.onSolved?.animation ?? "",
+        [{ value: "", label: "بدون" }, ...ANIMATION_PRESETS],
+        (value) => {
+          draft.updateActivityOnSolved(scene.id, { animation: value });
+          this.markEdited();
+          this.render();
+        }
+      )
+    );
+    if (activity.onSolved?.animation && !activity.onSolved?.showObject) {
+        out.appendChild(
+          status("warn", "اختر «عنصر المكافأة» أعلاه — التأثير الحركي يُطبَّق عليه، وبدونه لن يعمل.")
+        );
+      }
+    }
+
+    if (scene.elements.length > 0) {
+      out.appendChild(
+        selectField(
+          "وصول شخصية (تحليق للداخل)",
+          activity.onSolved?.characterArrival ?? "",
+          [{ value: "", label: "بدون" }, ...scene.elements.map((e) => ({ value: e.id, label: e.id }))],
+          (value) => {
+            draft.updateActivityOnSolved(scene.id, { characterArrival: value });
+            this.markEdited();
+          }
+        )
+      );
+    }
+
+    return out;
+  }
+
   private renderJigsawEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
     const draft = this.draft!;
     const wrap = el("div", "s-stack");
@@ -3910,8 +4230,10 @@ export class StudioApp {
       );
     }
 
-    // --- ٥ · ردّ الخطأ ---------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٥ · حين تُفلَت القطعة بعيداً"));
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "٥ · عند اكتمال الصورة"));
+
+    // --- ٦ · ردّ الخطأ ---------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٦ · حين تُفلَت القطعة بعيداً"));
     wrap.appendChild(
       el(
         "div",
@@ -3956,7 +4278,6 @@ export class StudioApp {
 
     const bins = activity.bins ?? [];
     const items = activity.items ?? [];
-    const binOptions = bins.map((bin) => ({ value: bin.id, label: bin.label || bin.id }));
 
     // --- ٢ · السؤال ------------------------------------------------
     wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
@@ -3974,45 +4295,66 @@ export class StudioApp {
       })
     );
 
-    // --- ٣ · السلال -------------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٣ · السلال"));
+    // --- ٣ · السلال وأغراضها ---------------------------------------
+    //
+    // ⚠️ قسمٌ واحد لا قسمان، والسبب تجربةُ استعمالٍ لا ترتيبُ شاشة.
+    //
+    // كان السابق يفصل «السلال» عن «الأغراض»: تُسمّى السلال أوّلاً، ثم
+    // تُضاف الأغراض إلى قائمةٍ مسطّحة، ثم تُسنَد كلٌّ إلى سلّتها بقائمةٍ
+    // منسدلة. ثلاث خطوات لفكرةٍ واحدة — «هذه السلّة فيها هذه الأغراض» —
+    // ولا موضع في الشاشة تُقرأ فيه تلك الفكرة كاملة.
+    //
+    // والآن: السلّة صندوقٌ يحوي أغراضه، وتُضاف إليه مباشرةً. والنقل بين
+    // سلّتين لا زرّ له: إضافةُ غرضٍ موجود إلى سلّةٍ أخرى **تنقله**.
+    wrap.appendChild(el("div", "s-field__label", "٣ · السلال وأغراضها"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "سمِّ السلّة، ثم أضف إليها أغراضها. وغرضٌ تضيفه إلى سلّةٍ أخرى ينتقل إليها ولا يتكرّر."
+      )
+    );
+
+    if (items.length === 0) {
+      wrap.appendChild(status("bad", "بلا أغراض لا يوجد ما يُفرَز — أضف غرضاً إلى إحدى السلال."));
+    }
+
     bins.forEach((bin) => {
-      const row = el("div", "s-item");
-      const input = el("input", "s-input") as HTMLInputElement;
-      input.type = "text";
-      input.value = bin.label ?? "";
-      input.placeholder = "اسم السلّة — «أغراض يارا»";
+      const card = el("div", "s-fx-step");
+      const head = el("div", "s-item");
+
+      const name = el("input", "s-input") as HTMLInputElement;
+      name.type = "text";
+      name.value = bin.label ?? "";
+      name.placeholder = "اسم السلّة — «حرف الألف»";
       // عند الخروج لا عند كل حرف: إعادة الرسم وسط الكتابة تسرق التركيز.
-      input.onblur = () => {
-        if (input.value.trim() === (bin.label ?? "")) return;
-        draft.updateSortBin(scene.id, bin.id, { label: input.value.trim() });
+      name.onblur = () => {
+        if (name.value.trim() === (bin.label ?? "")) return;
+        draft.updateSortBin(scene.id, bin.id, { label: name.value.trim() });
         this.markEdited();
         this.render();
       };
-      row.appendChild(input);
+      head.appendChild(name);
 
-      const count = items.filter((item) => item.bin === bin.id).length;
-      row.appendChild(el("div", "s-item__meta", `${count} غرض`));
-
-      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
-      remove.type = "button";
-      remove.textContent = "حذف";
+      const removeBin = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      removeBin.type = "button";
+      removeBin.textContent = "حذف السلّة";
       // سلّتان الحدّ الأدنى — وحذفُ سلّةٍ يحذف أغراضها معها، وإلّا بقي
       // غرضٌ يتيم لا تُقبل له إجابة أبداً.
-      remove.disabled = bins.length <= 2;
-      remove.onclick = () => {
+      removeBin.disabled = bins.length <= 2;
+      removeBin.onclick = () => {
         if (!draft.removeSortBin(scene.id, bin.id)) return;
         this.markEdited();
         this.render();
       };
-      row.appendChild(remove);
-      wrap.appendChild(row);
+      head.appendChild(removeBin);
+      card.appendChild(head);
 
       if (!bin.label) {
-        wrap.appendChild(status("warn", "سلّة بلا اسم لا تقول للطفلة ما الذي تجمعه."));
+        card.appendChild(status("warn", "سلّة بلا اسم لا تقول للطفلة ما الذي تجمعه."));
       }
 
-      wrap.appendChild(
+      card.appendChild(
         assetChooser(
           "",
           images.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
@@ -4025,6 +4367,53 @@ export class StudioApp {
           { allowNone: true, noneLabel: "إطار بلا صورة", triggerLabel: "صورة السلّة (اختياري)" }
         )
       );
+
+      const inBin = items.filter((item) => item.bin === bin.id);
+      if (inBin.length === 0) {
+        // سلّةٌ لا ينتمي إليها شيء تبقى فارغة في كل حلٍّ صحيح — وهي على
+        // الأرجح سلّةٌ نُسي ملؤها، لا قراراً.
+        card.appendChild(el("div", "s-item__meta", "لا غرض فيها — تبقى فارغة في الحلّ الصحيح."));
+      }
+
+      inBin.forEach((item) => {
+        const row = el("div", "s-item");
+        row.appendChild(el("div", "s-item__name", item.alias));
+        if (!draft.assets.some((a) => a.alias === item.alias)) {
+          row.appendChild(tag("warning", "صورة مفقودة", "s-item__meta s-item__meta--warn"));
+        }
+        const drop = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+        drop.type = "button";
+        drop.textContent = "أخرجه";
+        drop.onclick = () => {
+          draft.removeSortItem(scene.id, item.id);
+          this.markEdited();
+          this.render();
+        };
+        row.appendChild(drop);
+        card.appendChild(row);
+      });
+
+      // ما ليس في هذه السلّة أصلاً — وفيه ما هو في سلّةٍ أخرى، لأن
+      // اختياره يعني نقله، وهو المقصود.
+      const addable = images.filter((a) => !inBin.some((item) => item.alias === a.alias));
+      if (addable.length > 0) {
+        card.appendChild(
+          assetChooser(
+            "",
+            addable.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+            undefined,
+            (alias) => {
+              if (!alias) return;
+              draft.addSortItem(scene.id, alias, bin.id);
+              this.markEdited();
+              this.render();
+            },
+            { allowNone: false, triggerLabel: `أضف غرضاً إلى «${bin.label || bin.id}»` }
+          )
+        );
+      }
+
+      wrap.appendChild(card);
     });
 
     wrap.appendChild(
@@ -4035,80 +4424,12 @@ export class StudioApp {
       })
     );
 
-    // --- ٤ · الأغراض ------------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٤ · الأغراض وسلّاتها"));
-
-    if (items.length === 0) {
-      wrap.appendChild(status("bad", "بلا أغراض لا يوجد ما يُفرَز — أضف غرضاً أدناه."));
-    }
-
-    items.forEach((item) => {
-      const row = el("div", "s-item");
-      row.appendChild(el("div", "s-item__name", item.alias));
-      const missing = !draft.assets.some((a) => a.alias === item.alias);
-      if (missing) row.appendChild(tag("warning", "صورة مفقودة", "s-item__meta s-item__meta--warn"));
-
-      const select = el("select", "s-select") as HTMLSelectElement;
-      for (const option of binOptions) {
-        const node = document.createElement("option");
-        node.value = option.value;
-        node.textContent = option.label;
-        select.appendChild(node);
-      }
-      select.value = item.bin;
-      select.onchange = () => {
-        draft.setSortItemBin(scene.id, item.id, select.value);
-        this.markEdited();
-        this.render();
-      };
-      row.appendChild(select);
-
-      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
-      remove.type = "button";
-      remove.textContent = "حذف";
-      remove.onclick = () => {
-        draft.removeSortItem(scene.id, item.id);
-        this.markEdited();
-        this.render();
-      };
-      row.appendChild(remove);
-      wrap.appendChild(row);
-    });
-
-    // سلّةٌ لا ينتمي إليها شيء تبقى فارغة في كل حلٍّ صحيح — وهي على الأرجح
-    // سلّةٌ نُسي ملؤها، لا قراراً.
-    const emptyBins = bins.filter((bin) => !items.some((item) => item.bin === bin.id));
-    if (items.length > 0 && emptyBins.length > 0) {
-      wrap.appendChild(
-        status("warn", `لا غرض في: ${emptyBins.map((b) => b.label || b.id).join("، ")} — تبقى فارغة في الحلّ الصحيح.`)
-      );
-    }
-
-    const firstBin = bins[0]?.id;
-    if (firstBin && images.length > 0) {
-      wrap.appendChild(
-        assetChooser(
-          "",
-          images.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
-          undefined,
-          (alias) => {
-            if (!alias) return;
-            draft.addSortItem(scene.id, alias, firstBin);
-            this.markEdited();
-            this.render();
-          },
-          { allowNone: false, triggerLabel: "أضف غرضاً" }
-        )
-      );
-      wrap.appendChild(el("div", "s-item__meta", `يُضاف إلى «${bins[0]?.label || firstBin}»، ثم انقله من قائمته.`));
-    }
-
-    // --- ٥ · تبديل القاعدة ------------------------------------------
+    // --- ٤ · تبديل القاعدة ------------------------------------------
     //
     // ليس حقلاً بل توصية: ما يدرّب المرونة المعرفية هو الفرز مرّتين
     // بالأغراض **نفسها** وقاعدةٍ أخرى — ويُؤلَّف مشهدين، بلا أي إضافة إلى
     // العقد (§4). وحقلٌ لهذا كان سيصف داخل نشاطٍ ما يصفه مشهدان بوضوحٍ أكبر.
-    wrap.appendChild(el("div", "s-field__label", "٥ · تبديل القاعدة (توصية)"));
+    wrap.appendChild(el("div", "s-field__label", "٤ · تبديل القاعدة (توصية)"));
     wrap.appendChild(
       el(
         "div",
@@ -4117,13 +4438,65 @@ export class StudioApp {
       )
     );
 
-    // --- ٦ · ردّ الخطأ ----------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٦ · حين يكون الفرز خاطئاً"));
+    // --- ٥ · كيف يُفرَز بالصندوق ------------------------------------
+    //
+    // ⚠️ مؤلَّف لا تلقائي، للسبب نفسه في v1.0.24: **يغيّر معنى الزرّ**.
+    // وبغيابه لا يعني الموضع العاري شيئاً في الفرز إطلاقاً.
+    wrap.appendChild(el("div", "s-field__label", "٥ · الفرز بأزرار الصندوق"));
+    wrap.appendChild(
+      selectField(
+        "إطار الأزرار",
+        activity.navigate === true ? "frame" : "drag",
+        [
+          { value: "drag", label: "يظهر عند أوّل ضغطة زرّ" },
+          { value: "frame", label: "مرئيّ من بداية النشاط" }
+        ],
+        (value) => {
+          draft.setActivityNavigate(scene.id, value === "frame");
+          this.markEdited();
+          this.render();
+        }
+      )
+    );
     wrap.appendChild(
       el(
         "div",
         "s-item__meta",
-        "لا حكم قبل أن يُوضع آخر غرض، ولا شيء يُقلَب بعده: الأغراض تبقى مكانها، ولا يُقال أيّها الخطأ. أيّ تحريك بعد الردّ يُعيد الحكم."
+        "الأسهم تنقل الإطار بين الأغراض والسلال، و«تأكيد» يلتقط الغرض ثم يضعه في السلّة. وتأكيدٌ ثانٍ على المحمول يضعه من اليد." +
+          (activity.navigate === true
+            ? ""
+            : " ولا يظهر الإطار قبل أوّل ضغطة، فلا يراه صفٌّ يعمل باللمس وحده.")
+      )
+    );
+
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "٦ · عند الفرز الصحيح"));
+
+    // --- ٧ · ردّ الخطأ ----------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٧ · حين يكون الفرز خاطئاً"));
+    // v1.0.35: قرارٌ تربويّ تملكه المعلّمة — هل يُترك الخطأ للطفل يبحث عنه،
+    // أم يُريه النشاط إيّاه من أوّل مرّة.
+    wrap.appendChild(
+      selectField(
+        "ماذا يرى الطفل؟",
+        activity.wrongItems === "return" ? "return" : "look",
+        [
+          { value: "look", label: "انظر مرّةً أخرى" },
+          { value: "return", label: "الخاطئ يهتزّ ويعود مكانه" }
+        ],
+        (value) => {
+          draft.setSortWrongItems(scene.id, value === "return" ? "return" : null);
+          this.markEdited();
+          this.render();
+        }
+      )
+    );
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        activity.wrongItems === "return"
+          ? "لا حكم قبل أن يُوضع آخر غرض. ومن أوّل حكمٍ خاطئ: كل غرضٍ في غير سلّته يهتزّ ثم يعود إلى الرفّ، وما صحّ يبقى في سلّته مقفولاً. فيعرف الطفل أيّها أخطأ، ويبقى له أن يقرّر أين يضعه."
+          : "لا حكم قبل أن يُوضع آخر غرض. في الحكم الخاطئ الأوّل يُقال الردّ وحده ولا يتحرّك شيء — فالمحاولة الأولى قياسٌ لما يعرفه الطفل. ومن الثاني يعود الخاطئ إلى الرفّ ويُقفَل الصحيح."
       )
     );
     wrap.appendChild(
@@ -4155,16 +4528,14 @@ export class StudioApp {
   }
 
   /**
-   * محرّر «ابحث وقُل أين» (v1.0.27).
+   * محرّر «وصل» (v1.0.36).
    *
-   * ⚠️ لا يعرض قائمة أصول بل **قائمة عناصر هذا المشهد**: الموضع شيءٌ
-   * وضعته المؤلّفة على المسرح بيدها، لا صورة في الرزمة (§3). وعرض
-   * `assets[]` هنا كان سيدعوها إلى اختيار اسمٍ لا يُلمَس في هذا المشهد.
-   *
-   * وما يُلحّ عليه: **الاسم العربي للمكان**. بغيره لا تُولَّد الجملة
-   * المكانية، ويصير النشاط سؤالاً صامتاً — أي `pick-correct` بخطوات أكثر.
+   * مبنيٌّ كمحرّر الفرز: الرأس صندوقٌ يحوي عناصره، وإضافةُ عنصرٍ موجود إلى
+   * رأسٍ آخر **تنقله**. والزيادة هنا الحرف والموضع: منهما يُكتب الرأس
+   * («بـ»، «ـبـ»)، ومنهما يُقترح وصل كل كلمة — ويُحذَّر من كلمةٍ وُصلت برأسٍ
+   * لا يطابقها قبل أن يراها الصفّ.
    */
-  private renderFindEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+  private renderConnectEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
     const draft = this.draft!;
     const wrap = el("div", "s-stack");
     const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
@@ -4172,25 +4543,16 @@ export class StudioApp {
       { value: "", label: "بدون" },
       ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
     ];
+    const backgrounds = draft.backgroundAliases;
+    const images = draft.assets.filter((a) => isImageAsset(a.src) && !backgrounds.has(a.alias));
 
-    const RELATIONS = [
-      { value: "", label: "بلا علاقة" },
-      { value: "under", label: "تحت" },
-      { value: "over", label: "فوق" },
-      { value: "behind", label: "خلف" },
-      { value: "in-front", label: "أمام" },
-      { value: "inside", label: "داخل" },
-      { value: "beside", label: "بجانب" }
-    ];
-    const wordOf = (relation?: string) => RELATIONS.find((r) => r.value === relation)?.label ?? "";
-
-    const spots = activity.spots ?? [];
-    const sceneAliases = scene.elements.map((element) => element.alias).filter((a): a is string => !!a);
-    const unused = sceneAliases.filter((alias) => !spots.some((spot) => spot.alias === alias));
+    const anchors = activity.anchors ?? [];
+    const items = activity.items ?? [];
+    const anchorIds = new Set(anchors.map((a) => a.id));
 
     // --- ٢ · السؤال ------------------------------------------------
     wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
-    wrap.appendChild(el("div", "s-item__meta", "عمّ نبحث؟ المواضع على المسرح أصلاً، فاللمس مقبول فور بدء النشاط."));
+    wrap.appendChild(el("div", "s-item__meta", "ما الذي يصله الطفل؟ «صِل كل صورة بمكان الباء فيها»."));
     wrap.appendChild(
       textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
         draft.updateActivityText(scene.id, "question", { text: v });
@@ -4204,134 +4566,191 @@ export class StudioApp {
       })
     );
 
-    // --- ٣ · المواضع ------------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٣ · المواضع"));
+    // --- ٣ · الرؤوس وعناصرها ----------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · عمود الرؤوس وعناصر كلٍّ منها"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "الرؤوس تُرسم في عمودٍ على اليمين، والعناصر في عمودٍ على اليسار. اختر الحرف وموضعه فيُكتب شكله («بـ»، «ـبـ»)، ثم أضف تحت كل رأسٍ العناصر التي تُوصَل إليه. وعنصرٌ تضيفه إلى رأسٍ آخر ينتقل إليه."
+      )
+    );
 
-    if (scene.elements.length === 0) {
-      wrap.appendChild(
-        status("bad", "لا عناصر في هذا المشهد — أضف عناصر أولاً من تبويب «العناصر»، فالمواضع هي عناصر المشهد نفسها.")
-      );
+    if (items.length === 0) {
+      wrap.appendChild(status("bad", "بلا عناصر لا يوجد ما يُوصَل — أضف عنصراً تحت أحد الرؤوس."));
     }
 
-    if (spots.length > 0 && !spots.some((spot) => spot.correct)) {
-      wrap.appendChild(status("bad", "لم تحدّد الموضع الذي يخبّئ المطلوب — بدونه لا يُحلّ النشاط أبداً."));
-    }
-
-    spots.forEach((spot) => {
-      const row = el("div", "s-item");
-      row.appendChild(el("div", "s-item__name", spot.alias));
-
-      const pick = el("button", "s-btn") as HTMLButtonElement;
-      pick.type = "button";
-      pick.textContent = spot.correct ? "★ هنا المطلوب" : "اجعله الصحيح";
-      pick.disabled = spot.correct === true;
-      pick.onclick = () => {
-        draft.setFindCorrectSpot(scene.id, spot.id);
+    anchors.forEach((anchor) => {
+      const card = el("div", "s-fx-step");
+      const head = el("div", "s-item");
+      head.appendChild(el("div", "s-item__name", connectAnchorText(anchor) || "رأس بلا اسم"));
+      const removeAnchor = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      removeAnchor.type = "button";
+      removeAnchor.textContent = "حذف الرأس";
+      // رأسان الحدّ الأدنى — وحذفُ رأسٍ يحذف عناصره معه، وإلّا بقي عنصرٌ
+      // يتيم لا يُقبل له خطٌّ أبداً.
+      removeAnchor.disabled = anchors.length <= 2;
+      removeAnchor.onclick = () => {
+        if (!draft.removeConnectAnchor(scene.id, anchor.id)) return;
         this.markEdited();
         this.render();
       };
-      row.appendChild(pick);
+      head.appendChild(removeAnchor);
+      card.appendChild(head);
 
-      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
-      remove.type = "button";
-      remove.textContent = "حذف";
-      remove.onclick = () => {
-        draft.removeFindSpot(scene.id, spot.id);
+      const letter = el("input", "s-input") as HTMLInputElement;
+      letter.type = "text";
+      letter.value = anchor.letter ?? "";
+      letter.placeholder = "الحرف — ب";
+      letter.maxLength = 3;
+      // عند الخروج لا عند كل حرف: إعادة الرسم وسط الكتابة تسرق التركيز.
+      letter.onblur = () => {
+        if (letter.value.trim() === (anchor.letter ?? "")) return;
+        draft.updateConnectAnchor(scene.id, anchor.id, { letter: letter.value });
         this.markEdited();
         this.render();
       };
-      row.appendChild(remove);
-      wrap.appendChild(row);
-
-      const labelInput = el("input", "s-input") as HTMLInputElement;
-      labelInput.type = "text";
-      labelInput.value = spot.label ?? "";
-      labelInput.placeholder = "اسم المكان بالعربية — «السرير»";
-      labelInput.onblur = () => {
-        if (labelInput.value.trim() === (spot.label ?? "")) return;
-        draft.updateFindSpot(scene.id, spot.id, { label: labelInput.value.trim() });
-        this.markEdited();
-        this.render();
-      };
-      wrap.appendChild(labelInput);
-
-      wrap.appendChild(
-        selectField("العلاقة", spot.relation ?? "", RELATIONS, (value) => {
-          draft.updateFindSpot(scene.id, spot.id, { relation: value });
+      card.appendChild(letter);
+      card.appendChild(
+        selectField("موضعه في الكلمة", anchor.place ?? "", PLACE_OPTIONS, (value) => {
+          const place = (LETTER_PLACES as readonly string[]).includes(value) ? (value as LetterPlace) : null;
+          draft.updateConnectAnchor(scene.id, anchor.id, { place });
           this.markEdited();
           this.render();
         })
       );
 
-      // ⚠️ ما سيُقال فعلاً، معروضاً قبل الحفظ. هذا هو التدخّل كلّه: كلمةٌ
-      // مكانية عند كل محاولة. وسطرٌ فارغ هنا يعني نشاطاً صامتاً.
-      const word = wordOf(spot.relation);
-      if (word && spot.label) {
-        wrap.appendChild(
-          el(
-            "div",
-            "s-item__meta",
-            spot.correct ? `سيُقال: «نعم! ${word} ${spot.label}»` : `سيُقال: «ليس ${word} ${spot.label}»`
-          )
-        );
-      } else {
-        wrap.appendChild(
-          status("warn", "بلا علاقة واسمٍ عربيّ لن تُقال أي كلمة مكانية هنا — وهي سبب وجود هذا النشاط.")
-        );
-      }
-    });
+      const label = el("input", "s-input") as HTMLInputElement;
+      label.type = "text";
+      label.value = anchor.label ?? "";
+      label.placeholder =
+        anchor.letter && anchor.place
+          ? `يُكتب «${formAt(anchor.letter, anchor.place)}» — أو اكتب غيره`
+          : "ما يُكتب على الرأس";
+      label.onblur = () => {
+        if (label.value.trim() === (anchor.label ?? "")) return;
+        draft.updateConnectAnchor(scene.id, anchor.id, { label: label.value });
+        this.markEdited();
+        this.render();
+      };
+      card.appendChild(label);
 
-    if (unused.length > 0) {
-      wrap.appendChild(
+      if (!connectAnchorText(anchor) && !anchor.image) {
+        card.appendChild(status("warn", "رأسٌ بلا حرفٍ ولا نصٍّ ولا صورة — صندوقٌ فارغ لا يقول للطفل شيئاً."));
+      }
+
+      card.appendChild(
         assetChooser(
           "",
-          unused.map((alias) => {
-            const asset = draft.assets.find((a) => a.alias === alias);
-            return { alias, url: asset ? this.assetUrl(asset.src) : "" };
-          }),
-          undefined,
+          images.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          anchor.image,
           (alias) => {
-            if (!alias) return;
-            draft.addFindSpot(scene.id, alias);
+            draft.updateConnectAnchor(scene.id, anchor.id, { image: alias ?? "" });
             this.markEdited();
             this.render();
           },
-          { allowNone: false, triggerLabel: "أضف موضعاً من عناصر المشهد" }
+          { allowNone: true, noneLabel: "نصّ بلا صورة", triggerLabel: "صورة الرأس (اختياري)" }
+        )
+      );
+
+      const mine = items.filter((item) => item.anchor === anchor.id);
+      if (mine.length === 0) {
+        card.appendChild(el("div", "s-item__meta", "لا عنصر يُوصَل إليه — يبقى رأساً مشتِّتاً بلا خطٍّ صحيح."));
+      }
+      mine.forEach((item) => card.appendChild(this.renderConnectItemRow(scene, item, anchor)));
+
+      // ما ليس تحت هذا الرأس — وفيه ما هو تحت رأسٍ آخر، لأن اختياره نقلُه.
+      const addable = images.filter((a) => !mine.some((item) => item.alias === a.alias));
+      if (addable.length > 0) {
+        card.appendChild(
+          assetChooser(
+            "",
+            addable.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+            undefined,
+            (alias) => {
+              if (!alias) return;
+              draft.addConnectItem(scene.id, alias, anchor.id);
+              this.markEdited();
+              this.render();
+            },
+            { allowNone: false, triggerLabel: `أضف عنصراً يُوصَل إلى «${connectAnchorText(anchor) || anchor.id}»` }
+          )
+        );
+      }
+      wrap.appendChild(card);
+    });
+
+    // عناصر بلا رأسٍ مطابق — أغراض فرزٍ قبل تبديل النوع، أو رأسٌ حُذف يدوياً.
+    const orphans = items.filter((item) => !item.anchor || !anchorIds.has(item.anchor));
+    if (orphans.length > 0) {
+      const card = el("div", "s-fx-step");
+      card.appendChild(status("bad", "عناصر بلا رأس — لا تُرسم أمام الصفّ حتى تُسنَد إلى رأس."));
+      orphans.forEach((item) => card.appendChild(this.renderConnectItemRow(scene, item, null)));
+      wrap.appendChild(card);
+    }
+
+    wrap.appendChild(
+      button("أضف رأساً", () => {
+        draft.addConnectAnchor(scene.id);
+        this.markEdited();
+        this.render();
+      })
+    );
+
+    if (anchors.some((a) => a.letter) && items.some((i) => i.label)) {
+      wrap.appendChild(
+        button("اقترح الوصل من الكلمات", () => {
+          if (draft.suggestConnectAnchors(scene.id) === 0) return;
+          this.markEdited();
+          this.render();
+        })
+      );
+      wrap.appendChild(
+        el(
+          "div",
+          "s-item__meta",
+          "ينقل كل عنصرٍ له كلمة إلى الرأس الذي يطابق حرفها وموضعه. وما يطابق أكثر من رأسٍ أو لا يطابق شيئاً يبقى لقرارك."
         )
       );
     }
 
-    // --- ٤ · ما يُعثَر عليه -----------------------------------------
+    // --- ٤ · أزرار الصندوق (v1.0.37) -------------------------------
     //
-    // ⚠️ لا حقل خاصّ به: ما يظهر عند العثور هو `onSolved.showObject`
-    // الموجود في كل نوعٍ منذ v1.0 (§2). وحقلٌ ثانٍ كان سيصف الشيء نفسه.
-    wrap.appendChild(el("div", "s-field__label", "٤ · ما يُعثَر عليه"));
-    const backgrounds = draft.backgroundAliases;
-    const rewardAssets = draft.assets.filter((a) => isImageAsset(a.src) && !backgrounds.has(a.alias));
+    // تعمل في كل «وصل» بلا تأليف — الحقل يضبط وقت ظهور الإطار وحده.
+    wrap.appendChild(el("div", "s-field__label", "٤ · الوصل بأزرار الصندوق"));
     wrap.appendChild(
-      assetChooser(
-        "الغرض الضائع",
-        rewardAssets.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
-        activity.onSolved?.showObject,
-        (alias) => {
-          draft.updateActivityOnSolved(scene.id, { showObject: alias ?? "" });
+      selectField(
+        "إطار الأزرار",
+        activity.navigate === true ? "frame" : "press",
+        [
+          { value: "press", label: "يظهر عند أوّل ضغطة زرّ" },
+          { value: "frame", label: "مرئيّ من بداية النشاط" }
+        ],
+        (value) => {
+          draft.setActivityNavigate(scene.id, value === "frame");
           this.markEdited();
           this.render();
-        },
-        { allowNone: true, noneLabel: "بدون", triggerLabel: "اختر الغرض" }
+        }
       )
     );
-    if (!activity.onSolved?.showObject) {
-      wrap.appendChild(status("warn", "بلا غرضٍ يظهر، لا يرى الصفّ ما وُجد."));
-    }
-
-    // --- ٥ · ردّ الخطأ ----------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٥ · ردّ الخطأ"));
     wrap.appendChild(
       el(
         "div",
         "s-item__meta",
-        "اتركه فارغاً ليُولَّد من العلاقة والاسم — «ليس خلف الباب». وما تكتبينه هنا يحلّ محلّ الجملة المولَّدة في كل المواضع."
+        "الأسهم تنقل الإطار بين العناصر والرؤوس، و«تأكيد» يختار عنصراً فتنبض نقطته، ثم «تأكيد» على رأسٍ يرسم الخطّ ويُحكم عليه كما باللمس. وتأكيدٌ ثانٍ على المختار يُلغيه." +
+          (activity.navigate === true ? "" : " ولا يظهر الإطار قبل أوّل ضغطة، فلا يراه صفٌّ يعمل باللمس وحده.")
+      )
+    );
+
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "٥ · عند وصل كل العناصر"));
+
+    // --- ٦ · الخطّ الخاطئ -------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٦ · حين يكون الخطّ خاطئاً"));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "كل خطٍّ يُحكَم عليه لحظة يكتمل: الصحيح يبقى ذهبياً ويتوهّج طرفاه، والخاطئ يظهر أحمر ثم يتلاشى ويهتزّ العنصر الذي وصل إليه الطفل. والرأس يقبل أكثر من عنصر، والنشاط يكتمل بوصل آخرها."
       )
     );
     wrap.appendChild(
@@ -4346,26 +4765,96 @@ export class StudioApp {
         this.markEdited();
       })
     );
-    if (activity.wrongResponse?.text) {
+
+    // البطاقة تصل العنصر برأسه الصحيح بلا أن يقرّر الطفل — كما في الفرز.
+    if (this.cardLabels !== null && items.some((item) => this.cardLabels!.has(item.alias))) {
       wrap.appendChild(
-        status("info", "الردّ المكتوب يسبق المولَّد — لن تُقال كلمة المكان عند الخطأ ما دام موجوداً.")
+        status(
+          "info",
+          "بعض العناصر لها بطاقات مربوطة. البطاقة تصل العنصر برأسه الصحيح مباشرة — فهي طريق وصول لطفل لا يبلغ الشاشة، لا طريقة اللعب المقصودة."
+        )
       );
     }
 
     return wrap;
   }
 
+  /** سطر عنصرٍ في «وصل»: صورته، وكلمته، وتحذيرٌ إن لم تطابق رأسه. */
+  private renderConnectItemRow(
+    scene: DraftScene,
+    item: NonNullable<DraftActivity["items"]>[number],
+    anchor: NonNullable<DraftActivity["anchors"]>[number] | null
+  ): HTMLElement {
+    const draft = this.draft!;
+    const box = el("div", "s-stack");
+    const row = el("div", "s-item");
+    row.appendChild(el("div", "s-item__name", item.alias));
+    if (!draft.assets.some((a) => a.alias === item.alias)) {
+      row.appendChild(tag("warning", "صورة مفقودة", "s-item__meta s-item__meta--warn"));
+    }
+    const word = el("input", "s-input") as HTMLInputElement;
+    word.type = "text";
+    word.value = item.label ?? "";
+    word.placeholder = "الكلمة تحت الصورة — بطّة";
+    word.onblur = () => {
+      if (word.value.trim() === (item.label ?? "")) return;
+      draft.updateConnectItem(scene.id, item.id, { label: word.value });
+      this.markEdited();
+      this.render();
+    };
+    row.appendChild(word);
+    const drop = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+    drop.type = "button";
+    drop.textContent = "أخرجه";
+    drop.onclick = () => {
+      draft.removeConnectItem(scene.id, item.id);
+      this.markEdited();
+      this.render();
+    };
+    row.appendChild(drop);
+    box.appendChild(row);
+
+    if (!anchor) {
+      const anchors = draft.getActivity(scene.id)?.anchors ?? [];
+      box.appendChild(
+        selectField(
+          "أسنده إلى",
+          "",
+          [{ value: "", label: "—" }, ...anchors.map((a) => ({ value: a.id, label: connectAnchorText(a) || a.id }))],
+          (value) => {
+            if (!value) return;
+            draft.updateConnectItem(scene.id, item.id, { anchor: value });
+            this.markEdited();
+            this.render();
+          }
+        )
+      );
+    } else if (item.label && anchor.letter && !hasLetterAt(item.label, anchor.letter, anchor.place)) {
+      box.appendChild(
+        status(
+          "warn",
+          `«${item.label}» ليس فيها «${anchor.letter}» ${anchor.place ? PLACE_LABELS[anchor.place] : ""} — الخطّ الذي تعدّه صحيحاً سيعلّم الطفل عكس الدرس.`
+        )
+      );
+    }
+    return box;
+  }
+
   /**
-   * محرّر «كل الأيدي» (v1.0.28).
+   * محرّر «ابحث» (v1.0.27، v1.0.31).
    *
-   * ⚠️ ما لا يوجد فيه أهمّ ممّا يوجد: **لا حقل لردّ الخطأ**، ولا «الإجابة
-   * الصحيحة» بصيغة المفرد. هذا النشاط لا يخسر فيه أحد (§4)، وحقلٌ يوحي
-   * بغير ذلك كان سيجعل المؤلّفة تبني لحظةً تُفرز فيها الغرفة أمام نفسها.
+   * ⚠️ مبنيٌّ حول **سؤالين لا ثالث لهما**: ما الذي يُبحث عنه؟ وما الذي
+   * يُشتّت؟ ثم: ماذا يحدث عند النجاح، وماذا يحدث عند الخطأ.
    *
-   * وما يُلحّ عليه: **البطاقات المربوطة**. لا يُجاب باللمس إطلاقاً، فرزمةٌ
-   * غير مربوطة تعني عشرين طفلاً يرفعون ما لا يُقرأ.
+   * كانت الصيغة السابقة تضع كل الحقول على كل موضعٍ دفعةً واحدة — الاسم
+   * العربي، والعلاقة، وزرّ «مطلوب»، وصورة الكشف — فتقرأ المؤلّفة ستّة
+   * عناصر تحكّم لتقول «هذا صحيح وذاك خطأ». والآن قائمتان، وكلمة المكان
+   * قسمٌ **اختياريّ** في الآخر لمن تريد أن تقول الشخصية «تحت السرير».
+   *
+   * والعناصر عناصرُ **هذا المشهد**، لا صورٌ من الأصول: ما يُلمَس هو ما
+   * وضعته المؤلّفة على المسرح بيدها (v1.0.27 §3).
    */
-  private renderAllRespondEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+  private renderFindEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
     const draft = this.draft!;
     const wrap = el("div", "s-stack");
     const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
@@ -4373,13 +4862,20 @@ export class StudioApp {
       { value: "", label: "بدون" },
       ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
     ];
-    const answers = activity.answers ?? [];
+    const backgrounds = draft.backgroundAliases;
+    const rewardImages = draft.assets.filter((a) => isImageAsset(a.src) && !backgrounds.has(a.alias));
+    const thumbOf = (alias: string) => {
+      const asset = draft.assets.find((a) => a.alias === alias);
+      return { alias, url: asset ? this.assetUrl(asset.src) : "" };
+    };
+
+    const spots = activity.spots ?? [];
+    const targets = spots.filter((spot) => spot.correct);
+    const distractors = spots.filter((spot) => !spot.correct);
+    const sceneAliases = [...new Set(scene.elements.map((e) => e.alias).filter((a): a is string => !!a))];
 
     // --- ٢ · السؤال ------------------------------------------------
     wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
-    wrap.appendChild(
-      el("div", "s-item__meta", "يرفع كل طفل بطاقةً معاً. لا يُعدّ شيء قبل انتهاء السؤال.")
-    );
     wrap.appendChild(
       textField("نصّ السؤال", activity.question?.text ?? "", (v) => {
         draft.updateActivityText(scene.id, "question", { text: v });
@@ -4393,137 +4889,584 @@ export class StudioApp {
       })
     );
 
-    // --- ٣ · الإجابات المحتسَبة صحيحة --------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٣ · ما يُحتسب صحيحاً"));
-    wrap.appendChild(
-      el(
-        "div",
-        "s-item__meta",
-        "كل بطاقة تُعدّ وتظهر في التوزيع، طابقت أو لم تطابق. وهذه القائمة لقراءتك أنت: كم من الغرفة أصاب."
-      )
-    );
-
-    if (answers.length === 0) {
-      wrap.appendChild(status("bad", "بلا إجابة صحيحة لا يقول التوزيع شيئاً — أضف معنى بطاقة."));
+    if (scene.elements.length === 0) {
+      wrap.appendChild(
+        status("bad", "لا عناصر في هذا المشهد — ضعها أوّلاً من تبويب «المشهد»، ثم عُد لتختار منها ما يُبحث عنه.")
+      );
+      return wrap;
     }
 
-    answers.forEach((answer, i) => {
+    /** صفّ عنصرٍ في إحدى القائمتين، وزرّ إخراجه منها. */
+    const spotRow = (spot: DraftFindSpot): HTMLElement => {
       const row = el("div", "s-item");
-      row.appendChild(el("div", "s-item__name", answer));
-      const bound = this.cardLabels?.has(answer) ?? null;
-      if (bound !== null) {
-        row.appendChild(
-          tag(
-            bound ? "chain" : "warning",
-            bound ? "بطاقة" : "لا بطاقة",
-            `s-item__meta ${bound ? "" : "s-item__meta--warn"}`
-          )
-        );
+      row.appendChild(el("div", "s-item__name", spot.alias));
+      if (!sceneAliases.includes(spot.alias)) {
+        // عنصرٌ حُذف من المشهد بعد أن اختير: يُتخطّى في التشغيل بصمت.
+        row.appendChild(tag("warning", "ليس في المشهد", "s-item__meta s-item__meta--warn"));
       }
-      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
-      remove.type = "button";
-      remove.textContent = "حذف";
-      remove.onclick = () => {
-        draft.setActivityAnswers(
-          scene.id,
-          answers.filter((_, j) => j !== i)
-        );
+      const out = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      out.type = "button";
+      out.textContent = "أخرجه";
+      out.onclick = () => {
+        draft.removeFindSpot(scene.id, spot.id);
         this.markEdited();
         this.render();
       };
-      row.appendChild(remove);
-      wrap.appendChild(row);
-    });
-
-    const addRow = el("div", "s-item");
-    const addInput = el("input", "s-input") as HTMLInputElement;
-    addInput.type = "text";
-    addInput.placeholder = "معنى البطاقة — «حذاء»";
-    const addAnswer = () => {
-      const value = addInput.value.trim();
-      if (!value || answers.includes(value)) return;
-      draft.setActivityAnswers(scene.id, [...answers, value]);
-      this.markEdited();
-      this.render();
+      row.appendChild(out);
+      return row;
     };
-    addInput.addEventListener("keydown", (e) => {
-      if ((e as KeyboardEvent).key === "Enter") {
-        e.preventDefault();
-        addAnswer();
-      }
-    });
-    addRow.appendChild(addInput);
-    const addBtn = el("button", "s-btn") as HTMLButtonElement;
-    addBtn.type = "button";
-    addBtn.textContent = "أضف";
-    addBtn.onclick = addAnswer;
-    addRow.appendChild(addBtn);
-    wrap.appendChild(addRow);
 
-    // ⚠️ هذا النشاط لا يُجاب باللمس إطلاقاً — رزمةٌ غير مربوطة تعني عشرين
-    // طفلاً يرفعون ما لا يُقرأ. يُقال هنا حيث يمكن الإصلاح، لا أمام الصفّ.
-    if (this.cardLabels !== null && answers.length > 0) {
-      const unbound = answers.filter((answer) => !this.cardLabels!.has(answer));
-      if (unbound.length === answers.length) {
-        wrap.appendChild(
-          status(
-            "warn",
-            "لا بطاقة مربوطة بأي إجابة — هذا النشاط لا يُجاب باللمس، فلن يُقرأ ما يرفعه الأطفال. اربط بطاقات من «الأجهزة» بالأسماء نفسها."
-          )
+    /** «أضف…» من عناصر المشهد — ما ليس في هذه القائمة، وفيه ما في الأخرى
+     *  لأن اختياره يعني نقله. */
+    const adder = (role: "target" | "distractor", inList: DraftFindSpot[], label: string): HTMLElement | null => {
+      const addable = sceneAliases.filter((alias) => !inList.some((spot) => spot.alias === alias));
+      if (addable.length === 0) return null;
+      return assetChooser(
+        "",
+        addable.map(thumbOf),
+        undefined,
+        (alias) => {
+          if (!alias) return;
+          draft.setFindSpotRole(scene.id, alias, role);
+          this.markEdited();
+          this.render();
+        },
+        { allowNone: false, triggerLabel: label }
+      );
+    };
+
+    // --- ٣ · ما يُبحث عنه -------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · ما يُبحث عنه"));
+    wrap.appendChild(
+      el("div", "s-item__meta", "يلمسها الطفل كلّها، بأي ترتيب — ولا ينتهي النشاط حتى يجد آخرها.")
+    );
+    if (targets.length === 0) {
+      wrap.appendChild(status("bad", "اختر عنصراً واحداً على الأقلّ — بدونه لا ينتهي النشاط أبداً."));
+    }
+    targets.forEach((spot) => {
+      const card = el("div", "s-fx-step");
+      card.appendChild(spotRow(spot));
+      // ما يظهر عنده حين يُعثَر عليه — اختياريّ، ويجعل التقدّم مرئياً
+      // حين تكثر المطلوبات (v1.0.31 §3).
+      card.appendChild(
+        assetChooser(
+          "",
+          rewardImages.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          spot.reveals,
+          (alias) => {
+            draft.setFindSpotReveals(scene.id, spot.id, alias ?? "");
+            this.markEdited();
+            this.render();
+          },
+          { allowNone: true, noneLabel: "لا شيء يظهر عنده", triggerLabel: "صورة تظهر عنده حين يُوجَد (اختياري)" }
+        )
+      );
+      wrap.appendChild(card);
+    });
+    const addTarget = adder("target", targets, "أضف عنصراً يُبحث عنه");
+    if (addTarget) wrap.appendChild(addTarget);
+
+    // --- ٤ · المشتّتات ----------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٤ · المشتّتات"));
+    wrap.appendChild(
+      el("div", "s-item__meta", "عناصر يلمسها الطفل فيُقال له إنها ليست ما يبحث عنه. وما لا تضعه هنا ولا هناك لا يستجيب للّمس.")
+    );
+    distractors.forEach((spot) => wrap.appendChild(spotRow(spot)));
+    const addDistractor = adder("distractor", distractors, "أضف مشتّتاً");
+    if (addDistractor) wrap.appendChild(addDistractor);
+
+    // --- ٥ · عند العثور على الكل ------------------------------------
+    //
+    // ⚠️ التأثير هنا `effects.onSolved`: يُطلَق **مرّةً واحدة** حين يُعثَر
+    // على آخر مطلوب — لا مع كل واحد. هذا ما طُلب بالضبط: «بعد اختيار كل
+    // العناصر».
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "٥ · عند العثور على كل العناصر", false));
+    wrap.appendChild(
+      assetChooser(
+        "الصورة الختامية",
+        rewardImages.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+        activity.onSolved?.showObject,
+        (alias) => {
+          draft.updateActivityOnSolved(scene.id, { showObject: alias ?? "" });
+          this.markEdited();
+          this.render();
+        },
+        { allowNone: true, noneLabel: "بدون", triggerLabel: "صورة تظهر في النهاية (اختياري)" }
+      )
+    );
+    wrap.appendChild(this.renderEffectHook(scene, activity, "onSolved", "التأثير"));
+
+    // --- ٦ · عند لمس مشتّت ------------------------------------------
+    //
+    // ⚠️ `effects.onWrong` يُطلَق مع كل لمسةٍ على مشتّت — **ولو بلا ردٍّ
+    // مكتوب** (إصلاحٌ في `FindRunner`: كان الحدث لا يُبثّ بلا نصّ، فلا
+    // يحدث شيء إطلاقاً).
+    wrap.appendChild(el("div", "s-field__label", "٦ · عند لمس مشتّت"));
+    wrap.appendChild(this.renderEffectHook(scene, activity, "onWrong", "التأثير"));
+    wrap.appendChild(
+      textField("ما تقوله الشخصية (اختياري)", activity.wrongResponse?.text ?? "", (v) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { text: v });
+        this.markEdited();
+      })
+    );
+    wrap.appendChild(
+      selectField("صوت الردّ", activity.wrongResponse?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "wrongResponse", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // --- ٧ · كلمة المكان (اختياري) ----------------------------------
+    //
+    // ما جعل النوع موجوداً أصلاً (v1.0.27 §4) — ولم يُحذف، بل نُقل إلى
+    // الآخر: مَن تريد أن تقول الشخصية «نعم! تحت السرير» تجده هنا، ومَن لا
+    // تريده لا يعترض طريقها.
+    if (spots.length > 0) {
+      const RELATIONS = [
+        { value: "", label: "بلا كلمة مكان" },
+        { value: "under", label: "تحت" },
+        { value: "over", label: "فوق" },
+        { value: "behind", label: "خلف" },
+        { value: "in-front", label: "أمام" },
+        { value: "inside", label: "داخل" },
+        { value: "beside", label: "بجانب" }
+      ];
+      const wordOf = (relation?: string) => RELATIONS.find((r) => r.value === relation && r.value)?.label ?? "";
+
+      wrap.appendChild(el("div", "s-field__label", "٧ · كلمة المكان (اختياري)"));
+      wrap.appendChild(
+        el("div", "s-item__meta", "لتقول الشخصية أين كان الشيء: «نعم! تحت السرير» — «ليس خلف الباب».")
+      );
+      spots.forEach((spot) => {
+        const card = el("div", "s-fx-step");
+        card.appendChild(el("div", "s-item__name", spot.alias));
+
+        const name = el("input", "s-input") as HTMLInputElement;
+        name.type = "text";
+        name.value = spot.label ?? "";
+        name.placeholder = "اسمه كما يُقال — «السرير»";
+        name.onblur = () => {
+          if (name.value.trim() === (spot.label ?? "")) return;
+          draft.updateFindSpot(scene.id, spot.id, { label: name.value.trim() });
+          this.markEdited();
+          this.render();
+        };
+        card.appendChild(name);
+
+        card.appendChild(
+          selectField("المكان", spot.relation ?? "", RELATIONS, (value) => {
+            draft.updateFindSpot(scene.id, spot.id, { relation: value });
+            this.markEdited();
+            this.render();
+          })
         );
-      } else if (unbound.length > 0) {
-        wrap.appendChild(status("warn", `بلا بطاقة: ${unbound.join("، ")}`));
+
+        const word = wordOf(spot.relation);
+        if (word && spot.label) {
+          card.appendChild(
+            el("div", "s-item__meta", spot.correct ? `سيُقال: «نعم! ${word} ${spot.label}»` : `سيُقال: «ليس ${word} ${spot.label}»`)
+          );
+        } else if (word && !spot.label) {
+          card.appendChild(status("warn", "اكتب اسمه — بدونه لا تُبنى الجملة."));
+        }
+        wrap.appendChild(card);
+      });
+
+      if (activity.wrongResponse?.text) {
+        wrap.appendChild(status("info", "ما كتبتَه في «عند لمس مشتّت» يحلّ محلّ جملة «ليس …» المولَّدة."));
       }
     }
 
-    // --- ٤ · كم ننتظر ------------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٤ · كم ننتظر"));
+    // --- ٨ · البحث بأزرار الصندوق (v1.0.34) --------------------------
+    //
+    // يعمل بلا تأليف: الزرّ بلا معنى في «ابحث» قبله، فأوّل ضغطة تستدعي
+    // الإطار. والحقل يضبط **وقت** ظهوره وحده — كما في «الفرز» (v1.0.30).
+    wrap.appendChild(el("div", "s-field__label", "٨ · البحث بأزرار الصندوق"));
     wrap.appendChild(
-      numberField("عدد البطاقات المنتظَرة", activity.expect ?? 12, (v) => {
-        draft.updateAllRespond(scene.id, { expect: v });
-        this.markEdited();
-        this.render();
-      })
+      selectField(
+        "إطار الأزرار",
+        activity.navigate === true ? "frame" : "press",
+        [
+          { value: "press", label: "يظهر عند أوّل ضغطة زرّ" },
+          { value: "frame", label: "مرئيّ من بداية النشاط" }
+        ],
+        (value) => {
+          draft.setActivityNavigate(scene.id, value === "frame");
+          this.markEdited();
+          this.render();
+        }
+      )
     );
     wrap.appendChild(
       el(
         "div",
         "s-item__meta",
-        "عدد الحاضرين اليوم، لا عدد المسجّلين. منه تُبنى «وصلت ٧ من ١٢» — وهي ما يُمسك الغرفة."
-      )
-    );
-    wrap.appendChild(
-      numberField("سقف الانتظار (ثانية)", activity.waitSeconds ?? 30, (v) => {
-        draft.updateAllRespond(scene.id, { waitSeconds: v });
-        this.markEdited();
-        this.render();
-      })
-    );
-    wrap.appendChild(
-      el(
-        "div",
-        "s-item__meta",
-        "ينتهي الانتظار بأيّهما أسبق: اكتمال العدد أو انقضاء المهلة. ولا يُكشف التوزيع قبل ٣ ثوانٍ مهما أسرعت البطاقات — كي لا تنتهي لحظة التفكير عند أسرع ثلاثة."
-      )
-    );
-
-    // --- ٥ · ما تراه الشاشة ------------------------------------------
-    wrap.appendChild(el("div", "s-field__label", "٥ · ما يظهر، وما لا يظهر"));
-    wrap.appendChild(
-      el(
-        "div",
-        "s-item__meta",
-        "أثناء الانتظار: «وصلت ٧ من ١٢». وعند الإغلاق: توزيع الإجابات — «١٢ بطاقة: ٩ للحذاء، ٣ للدمية». ولا اسم ولا نتيجة لطفل بعينه: المنصّة لا تعرف من أجاب، والبطاقة تحمل معنىً لا هويّة."
-      )
-    );
-    wrap.appendChild(
-      status(
-        "info",
-        "لا يخسر أحد هنا: لا ردّ خطأ ولا إعادة، والقصّة تمضي دائماً. التوزيع لك أنتِ — تقرئينه وتقرّرين هل تُعاد الفكرة الآن."
+        "الأسهم تنقل الإطار بين العناصر بحسب مكانها على المسرح — المطلوبات والمشتّتات معاً — و«تأكيد» يختار ما يحيط به." +
+          (activity.navigate === true ? "" : " ولا يظهر قبل أوّل ضغطة، فلا يراه صفٌّ يعمل باللمس وحده.")
       )
     );
 
     return wrap;
+  }
+
+  /**
+   * محرّر تصويت الصفّ — «كل الأيدي» (v1.0.28، وخياراته منذ v1.0.32).
+   *
+   * ⚠️ مبنيٌّ لمعلّمةٍ تفتحه صباح الحصّة، لا لمؤلّفةٍ تبني قصّة:
+   *
+   *   • **الخيارات صورٌ تُختار**، لا معانٍ تُكتب. والبطاقة بالاسم نفسه
+   *     تختار صورتها — كما في «اختيار الإجابة الصحيحة» — فلا ربط يُضبط.
+   *   • **عدد الحاضرين زرّان** (− و+) لا حقلٌ يُكتب فيه: هو الحقل الوحيد
+   *     الذي يتغيّر كل يوم، ويُعدَّل واقفاً أمام الصفّ.
+   *   • **نوع السؤال سؤالٌ واحد** — «له جواب؟» — لا حقلان يُوفَّق بينهما.
+   *   • **معاينة لما سيراه الصفّ** في آخره: الدوائر والصور بترتيبها، فلا
+   *     يُكتشف خطأٌ أمام عشرين طفلاً.
+   *
+   * وما لا يوجد فيه أهمّ ممّا يوجد: **لا حقل لردّ الخطأ**. هذا النشاط لا
+   * يخسر فيه أحد (v1.0.28 §4).
+   */
+  private renderAllRespondEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
+    const draft = this.draft!;
+    const wrap = el("div", "s-stack");
+    const audioAssets = draft.assets.filter((a) => !isImageAsset(a.src));
+    const audioOptions = [
+      { value: "", label: "بدون" },
+      ...audioAssets.map((a) => ({ value: a.alias, label: a.alias }))
+    ];
+    const backgrounds = draft.backgroundAliases;
+    const images = draft.assets.filter((a) => isImageAsset(a.src) && !backgrounds.has(a.alias));
+    const options = activity.options ?? [];
+    const poll = activity.poll === true;
+    const commit = (): void => {
+      this.markEdited();
+      this.render();
+    };
+
+    wrap.appendChild(
+      el("div", "s-item__meta", "يصوّت الصفّ كلّه معاً: كل طفلٍ يرفع بطاقة صورةٍ من صور الخيارات، ثم تظهر النتيجة للجميع في لحظة واحدة.")
+    );
+
+    // --- شكل v1.0.28: زرٌّ واحد يحوّله ------------------------------
+    if (activity.options === undefined && (activity.answers?.length ?? 0) > 0) {
+      wrap.appendChild(
+        status(
+          "warn",
+          `هذا النشاط بالشكل القديم: «${activity.answers!.join("، ")}» بلا صور. الصفّ لا يرى شيئاً غير سطرٍ مكتوب.`
+        )
+      );
+      wrap.appendChild(
+        button(
+          "حوّله إلى خيارات مصوّرة",
+          () => {
+            draft.convertAnswersToOptions(scene.id);
+            commit();
+          },
+          "primary"
+        )
+      );
+      return wrap;
+    }
+
+    // --- ٢ · السؤال ------------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٢ · السؤال"));
+    wrap.appendChild(
+      textField(
+        "نصّ السؤال",
+        activity.question?.text ?? "",
+        (v) => {
+          draft.updateActivityText(scene.id, "question", { text: v });
+          this.markEdited();
+        },
+        "ماذا تضع يارا في حقيبة البحر؟"
+      )
+    );
+    wrap.appendChild(
+      selectField("صوت السؤال", activity.question?.audio ?? "", audioOptions, (value) => {
+        draft.updateActivityText(scene.id, "question", { audio: value });
+        this.markEdited();
+      })
+    );
+
+    // --- ٣ · هل له جواب؟ -------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٣ · هل للسؤال جوابٌ صحيح؟"));
+    const modes = el("div", "s-vote-modes");
+    const mode = (label: string, hint: string, active: boolean, onPick: () => void): HTMLButtonElement => {
+      const node = el("button", `s-vote-mode${active ? " s-vote-mode--active" : ""}`) as HTMLButtonElement;
+      node.type = "button";
+      node.setAttribute("aria-pressed", String(active));
+      node.appendChild(el("span", "s-vote-mode__label", label));
+      node.appendChild(el("span", "s-vote-mode__hint", hint));
+      node.onclick = () => {
+        if (active) return;
+        onPick();
+        commit();
+      };
+      return node;
+    };
+    modes.appendChild(
+      mode("نعم، له جواب", "يلمع الصحيح عند الكشف", !poll, () => draft.setVotePoll(scene.id, false))
+    );
+    modes.appendChild(
+      mode("لا، نسأل عن رأيهم", "يكبر ما اختاره أكثرهم", poll, () => draft.setVotePoll(scene.id, true))
+    );
+    wrap.appendChild(modes);
+
+    // --- ٤ · الخيارات ----------------------------------------------
+    wrap.appendChild(el("div", "s-field__label", `٤ · الخيارات (${options.length} من ٤)`));
+
+    if (options.length < 2) {
+      wrap.appendChild(
+        status("bad", options.length === 0 ? "أضف صورتين على الأقلّ." : "أضف صورةً ثانية — خيارٌ واحد ليس تصويتاً.")
+      );
+    } else if (!poll && !options.some((o) => o.correct)) {
+      wrap.appendChild(status("warn", "اضغط «الصحيح» على الخيار الذي يجب أن يلمع — أو اختر «نسأل عن رأيهم» أعلاه."));
+    }
+
+    options.forEach((option, i) => {
+      const card = el("div", "s-vote-option");
+      const head = el("div", "s-vote-option__head");
+
+      // الرقم ليس زينة: هو زرّ الصندوق الذي يختار هذا الخيار (§4).
+      head.appendChild(el("span", "s-vote-option__n", String(i + 1)));
+
+      const asset = images.find((a) => a.alias === option.alias);
+      if (asset) {
+        const thumb = el("img", "s-vote-option__thumb") as HTMLImageElement;
+        thumb.src = this.assetUrl(asset.src);
+        thumb.alt = "";
+        head.appendChild(thumb);
+      } else {
+        head.appendChild(tag("warning", "صورة مفقودة", "s-item__meta s-item__meta--warn"));
+      }
+
+      const name = el("input", "s-input s-vote-option__label") as HTMLInputElement;
+      name.type = "text";
+      name.value = option.label ?? "";
+      name.placeholder = `الاسم الذي يراه الصفّ — «${option.alias}»`;
+      name.setAttribute("aria-label", `اسم الخيار ${i + 1}`);
+      // عند الخروج لا عند كل حرف: إعادة الرسم وسط الكتابة تسرق التركيز.
+      name.onblur = () => {
+        if (name.value.trim() === (option.label ?? "")) return;
+        draft.updateVoteOption(scene.id, option.id, { label: name.value });
+        commit();
+      };
+      name.onkeydown = (e) => {
+        if (e.key === "Enter") name.blur();
+      };
+      head.appendChild(name);
+      card.appendChild(head);
+
+      const actions = el("div", "s-vote-option__actions");
+      if (!poll) {
+        const correct = el(
+          "button",
+          `s-btn ${option.correct ? "s-btn--primary" : "s-btn--ghost"}`
+        ) as HTMLButtonElement;
+        correct.type = "button";
+        correct.textContent = option.correct ? "✓ الصحيح" : "الصحيح؟";
+        correct.setAttribute("aria-pressed", String(option.correct === true));
+        correct.onclick = () => {
+          draft.updateVoteOption(scene.id, option.id, { correct: !option.correct });
+          commit();
+        };
+        actions.appendChild(correct);
+      }
+
+      if (this.cardLabels !== null) {
+        const bound = this.cardLabels.has(option.alias);
+        actions.appendChild(
+          tag(
+            bound ? "chain" : "warning",
+            bound ? "بطاقة مربوطة" : "لا بطاقة — باللمس فقط",
+            `s-item__meta s-item__meta--kind${bound ? "" : " s-item__meta--muted"}`
+          )
+        );
+      }
+
+      const spacer = el("span", "s-vote-option__spacer");
+      actions.appendChild(spacer);
+
+      const move = (label: string, title: string, delta: -1 | 1, disabled: boolean): HTMLButtonElement => {
+        const node = el("button", "s-btn s-btn--icon") as HTMLButtonElement;
+        node.type = "button";
+        node.textContent = label;
+        node.title = title;
+        node.setAttribute("aria-label", title);
+        node.disabled = disabled;
+        node.onclick = () => {
+          draft.moveVoteOption(scene.id, option.id, delta);
+          commit();
+        };
+        return node;
+      };
+      // المسرح يُقرأ من اليمين: «قبله» يعني إلى اليمين.
+      actions.appendChild(move("→", "انقله قبل", -1, i === 0));
+      actions.appendChild(move("←", "انقله بعد", 1, i === options.length - 1));
+
+      const remove = el("button", "s-btn s-btn--danger") as HTMLButtonElement;
+      remove.type = "button";
+      remove.textContent = "حذف";
+      remove.onclick = () => {
+        draft.removeVoteOption(scene.id, option.id);
+        commit();
+      };
+      actions.appendChild(remove);
+      card.appendChild(actions);
+      wrap.appendChild(card);
+    });
+
+    const addable = images.filter((a) => !options.some((o) => o.alias === a.alias));
+    if (images.length === 0) {
+      wrap.appendChild(status("info", "لا توجد صور بعد — استوردها من «الأصول»."));
+    } else if (options.length < 4 && addable.length > 0) {
+      wrap.appendChild(
+        assetChooser(
+          "",
+          addable.map((a) => ({ alias: a.alias, url: this.assetUrl(a.src) })),
+          undefined,
+          (alias) => {
+            if (!alias) return;
+            draft.addVoteOption(scene.id, alias);
+            commit();
+          },
+          { allowNone: false, triggerLabel: "+ أضف صورة خيار" }
+        )
+      );
+    }
+
+    // ⚠️ تحذيرٌ لا منع: بلا بطاقات يعمل النشاط بلمسة المعلّمة (§4.1).
+    if (this.cardLabels !== null && options.length > 0 && options.every((o) => !this.cardLabels!.has(o.alias))) {
+      wrap.appendChild(
+        status(
+          "info",
+          "لا بطاقة مربوطة بأيّ خيار. يعمل النشاط مع ذلك: يرفع الأطفال أيديهم، وتلمس صورة الخيار مرّةً عن كل يد. ولربط البطاقات: «الأجهزة»، بالأسماء نفسها."
+        )
+      );
+    }
+
+    // --- ٥ · الحاضرون اليوم ----------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٥ · كم طفلاً في الصفّ اليوم؟"));
+    const count = activity.expect ?? 12;
+    const stepper = el("div", "s-vote-stepper");
+    const step = (label: string, title: string, delta: number): HTMLButtonElement => {
+      const node = el("button", "s-btn s-vote-stepper__btn") as HTMLButtonElement;
+      node.type = "button";
+      node.textContent = label;
+      node.title = title;
+      node.setAttribute("aria-label", title);
+      node.disabled = count + delta < 2;
+      node.onclick = () => {
+        draft.updateAllRespond(scene.id, { expect: count + delta });
+        commit();
+      };
+      return node;
+    };
+    stepper.appendChild(step("−", "طفلٌ أقلّ", -1));
+    const value = el("input", "s-input s-vote-stepper__value") as HTMLInputElement;
+    value.type = "number";
+    value.min = "2";
+    value.value = String(count);
+    value.setAttribute("aria-label", "عدد الأطفال");
+    value.onchange = () => {
+      const parsed = Number(value.value);
+      if (!Number.isFinite(parsed) || value.value.trim() === "") {
+        value.value = String(count);
+        return;
+      }
+      draft.updateAllRespond(scene.id, { expect: parsed });
+      commit();
+    };
+    stepper.appendChild(value);
+    stepper.appendChild(step("+", "طفلٌ أكثر", 1));
+    wrap.appendChild(stepper);
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "الحاضرون لا المسجّلون: حين يصل هذا العدد من البطاقات يُغلق التصويت وحده. ولمن تأخّر: زرّ «✓ انتهينا» على الشاشة يُغلقه في أيّ لحظة."
+      )
+    );
+
+    // مددٌ جاهزة لا حقلٌ يُكتب فيه: لا أحد يحتاج «٤٧ ثانية». وقيمةٌ مؤلَّفة
+    // خارجها تبقى معروضة كما هي، ولا تُستبدل بصمت.
+    const wait = activity.waitSeconds ?? 30;
+    const waits: Array<[number, string]> = [
+      [15, "15 ثانية"],
+      [30, "30 ثانية"],
+      [60, "دقيقة"],
+      [90, "دقيقة ونصف"],
+      [120, "دقيقتان"]
+    ];
+    wrap.appendChild(
+      selectField(
+        "أطول انتظار",
+        String(wait),
+        [
+          ...(waits.some(([s]) => s === wait) ? [] : [{ value: String(wait), label: `${wait} ثانية` }]),
+          ...waits.map(([s, label]) => ({ value: String(s), label }))
+        ],
+        (v) => {
+          draft.updateAllRespond(scene.id, { waitSeconds: Number(v) });
+          commit();
+        }
+      )
+    );
+
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "٦ · بعد التصويت"));
+
+    // --- ٧ · ما سيراه الصفّ ----------------------------------------
+    wrap.appendChild(el("div", "s-field__label", "٧ · ما سيراه الصفّ"));
+    wrap.appendChild(this.renderVotePreview(options, images, count));
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "كل بطاقة تملأ دائرةً بنجمة. ولا يرى أحدٌ ما اختاره غيره حتى يُغلق التصويت — كي لا يقلّد المتأخّر جاره — ثم تظهر النجوم تحت كل صورة معاً."
+      )
+    );
+
+    return wrap;
+  }
+
+  /**
+   * معاينةٌ بلا Pixi لما يرسمه `AllRespondView`: العدّاد ثم الصور بترتيبها.
+   *
+   * ⚠️ صورةٌ لا شاشة: المسرح في الاستوديو لا يشغّل النشاط، وهذا يكفي ليُرى
+   * ترتيب الخيارات (وهو ترتيب أزرار الصندوق) وأسماؤها قبل الحصّة.
+   */
+  private renderVotePreview(
+    options: NonNullable<DraftActivity["options"]>,
+    images: Array<{ alias: string; src: string }>,
+    expected: number
+  ): HTMLElement {
+    const box = el("div", "s-vote-preview");
+    box.setAttribute("aria-hidden", "true");
+
+    const meter = el("div", "s-vote-preview__meter");
+    const shown = Math.min(expected, 30);
+    for (let i = 0; i < shown; i++) meter.appendChild(el("span", "s-vote-preview__dot"));
+    if (expected > shown) meter.appendChild(el("span", "s-vote-preview__more", `+${expected - shown}`));
+    box.appendChild(meter);
+
+    const row = el("div", "s-vote-preview__row");
+    options.forEach((option, i) => {
+      const cell = el("div", "s-vote-preview__cell");
+      const asset = images.find((a) => a.alias === option.alias);
+      if (asset) {
+        const img = el("img", "s-vote-preview__img") as HTMLImageElement;
+        img.src = this.assetUrl(asset.src);
+        img.alt = "";
+        cell.appendChild(img);
+      } else {
+        cell.appendChild(el("div", "s-vote-preview__img s-vote-preview__img--none", option.alias));
+      }
+      cell.appendChild(el("div", "s-vote-preview__label", option.label?.trim() || option.alias));
+      cell.appendChild(el("div", "s-vote-preview__n", `زرّ ${i + 1}`));
+      row.appendChild(cell);
+    });
+    if (options.length === 0) row.appendChild(el("div", "s-vote-preview__empty", "الصور تظهر هنا"));
+    box.appendChild(row);
+    return box;
   }
 
   private renderSequenceEditor(scene: DraftScene, activity: DraftActivity): HTMLElement {
@@ -4757,6 +5700,9 @@ export class StudioApp {
       })
     );
 
+
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "عند الترتيب الصحيح"));
+
     return wrap;
   }
 
@@ -4816,6 +5762,37 @@ export class StudioApp {
       );
     }
 
+    // ── the letter the question is about (v1.0.33 §5) ──────────────────
+    // Setting it suggests which options are correct from their words;
+    // each suggestion stays hers to overturn with the button on its row.
+    wrap.appendChild(el("div", "s-field__label", "الحرف المطلوب (اختياري)"));
+    const letterField = textField("الحرف", activity.letter ?? "", () => {}, "مثل: ب");
+    letterField.querySelector("input")?.addEventListener("change", (e) => {
+      const value = (e.target as HTMLInputElement).value.trim();
+      if (value && letterUnits(value).length !== 1) return;
+      draft.setActivityLetter(scene.id, value, activity.place ?? null);
+      this.markEdited();
+      this.render();
+    });
+    wrap.appendChild(
+      row(
+        letterField,
+        selectField("أين في الكلمة", activity.place ?? "", PLACE_OPTIONS, (value) => {
+          const place = (LETTER_PLACES as readonly string[]).includes(value) ? (value as LetterPlace) : null;
+          draft.setActivityLetter(scene.id, activity.letter ?? "", place);
+          this.markEdited();
+          this.render();
+        })
+      )
+    );
+    wrap.appendChild(
+      el(
+        "div",
+        "s-item__meta",
+        "حين يُلمس بالون يُضاء الحرف في كلمته: بالأخضر حيث يُطلب، وبالبرتقاليّ حيث يقع في موضعٍ آخر — فيرى الطفل أن في «كتاب» باءً لكنها في آخرها. ويمكن أن يكون أكثر من خيارٍ صحيحًا، ولا يُحلّ النشاط حتى تُختار كلّها."
+      )
+    );
+
     wrap.appendChild(el("div", "s-field__label", "٤ · الخيارات"));
     const choices = activity.choices ?? [];
 
@@ -4866,7 +5843,7 @@ export class StudioApp {
 
       const correct = el("button", `s-btn ${choice.correct ? "s-btn--primary" : "s-btn--ghost"}`) as HTMLButtonElement;
       correct.type = "button";
-      correct.textContent = choice.correct ? "✓ الصحيح" : "اجعله الصحيح";
+      correct.textContent = choice.correct ? "✓ صحيح" : "اجعله صحيحًا";
       correct.onclick = () => {
         draft.updateActivityChoice(scene.id, choice.id, { correct: !choice.correct });
         this.markEdited();
@@ -4893,6 +5870,7 @@ export class StudioApp {
       row.appendChild(remove);
 
       wrap.appendChild(row);
+      wrap.appendChild(this.renderChoiceWordAndPath(scene, choice));
     }
 
     if (imageAssets.length === 0) {
@@ -4949,6 +5927,9 @@ export class StudioApp {
         "التأثير يُختار من تبويب «التأثيرات» (عند الحل). ولتحديد ما بعده: اترك «المشهد التالي» فارغًا ليبقى المشهد، أو اختر مشهدًا آخر لسؤال جديد."
       )
     );
+
+
+    wrap.appendChild(this.renderSolvedOutcome(scene, activity, "عند الاختيار الصحيح"));
 
     return wrap;
   }
@@ -5044,7 +6025,7 @@ export class StudioApp {
       // below, as a container for the others.
       if (element.type === "group") continue;
       const src = assetsByAlias.get(element.alias);
-      if (src) elements.push({ id: element.id, url: this.assetUrl(src), groupId: element.groupId });
+      if (src) elements.push({ id: element.id, url: this.assetUrl(src), groupId: element.groupId, word: element.word });
     }
 
     // "Pick the correct answer" options, drawn on the stage so the author
@@ -5054,7 +6035,7 @@ export class StudioApp {
     const choices: SceneCanvasChoice[] = [];
     for (const choice of activity?.choices ?? []) {
       const src = assetsByAlias.get(choice.alias);
-      if (src) choices.push({ id: choice.id, url: this.assetUrl(src), x: choice.x, y: choice.y, scale: choice.scale });
+      if (src) choices.push({ id: choice.id, url: this.assetUrl(src), x: choice.x, y: choice.y, scale: choice.scale, label: choice.label });
     }
 
     // ── خانات «الترتيب» (v1.0.23 §2.3) ───────────────────────────────

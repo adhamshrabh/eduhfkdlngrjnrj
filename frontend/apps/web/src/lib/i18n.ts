@@ -41,6 +41,13 @@ export const ar = {
     startPresent: "بدء العرض",
     deviceReady: "قارئ البطاقات جاهز",
     deviceOffline: "قارئ البطاقات غير متّصل",
+    teacherTools: "أدوات المعلّمة",
+    restartScene: "إعادة المشهد",
+    previousScene: "المشهد السابق",
+    nextScene: "المشهد التالي",
+    pause: "إيقاف مؤقّت",
+    resume: "متابعة",
+    sceneOf: "المشهد",
   },
   games: {
     title: "الألعاب",

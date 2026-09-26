@@ -91,6 +91,19 @@ describe("attachCardTranslator", () => {
     expect(intents(app)[0]!.payload).toEqual({ choice: "تفاحة" });
   });
 
+  it("لا تُترجَم البطاقة والقصّة متوقّفة، وتعود الترجمة مع الاستئناف", () => {
+    const app = busApp();
+
+    attachCardTranslator(app as never, new Map([["786qaaa", "تفاحة"]]));
+    app.eventBus.emit("engine:pause", { byUser: true });
+    app.eventBus.emit("hardware:event", { type: "card_detected", payload: { uid: "786qaaa" } });
+    expect(intents(app)).toHaveLength(0);
+
+    app.eventBus.emit("engine:resume", {});
+    app.eventBus.emit("hardware:event", { type: "card_detected", payload: { uid: "786qaaa" } });
+    expect(intents(app)).toHaveLength(1);
+  });
+
   it("لا يمرّ عبر `globalThis.eduInput` — ولو كان غائباً تماماً", () => {
     // العالمي قد يشير إلى محرّك مهدوم، أو يُحذف مع هدمه. الترجمة يجب ألّا
     // تتوقّف على وجوده أصلاً.

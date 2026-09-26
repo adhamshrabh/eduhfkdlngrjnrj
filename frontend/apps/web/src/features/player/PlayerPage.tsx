@@ -16,6 +16,7 @@ import { ArrowRight, Maximize2, Minimize2 } from "lucide-react";
 import { Button, ErrorNote, Spinner } from "@/components/ui";
 import { ar } from "@/lib/i18n";
 
+import { TeacherControls } from "./TeacherControls";
 import { useDeviceStatus, useEngine, useLastScan } from "./useEngine";
 
 /** WakeLock ما زال غير موجود في تعريفات TS القياسية لكل البيئات. */
@@ -162,6 +163,10 @@ export function PlayerPage(): JSX.Element {
 
       {/* مضيف اللوحة — React لا يلمس ما بداخله إطلاقاً، Pixi وحده يملكه */}
       <div ref={hostRef} className="w-full h-full flex items-center justify-center" />
+
+      {/* أدوات المعلّمة — ظاهرة في وضع العرض أيضاً (باهتة)، لأن الحاجة إلى
+          إعادة مشهدٍ تنشأ والصفّ جالس، لا قبل الحصّة. */}
+      {status === "running" ? <TeacherControls app={app} presenting={presenting} /> : null}
 
       {status === "starting" ? (
         <div className="absolute inset-0 grid place-items-center pointer-events-none">

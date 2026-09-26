@@ -143,9 +143,9 @@ def build_story_json() -> dict:
                             {"id": "sp_box", "alias": "gift_box", "label": "الصندوق", "relation": "inside"},
                             {"id": "sp_flower", "alias": "flower", "label": "الزهرة", "relation": "beside"},
                         ],
-                        "onSolved": {"showObject": "toy_doll", "playAudio": "v_yay", "nextScene": "s3"},
+                        "onSolved": {"showObject": "toy_doll", "playAudio": "v_yay"},
                     },
-                    "nextScene": None,
+                    "nextScene": "s3",
                 },
                 # ── ٣ · صورة الدبّ (jigsaw — v1.0.25) ───────────────────
                 #
@@ -169,9 +169,9 @@ def build_story_json() -> dict:
                         "image": "teddy",
                         "grid": {"cols": 2, "rows": 2},
                         "wrongResponse": {"text": "ليست هذه خانتها — جرّبوا مرّةً أخرى."},
-                        "onSolved": {"showObject": "teddy", "playAudio": "v_yay", "nextScene": "s4"},
+                        "onSolved": {"showObject": "teddy", "playAudio": "v_yay"},
                     },
-                    "nextScene": None,
+                    "nextScene": "s4",
                 },
                 # ── ٤ · فرزٌ بالمالك (sort — v1.0.26) ───────────────────
                 {
@@ -195,9 +195,9 @@ def build_story_json() -> dict:
                         ],
                         "items": _sort_items(BY_OWNER),
                         "wrongResponse": {"text": "انظروا مرّةً أخرى — بعضها ليس في مكانه."},
-                        "onSolved": {"playAudio": "v_yay", "nextScene": "s5"},
+                        "onSolved": {"playAudio": "v_yay"},
                     },
-                    "nextScene": None,
+                    "nextScene": "s5",
                 },
                 # ── ٥ · القاعدة تتغيّر (sort مرّةً ثانية) ───────────────
                 #
@@ -225,11 +225,11 @@ def build_story_json() -> dict:
                         ],
                         "items": _sort_items(BY_ALIVE),
                         "wrongResponse": {"text": "القاعدة تغيّرت — ليس المالك بل الحياة."},
-                        "onSolved": {"playAudio": "v_yay", "nextScene": "s6"},
+                        "onSolved": {"playAudio": "v_yay"},
                     },
-                    "nextScene": None,
+                    "nextScene": "s6",
                 },
-                # ── ٦ · كل الأيدي (all-respond — v1.0.28) ───────────────
+                # ── ٦ · تصويت الصفّ (all-respond — v1.0.28، v1.0.32) ─────
                 #
                 # ⚠️ `expect` عدد الحاضرين اليوم، وتعدّله المعلّمة قبل
                 # الحصّة. و١٢ قيمةٌ مبدئية لا رقمٌ يخصّ صفّاً بعينه.
@@ -248,12 +248,18 @@ def build_story_json() -> dict:
                     "activity": {
                         "type": "all-respond",
                         "question": {"text": "ارفعوا بطاقة الشيء الذي ما زال ضائعاً."},
-                        "answers": ["flower"],
+                        # تصويتٌ بخياراتٍ مصوّرة (v1.0.32): الدمية والدبدوب
+                        # وُجدا في المشاهد السابقة، فمن تابع القصّة يعرف.
+                        "options": [
+                            {"id": "op_1", "alias": "flower", "label": "الزهرة", "correct": True},
+                            {"id": "op_2", "alias": "toy_doll", "label": "الدمية"},
+                            {"id": "op_3", "alias": "teddy", "label": "الدبدوب"},
+                        ],
                         "expect": 12,
                         "waitSeconds": 30,
-                        "onSolved": {"showObject": "flower", "playAudio": "v_yay", "nextScene": "s7"},
+                        "onSolved": {"showObject": "flower", "playAudio": "v_yay"},
                     },
-                    "nextScene": None,
+                    "nextScene": "s7",
                 },
                 # ── ٧ · ترتيب الحروف (sequence — v1.0.22، قائم) ─────────
                 #
@@ -280,9 +286,9 @@ def build_story_json() -> dict:
                         "question": {"text": "رتّبوا حروف كلمة «زهرة»."},
                         "steps": ["ز", "ه", "ر", "ة"],
                         "wrongResponse": {"text": "ليس هذا ترتيب الكلمة — أعيدوا المحاولة."},
-                        "onSolved": {"playAudio": "v_yay", "nextScene": "s8"},
+                        "onSolved": {"playAudio": "v_yay"},
                     },
-                    "nextScene": None,
+                    "nextScene": "s8",
                 },
                 # ── ٨ · الخاتمة ─────────────────────────────────────────
                 {

@@ -1,0 +1,131 @@
+{
+  "characterId": "battoota",
+  "units": "px, canvas 1000x1060, positions are part centers",
+  "drawOrder": [
+    "legs",
+    "body",
+    "wing_left",
+    "wing_right",
+    "head",
+    "eye_left",
+    "eye_right",
+    "pupil_left",
+    "pupil_right",
+    "brow_left",
+    "brow_right",
+    "beak"
+  ],
+  "parts": {
+    "legs": {
+      "pos": [
+        500,
+        938.0
+      ]
+    },
+    "body": {
+      "pos": [
+        500,
+        721.0
+      ]
+    },
+    "wing_left": {
+      "pos": [
+        239.5,
+        731.0
+      ],
+      "pivot": [
+        0.9,
+        0.2
+      ]
+    },
+    "wing_right": {
+      "pos": [
+        760.5,
+        731.0
+      ],
+      "pivot": [
+        0.1,
+        0.2
+      ]
+    },
+    "head": {
+      "pos": [
+        500,
+        297.0
+      ],
+      "pivot_abs": [
+        500,
+        534
+      ],
+      "children": [
+        "eye_*",
+        "pupil_*",
+        "brow_*",
+        "beak"
+      ]
+    },
+    "eye_left": {
+      "pos": [
+        395,
+        385
+      ]
+    },
+    "eye_right": {
+      "pos": [
+        605,
+        385
+      ]
+    },
+    "pupil_left": {
+      "pos": [
+        395,
+        397
+      ],
+      "gazeRange": [
+        32,
+        20
+      ]
+    },
+    "pupil_right": {
+      "pos": [
+        605,
+        397
+      ],
+      "gazeRange": [
+        32,
+        20
+      ]
+    },
+    "brow_left": {
+      "pos": [
+        395,
+        263
+      ],
+      "raiseMax": 25
+    },
+    "brow_right": {
+      "pos": [
+        605,
+        263
+      ],
+      "raiseMax": 25
+    },
+    "beak": {
+      "pos": [
+        500,
+        505
+      ],
+      "states": [
+        "closed",
+        "slight_open",
+        "talk",
+        "big_open",
+        "smile"
+      ]
+    }
+  },
+  "notes": [
+    "beak_* and legs were upscaled x2.7 from sheet 1: lower resolution than other parts, regenerate at sheet-2 scale",
+    "wing roots too short: gap at shoulder when raised beyond ~25 deg"
+  ]
+}

@@ -430,3 +430,81 @@ describe("الإطار والتنقّل (v1.0.24)", () => {
     });
   });
 });
+
+describe("PickCorrectRunner — v1.0.33: words, letters, several answers", () => {
+  const balloons = (over: Partial<PickCorrectActivity> = {}): PickCorrectActivity => ({
+    type: "pick-correct",
+    letter: "ب",
+    place: "first",
+    choices: [
+      { id: "c1", alias: "balloon", label: "باب", correct: true },
+      { id: "c2", alias: "balloon2", label: "كتاب" },
+      { id: "c3", alias: "balloon3", label: "بيت", correct: true }
+    ],
+    ...over
+  });
+  const known = ["balloon", "balloon2", "balloon3"];
+  const choiceSprites = (container: Container) =>
+    (container.children[0] as Container).children.filter((c) => c.label !== "word-label");
+
+  it("is not solved until EVERY correct option is picked", () => {
+    const { bus, runner, solved } = setup(known);
+    runner.start(balloons(), "a1", solved);
+    bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "c1" });
+    expect(solved).not.toHaveBeenCalled();
+    bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "c3" });
+    expect(solved).toHaveBeenCalledTimes(1);
+  });
+
+  it("picking a found answer again is not counted twice", () => {
+    const { bus, runner, solved } = setup(known);
+    runner.start(balloons(), "a1", solved);
+    bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "c1" });
+    bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "c1" });
+    expect(solved).not.toHaveBeenCalled();
+  });
+
+  it("does not wait for a correct option whose picture is missing", () => {
+    const { bus, runner, solved } = setup(["balloon", "balloon2"]); // بيت has no picture
+    runner.start(balloons(), "a1", solved);
+    bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "c1" });
+    expect(solved).toHaveBeenCalledTimes(1);
+  });
+
+  it("one correct option still solves on the first pick, as before", () => {
+    const { bus, runner, solved } = setup();
+    runner.start(activity(), "a1", solved);
+    bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "c2" });
+    expect(solved).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes the word on the option's picture", () => {
+    const { container, runner, solved } = setup(known);
+    runner.start(balloons(), "a1", solved);
+    const first = choiceSprites(container)[0] as Container;
+    expect(first.children.some((c) => c.label === "word-label")).toBe(true);
+  });
+
+  it("lights the letter where it really is on a wrong pick — كتاب's ب, at its end", () => {
+    const { bus, container, runner, solved } = setup(known);
+    runner.start(balloons(), "a1", solved);
+    bus.emit(EngineEvents.Dialogue.ChoiceSelected, { choice: "c2" });
+    const wrong = choiceSprites(container)[1] as Container;
+    const word = wrong.children.find((c) => c.label === "word-label") as Container;
+    // the base word + one glow layer
+    expect(word.children.length).toBe(2);
+  });
+
+  it("an option with a path starts at the path's first point", () => {
+    const { container, runner, solved } = setup(known);
+    runner.start(
+      balloons({
+        choices: [{ id: "c1", alias: "balloon", label: "باب", correct: true, x: 900, y: 700, path: [{ x: 900, y: -200 }] }]
+      }),
+      "a1",
+      solved
+    );
+    const sprite = choiceSprites(container)[0] as Container;
+    expect(sprite.y).toBe(-200);
+  });
+});

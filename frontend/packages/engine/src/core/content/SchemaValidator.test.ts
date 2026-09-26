@@ -1338,6 +1338,12 @@ describe("sort activity", () => {
     ...over
   });
 
+  it("wrongItems: \"return\" is accepted, any other value is an error (v1.0.35 §4)", () => {
+    expect(validateStorySchema(storyWithActivity(sort({ wrongItems: "return" }))).errors).toEqual([]);
+    const r = validateStorySchema(storyWithActivity(sort({ wrongItems: "shake" })));
+    expect(r.errors.join(" ")).toContain("activity.wrongItems");
+  });
+
   it("accepts the minimal authored shape", () => {
     const r = validateStorySchema(storyWithActivity(sort()));
     expect(r.errors).toEqual([]);
@@ -1463,6 +1469,12 @@ describe("find activity", () => {
     expect(r.warnings).toEqual([]);
   });
 
+  it("accepts navigate as a boolean, rejects anything else (v1.0.34 §5)", () => {
+    expect(validateStorySchema(storyWithActivity(find({ navigate: true }))).errors).toEqual([]);
+    const r = validateStorySchema(storyWithActivity(find({ navigate: "yes" })));
+    expect(r.errors.join(" ")).toContain("activity.navigate must be true or false");
+  });
+
   it("rejects an activity with nothing to find", () => {
     const r = validateStorySchema(
       storyWithActivity(find({ spots: [{ id: "sp1", alias: "bed", label: "السرير" }] }))
@@ -1539,7 +1551,7 @@ describe("find activity", () => {
 });
 
 /**
- * «كل الأيدي» (v1.0.28).
+ * «كل الأيدي» (v1.0.28)، وتصويتٌ بخيارات منذ v1.0.32.
  */
 describe("all-respond activity", () => {
   const storyWithActivity = (activity: unknown) => ({
@@ -1565,46 +1577,94 @@ describe("all-respond activity", () => {
     }
   });
 
+  const options = [
+    { id: "op_1", alias: "hat", label: "قبّعة", correct: true },
+    { id: "op_2", alias: "scarf", label: "وشاح" }
+  ];
+
   const allRespond = (over: Record<string, unknown> = {}) => ({
     type: "all-respond",
-    question: { text: "ارفعوا بطاقة الغرض الضائع" },
-    answers: ["shoe"],
+    question: { text: "ماذا تضع يارا في الحقيبة؟" },
+    options,
     expect: 12,
     ...over
   });
 
+  const run = (over: Record<string, unknown> = {}) => validateStorySchema(storyWithActivity(allRespond(over)));
+
   it("accepts the minimal authored shape", () => {
-    const r = validateStorySchema(storyWithActivity(allRespond()));
+    const r = run();
     expect(r.errors).toEqual([]);
     expect(r.warnings).toEqual([]);
   });
 
+  it("accepts a poll with no correct option", () => {
+    const r = run({ poll: true, options: options.map(({ correct: _c, ...rest }) => rest) });
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("rejects no options and no answers", () => {
+    expect(run({ options: undefined }).errors.join(" ")).toContain("options");
+  });
+
+  it("rejects one option — that is not a vote", () => {
+    expect(run({ options: [options[0]] }).errors.join(" ")).toContain("2 to 4");
+  });
+
+  it("rejects five options", () => {
+    const five = ["a", "b", "c", "d", "e"].map((alias, i) => ({ id: `o${i}`, alias, label: alias }));
+    expect(run({ options: five }).errors.join(" ")).toContain("2 to 4");
+  });
+
+  it("rejects an option with no alias", () => {
+    expect(run({ options: [options[0], { id: "x", label: "بلا صورة" }] }).errors.join(" ")).toContain("alias");
+  });
+
+  it("rejects one card on two options", () => {
+    const r = run({ options: [options[0], { id: "op_2", alias: "hat", label: "قبّعة ثانية" }] });
+    expect(r.errors.join(" ")).toContain("two options");
+  });
+
+  it("warns about an option with no label", () => {
+    const r = run({ options: [options[0], { id: "op_2", alias: "scarf" }] });
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("label");
+  });
+
+  it("warns when a poll marks a correct option", () => {
+    const r = run({ poll: true });
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("ignored");
+  });
+
+  it("warns when neither poll nor correct — nothing lights up", () => {
+    const r = run({ options: options.map(({ correct: _c, ...rest }) => rest) });
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("nothing lights up");
+  });
+
+  it("still plays the v1.0.28 answers shape — with a warning to convert", () => {
+    const r = run({ options: undefined, answers: ["shoe"] });
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("convert");
+  });
+
   it("rejects a missing expect — the counter cannot say 'everyone'", () => {
-    const r = validateStorySchema(storyWithActivity(allRespond({ expect: undefined })));
-    expect(r.errors.join(" ")).toContain("expect");
+    expect(run({ expect: undefined }).errors.join(" ")).toContain("expect");
   });
 
   it("rejects one expected card — that is not 'all hands'", () => {
-    const r = validateStorySchema(storyWithActivity(allRespond({ expect: 1 })));
-    expect(r.errors.join(" ")).toContain("at least 2");
+    expect(run({ expect: 1 }).errors.join(" ")).toContain("at least 2");
   });
 
   it("rejects a wait outside 3..180 — silence here freezes a whole lesson", () => {
-    expect(validateStorySchema(storyWithActivity(allRespond({ waitSeconds: 1 }))).errors.join(" ")).toContain(
-      "waitSeconds"
-    );
-    expect(validateStorySchema(storyWithActivity(allRespond({ waitSeconds: 600 }))).errors.join(" ")).toContain(
-      "waitSeconds"
-    );
+    expect(run({ waitSeconds: 1 }).errors.join(" ")).toContain("waitSeconds");
+    expect(run({ waitSeconds: 600 }).errors.join(" ")).toContain("waitSeconds");
   });
 
-  it("rejects empty answers", () => {
-    const r = validateStorySchema(storyWithActivity(allRespond({ answers: [] })));
-    expect(r.errors.join(" ")).toContain("answers");
-  });
-
-  it("warns about a wrongResponse — nobody loses here, so it is ignored", () => {
-    const r = validateStorySchema(storyWithActivity(allRespond({ wrongResponse: { text: "خطأ" } })));
+  it("warns about a wrongResponse — nobody loses, so it is ignored", () => {
+    const r = run({ wrongResponse: { text: "خطأ" } });
     expect(r.errors).toEqual([]);
     expect(r.warnings.join(" ")).toContain("nobody loses");
   });
@@ -1614,5 +1674,200 @@ describe("all-respond activity", () => {
       storyWithActivity({ type: "card-answer", question: { text: "?" }, answers: ["egg"] })
     );
     expect(r.errors).toEqual([]);
+  });
+});
+
+describe("v1.0.33 — words on pictures, letters in words", () => {
+  function story(scene: Record<string, unknown>) {
+    return {
+      schemaVersion: "1.0",
+      id: "s1",
+      title: "Story",
+      language: "ar",
+      story: {
+        id: "story-s1",
+        title: "Story",
+        scene: "YaraBedScene",
+        scenes: [{ id: "scene01", lines: [{ id: "l1", speaker: "", text: "انظروا!" }], activity: null, nextScene: null, ...scene }]
+      }
+    };
+  }
+
+  it("accepts a word on an element", () => {
+    const result = validateStorySchema(story({ elements: [{ id: "b1", alias: "balloon", word: { text: "بالون", y: 0.4 } }] }));
+    expect(result.errors).toEqual([]);
+  });
+
+  it("rejects a word with no text, or a y off the picture", () => {
+    expect(validateStorySchema(story({ elements: [{ id: "b1", alias: "balloon", word: { text: "" } }] })).errors[0]).toMatch(/"word" must be/);
+    expect(validateStorySchema(story({ elements: [{ id: "b1", alias: "balloon", word: { text: "بالون", y: 2 } }] })).errors[0]).toMatch(/"word.y"/);
+  });
+
+  const balloons = (choices: unknown[], extra: Record<string, unknown> = {}) =>
+    story({ activity: { type: "pick-correct", letter: "ب", place: "first", choices, ...extra } });
+
+  it("accepts the ب lesson: two correct words, a distractor, and a path", () => {
+    const result = validateStorySchema(
+      balloons([
+        { id: "c1", alias: "balloon", label: "باب", correct: true, path: [{ x: 1, y: 2 }] },
+        { id: "c2", alias: "balloon", label: "كتاب" },
+        { id: "c3", alias: "balloon", label: "بيت", correct: true }
+      ])
+    );
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns when the letter and `correct` disagree — in both directions", () => {
+    const { warnings } = validateStorySchema(
+      balloons([
+        { id: "c1", alias: "balloon", label: "كتاب", correct: true },
+        { id: "c2", alias: "balloon", label: "بيت" }
+      ])
+    );
+    expect(warnings.some((w) => /"كتاب" is marked correct but has no "ب" at its start/.test(w))).toBe(true);
+    expect(warnings.some((w) => /"بيت" has "ب" at its start but is not marked correct/.test(w))).toBe(true);
+  });
+
+  it("the letter must be one letter, and place a known word", () => {
+    const { errors } = validateStorySchema(balloons([{ id: "c1", alias: "balloon", correct: true }], { letter: "با", place: "start" }));
+    expect(errors.some((e) => /activity.letter must be exactly one letter/.test(e))).toBe(true);
+    expect(errors.some((e) => /activity.place "start"/.test(e))).toBe(true);
+  });
+});
+
+describe("effects that point at nothing on the stage", () => {
+  const story = (scenes: unknown[], extra: Record<string, unknown> = {}) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: { id: "story-s1", title: "Story", scene: "YaraBedScene", scenes, ...extra }
+  });
+  const talk = (target: string) => ({ type: "set-image", target, to: "mouth_open" });
+  const dangling = (r: { warnings: string[] }) => r.warnings.filter((w) => /not an element of this scene/.test(w));
+
+  it("warns when a copied scene's effects still name the original's element", () => {
+    const result = validateStorySchema(
+      story([
+        { id: "a", elements: [{ id: "duck_1", alias: "duck" }], lines: [{ id: "l1", speaker: "", text: "", effects: talk("duck_1") }] },
+        { id: "a_copy", elements: [{ id: "duck_1_c9", alias: "duck" }], lines: [{ id: "l2", speaker: "", text: "", effects: talk("duck_1") }] }
+      ])
+    );
+    expect(dangling(result)).toEqual([expect.stringContaining('Scene "a_copy": an effect targets "duck_1"')]);
+  });
+
+  it("warns on a move step left behind by a deleted element — once per target", () => {
+    const result = validateStorySchema(
+      story([
+        {
+          id: "a",
+          elements: [{ id: "duck_1", alias: "duck" }],
+          lines: [],
+          effects: { onEnter: { type: "sequence", effects: [{ type: "move", target: "balloon_9", to: { x: 1, y: 1 } }, { type: "pop", target: "balloon_9" }] } }
+        }
+      ])
+    );
+    expect(dangling(result)).toHaveLength(1);
+  });
+
+  it("does not warn on ids that outlive their scene — a line's showObject, the main character", () => {
+    const result = validateStorySchema(
+      story(
+        [
+          { id: "a", lines: [{ id: "l1", speaker: "", text: "", showObject: "cat" }] },
+          { id: "b", lines: [{ id: "l2", speaker: "", text: "", effects: { type: "parallel", effects: [talk("cat"), talk("yara")] } }] }
+        ],
+        { mainCharacterId: "yara" }
+      )
+    );
+    expect(dangling(result)).toEqual([]);
+  });
+});
+
+/**
+ * «وصل» (v1.0.36 §7).
+ */
+describe("connect activity", () => {
+  const storyWithActivity = (activity: unknown) => ({
+    schemaVersion: "1.0",
+    id: "s1",
+    title: "Story",
+    language: "ar",
+    story: {
+      id: "story-s1",
+      kind: "story",
+      title: "Story",
+      scene: "YaraBedScene",
+      scenes: [
+        {
+          id: "scene01",
+          background: "bg",
+          elements: [],
+          lines: [{ id: "l1", speaker: "", text: "hi" }],
+          activity,
+          nextScene: null
+        }
+      ]
+    }
+  });
+
+  const connect = (over: Record<string, unknown> = {}) => ({
+    type: "connect",
+    question: { text: "صِل كل صورة بموضع الباء فيها" },
+    anchors: [
+      { id: "first", letter: "ب", place: "first" },
+      { id: "middle", letter: "ب", place: "middle" }
+    ],
+    items: [
+      { alias: "duck", label: "بطّة", anchor: "first" },
+      { alias: "rope", label: "حبل", anchor: "middle" }
+    ],
+    ...over
+  });
+
+  it("accepts the minimal authored shape", () => {
+    const r = validateStorySchema(storyWithActivity(connect()));
+    expect(r.errors).toEqual([]);
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("rejects one anchor — there is nothing to choose between", () => {
+    const r = validateStorySchema(
+      storyWithActivity(connect({ anchors: [{ id: "first", label: "بـ" }], items: [{ alias: "duck", anchor: "first" }] }))
+    );
+    expect(r.errors.join(" ")).toContain("at least two anchors");
+  });
+
+  it("rejects an item whose anchor does not exist, and an unknown place", () => {
+    const r = validateStorySchema(
+      storyWithActivity(
+        connect({
+          anchors: [{ id: "first", letter: "ب", place: "start" }, { id: "middle", label: "ـبـ" }],
+          items: [{ alias: "duck", anchor: "ghost" }]
+        })
+      )
+    );
+    expect(r.errors.join(" ")).toContain("which no anchor declares");
+    expect(r.errors.join(" ")).toContain("place \"start\"");
+  });
+
+  it("warns when a word does not carry its anchor's letter in that place", () => {
+    const r = validateStorySchema(
+      storyWithActivity(connect({ items: [{ alias: "book", label: "كتاب", anchor: "first" }, { alias: "rope", label: "حبل", anchor: "middle" }] }))
+    );
+    expect(r.errors).toEqual([]);
+    expect(r.warnings.join(" ")).toContain("no such letter there");
+  });
+
+  it("navigate must be a boolean (v1.0.37 §4)", () => {
+    expect(validateStorySchema(storyWithActivity(connect({ navigate: true }))).errors).toEqual([]);
+    const r = validateStorySchema(storyWithActivity(connect({ navigate: "yes" })));
+    expect(r.errors.join(" ")).toContain("activity.navigate");
+  });
+
+  it("warns about an anchor nothing connects to", () => {
+    const r = validateStorySchema(storyWithActivity(connect({ items: [{ alias: "duck", label: "بطّة", anchor: "first" }] })));
+    expect(r.warnings.join(" ")).toContain("nothing connects to anchor \"middle\"");
   });
 });

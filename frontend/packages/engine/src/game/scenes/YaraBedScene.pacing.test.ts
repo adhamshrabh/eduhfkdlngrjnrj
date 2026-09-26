@@ -106,7 +106,7 @@ describe("tap means skip, not advance", () => {
 });
 
 describe("scene crossfade", () => {
-  const transition = /private transitionToScene\(sceneId: string\): void \{[\s\S]*?\n  \}/.exec(source)?.[0] ?? "";
+  const transition = /private transitionToScene\(sceneId: string[^)]*\): void \{[\s\S]*?\n  \}/.exec(source)?.[0] ?? "";
 
   it("fades out, swaps, fades back in — a cut reads as a page change", () => {
     expect(transition).not.toBe("");

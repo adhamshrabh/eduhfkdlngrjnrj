@@ -197,7 +197,7 @@ describe("StudioApp — Canvas Editing v1 + Workspace tabs", () => {
   /** The most recently mounted mock canvas instance — a stable object per
    *  mount() call, so a test can assert on setSelected()/destroy() calls
    *  made against whichever instance is currently "live". */
-  let currentCanvasInstance: { destroy: ReturnType<typeof vi.fn>; setSelected: ReturnType<typeof vi.fn>; designRoot: object; updateTransform: ReturnType<typeof vi.fn> };
+  let currentCanvasInstance: { destroy: ReturnType<typeof vi.fn>; setSelected: ReturnType<typeof vi.fn>; designRoot: object; updateTransform: ReturnType<typeof vi.fn>; showPath: ReturnType<typeof vi.fn>; setWord: ReturnType<typeof vi.fn> };
   let currentPreviewInstance: { destroy: ReturnType<typeof vi.fn>; handleKeyDown: ReturnType<typeof vi.fn> };
   /** The onSolved callback StudioApp handed the preview — lets a test fire
    *  a "solve" exactly as the real PuzzleRunner would. */
@@ -211,7 +211,7 @@ describe("StudioApp — Canvas Editing v1 + Workspace tabs", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () => {
-      currentCanvasInstance = { destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) };
+      currentCanvasInstance = { destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) };
       return currentCanvasInstance as any;
     });
     currentPreviewInstance = { destroy: vi.fn(), handleKeyDown: vi.fn() };
@@ -1381,7 +1381,7 @@ describe("StudioApp — branching (choice points)", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
 
     host = document.createElement("div");
@@ -1745,7 +1745,7 @@ describe("StudioApp — scene composition", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     host = document.createElement("div");
     const app = new StudioApp(host);
@@ -1911,7 +1911,7 @@ describe("StudioApp — deleting an asset", () => {
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.deleteAsset).mockResolvedValue({ ok: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     host = document.createElement("div");
     const app = new StudioApp(host);
@@ -2019,8 +2019,9 @@ describe("StudioApp — motion without an activity", () => {
         destroy: vi.fn(),
         setSelected: vi.fn(),
         designRoot: {},
-        updateTransform: vi.fn(() => true),
+        updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
         pickPoint: vi.fn(() => vi.fn()),
+        pickPath: vi.fn(() => ({ finish: vi.fn(), cancel: vi.fn(), undo: vi.fn() })),
         getTransform: vi.fn(() => ({ x: 812, y: 655 }))
       }) as any
     );
@@ -2251,6 +2252,36 @@ describe("StudioApp — motion without an activity", () => {
     expect((scene.effects as any).onEnter.to).toEqual({ x: 1240, y: 780 });
   });
 
+  it("drawing a path: the last click is the destination, the rest are passed through (v1.0.33 §2)", async () => {
+    await mount();
+    selectValue(selectForLabel(host, "الحركة"), "move");
+
+    const instance = await vi.mocked(SceneCanvas.mount).mock.results.at(-1)!.value;
+    findButton(host, "ارسم مسارًا بنقاط").click();
+
+    // The curve starts where the element stands now.
+    const [ends, onDone] = (instance as any).pickPath.mock.calls.at(-1)! as [unknown, (p: Array<{ x: number; y: number }> | null) => void];
+    expect(ends).toEqual({ from: { x: 812, y: 655 } });
+    onDone([{ x: 1500, y: 120 }, { x: 700, y: 380 }, { x: 960, y: 620 }]);
+
+    const scene = await savedScene();
+    expect((scene.effects as any).onEnter.to).toEqual({ x: 960, y: 620 });
+    expect((scene.effects as any).onEnter.path).toEqual([{ x: 1500, y: 120 }, { x: 700, y: 380 }]);
+  });
+
+  it("a path of one click is just a destination — no path is written", async () => {
+    await mount();
+    selectValue(selectForLabel(host, "الحركة"), "move");
+    const instance = await vi.mocked(SceneCanvas.mount).mock.results.at(-1)!.value;
+    findButton(host, "ارسم مسارًا بنقاط").click();
+    const onDone = (instance as any).pickPath.mock.calls.at(-1)![1] as (p: Array<{ x: number; y: number }>) => void;
+    onDone([{ x: 300, y: 300 }]);
+
+    const scene = await savedScene();
+    expect((scene.effects as any).onEnter.to).toEqual({ x: 300, y: 300 });
+    expect((scene.effects as any).onEnter.path).toBeUndefined();
+  });
+
   it("adjusting an effect never tears down the stage — that blink is what made it feel broken", async () => {
     await mount();
     const mountsBefore = vi.mocked(SceneCanvas.mount).mock.calls.length;
@@ -2304,7 +2335,7 @@ describe("StudioApp — how the child answers", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -2415,7 +2446,7 @@ describe("StudioApp — touch response", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -2531,7 +2562,7 @@ describe("StudioApp — changing an element's image", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -2636,7 +2667,7 @@ describe("StudioApp — every way a scene can continue", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -2722,7 +2753,7 @@ describe("StudioApp — chaining effects with «＋ خطوة أخرى»", () => 
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -2859,7 +2890,7 @@ describe("StudioApp — is the element alive", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -2959,7 +2990,7 @@ describe("StudioApp — the story map", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -3072,7 +3103,7 @@ describe("StudioApp — validation points at places", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -3151,7 +3182,7 @@ describe("StudioApp — a sound alongside the voice", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -3274,7 +3305,7 @@ describe("StudioApp — which part is in front", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -3360,7 +3391,7 @@ describe("StudioApp — how long before this step", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -3462,7 +3493,7 @@ describe("StudioApp — each step waits, or joins the one before", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -3610,7 +3641,7 @@ describe("StudioApp — putting elements into one block", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true),
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true),
          pickPoint: vi.fn(() => vi.fn()), getTransform: vi.fn(() => ({ x: 0, y: 0 })) }) as any
     );
     host = document.createElement("div");
@@ -3801,7 +3832,7 @@ describe("StudioApp — النشر", () => {
     );
     vi.mocked(StudioApi.setPublished).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
 
     host = document.createElement("div");
@@ -3892,7 +3923,7 @@ describe("StudioApp — قصّة لا تملكها المعلّمة", () => {
       canEdit === null ? null : { isPublished: true, canEdit }
     );
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     host = document.createElement("div");
     await new StudioApp(host).start();
@@ -3960,7 +3991,7 @@ describe("StudioApp — قصّة يرفضها المحرّر", () => {
     vi.mocked(StudioApi.storyMeta).mockResolvedValue({ isPublished: false, canEdit: true });
     vi.mocked(StudioApi.deleteStory).mockResolvedValue({ ok: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     host = document.createElement("div");
     await new StudioApp(host).start();   // يفتح "b" أولاً
@@ -4022,7 +4053,7 @@ describe("StudioApp — ?story= في الرابط", () => {
     vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
     vi.mocked(StudioApi.storyMeta).mockResolvedValue({ isPublished: false, canEdit: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     const host = document.createElement("div");
     await new StudioApp(host).start();
@@ -4070,7 +4101,7 @@ describe("StudioApp — نشاط الترتيب", () => {
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.saveLayout).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
 
     // جدول البطاقات يصل من «الأجهزة» عبر الشبكة — بلا خادم تبقى المجموعة
@@ -4234,7 +4265,7 @@ describe("StudioApp — حذف صورة من شبكة إضافة عنصر", () =
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(StudioApi.deleteAsset).mockResolvedValue({ ok: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     host = document.createElement("div");
     await new StudioApp(host).start();
@@ -4359,7 +4390,7 @@ describe("StudioApp — أين تظهر كل بطاقة", () => {
     vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     host = document.createElement("div");
     await new StudioApp(host).start();
@@ -4458,7 +4489,7 @@ describe("StudioApp — يُجاب بالإطار وأزرار الصندوق", 
     vi.mocked(StudioApi.loadLayout).mockResolvedValue(layoutFixture());
     vi.mocked(StudioApi.saveStory).mockResolvedValue({ ok: true, publicMirrorOk: true });
     vi.mocked(SceneCanvas.mount).mockImplementation(async () =>
-      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true) }) as any
+      ({ destroy: vi.fn(), setSelected: vi.fn(), designRoot: {}, updateTransform: vi.fn(() => true), showPath: vi.fn(), setWord: vi.fn(() => true) }) as any
     );
     vi.stubGlobal(
       "fetch",
@@ -4496,6 +4527,91 @@ describe("StudioApp — يُجاب بالإطار وأزرار الصندوق", 
     const [, storyJson] = vi.mocked(StudioApi.saveStory).mock.calls.at(-1)!;
     return (((storyJson as any).story as any).scenes as any[])[0].activity;
   }
+
+  // «ابحث» (v1.0.34): الإطار يعمل بلا تأليف، والحقل يضبط وقت ظهوره فقط.
+  const find = (over: Record<string, unknown> = {}) => ({
+    type: "find",
+    question: { text: "أين الألف؟" },
+    spots: [{ id: "sp1", alias: "body", correct: true }],
+    ...over
+  });
+
+  it("«ابحث»: الإطار يظهر عند أوّل ضغطة افتراضاً، والاختيار الآخر يكتب `navigate: true`", async () => {
+    await mount(find());
+    const select = selectForLabel(host, "إطار الأزرار");
+    expect(select.value).toBe("press");
+    selectValue(select, "frame");
+    expect(await savedActivity()).toMatchObject({ navigate: true });
+  });
+
+  // «الفرز» (v1.0.35): ما يراه الطفل عند الفرز الخاطئ.
+  const sortActivity = (over: Record<string, unknown> = {}) => ({
+    type: "sort",
+    bins: [
+      { id: "a", label: "أ" },
+      { id: "b", label: "ب" }
+    ],
+    items: [{ id: "i1", alias: "body", bin: "a" }],
+    ...over
+  });
+
+  it("«الفرز»: «الخاطئ يهتزّ ويعود مكانه» يكتب `wrongItems`", async () => {
+    await mount(sortActivity());
+    const select = selectForLabel(host, "ماذا يرى الطفل؟");
+    expect(select.value).toBe("look");
+    selectValue(select, "return");
+    expect(await savedActivity()).toMatchObject({ wrongItems: "return" });
+  });
+
+  it("«الفرز»: العودة إلى «انظر مرّةً أخرى» تحذف الحقل", async () => {
+    await mount(sortActivity({ wrongItems: "return" }));
+    const select = selectForLabel(host, "ماذا يرى الطفل؟");
+    expect(select.value).toBe("return");
+    selectValue(select, "look");
+    expect("wrongItems" in (await savedActivity())).toBe(false);
+  });
+
+  // «وصل» (v1.0.36): الحرف والموضع يكتبان الرأس، والكلمة المخالفة يُحذَّر منها.
+  const connectActivity = (over: Record<string, unknown> = {}) => ({
+    type: "connect",
+    anchors: [
+      { id: "first", letter: "ب" },
+      { id: "middle", letter: "ب", place: "middle" }
+    ],
+    items: [{ id: "i1", alias: "body", label: "كتاب", anchor: "middle" }],
+    ...over
+  });
+
+  it("«وصل»: اختيار الموضع يكتب `place` على الرأس", async () => {
+    await mount(connectActivity());
+    selectValue(selectForLabel(host, "موضعه في الكلمة"), "first");
+    expect((await savedActivity()).anchors[0]).toMatchObject({ id: "first", letter: "ب", place: "first" });
+  });
+
+  it("«وصل»: «مرئيّ من البداية» يكتب `navigate: true`", async () => {
+    await mount(connectActivity());
+    const select = selectForLabel(host, "إطار الأزرار");
+    expect(select.value).toBe("press");
+    selectValue(select, "frame");
+    expect(await savedActivity()).toMatchObject({ navigate: true });
+  });
+
+  it("«وصل»: العودة إلى «عند أوّل ضغطة» تحذف الحقل", async () => {
+    await mount(connectActivity({ navigate: true }));
+    selectValue(selectForLabel(host, "إطار الأزرار"), "press");
+    expect("navigate" in (await savedActivity())).toBe(false);
+  });
+
+  it("«وصل»: كلمةٌ ليس فيها حرف رأسها في موضعه يُحذَّر منها", async () => {
+    await mount(connectActivity());
+    expect(host.textContent).toContain("«كتاب» ليس فيها «ب» في وسطها");
+  });
+
+  it("«ابحث»: العودة إلى «عند أوّل ضغطة» تحذف الحقل", async () => {
+    await mount(find({ navigate: true }));
+    selectValue(selectForLabel(host, "إطار الأزرار"), "press");
+    expect("navigate" in (await savedActivity())).toBe(false);
+  });
 
   it("المربّع مُطفأ لكل مشهدٍ مؤلَّف اليوم", async () => {
     await mount(pick());

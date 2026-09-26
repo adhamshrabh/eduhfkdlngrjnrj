@@ -36,6 +36,8 @@ import {
   type EffectPoint,
   type PrimitiveEffect, scaleEffectTo
 } from "./EffectContract";
+import { pathSampler } from "./MotionPath";
+import type { LetterPlace } from "../text/ArabicWord";
 
 /**
  * The minimum surface an effect needs from whatever it animates.
@@ -54,6 +56,23 @@ export interface EffectTarget {
 /** Resolves an authored `target` id to a live object, or undefined when
  *  the scene has no such element (see the failure policy above). */
 export type EffectTargetResolver = (id: string) => EffectTarget | undefined;
+
+/**
+ * What `highlight-letter` animates (v1.0.33 §4): a layer that fades in
+ * over the letter, and — when lifted — the letter's own shape rising to
+ * `to`. Structural for the same reason EffectTarget is: the runner never
+ * learns what text is.
+ */
+export interface LetterRevealTargets {
+  glow: EffectTarget;
+  lift?: { target: EffectTarget; to: EffectPoint; scale: number };
+}
+
+export type LetterRevealer = (
+  targetId: string,
+  letter: string,
+  options: { place?: LetterPlace; lift?: boolean; color?: string }
+) => LetterRevealTargets | null;
 
 /**
  * The one place a semantic ease name becomes library syntax. Swapping
@@ -109,16 +128,23 @@ export class EffectRunner {
    *  of textures — it is handed a capability, never a dependency. */
   private readonly playAudio?: (alias: string) => void;
 
+  /** Finds a letter in the word written on a target (v1.0.33 §4) and
+   *  hands back what to animate. Optional like the two above: a runner
+   *  given none skips `highlight-letter`. */
+  private readonly revealLetter?: LetterRevealer;
+
   constructor(
     animation: AnimationManager,
     resolveTarget: EffectTargetResolver,
     applyImage?: (targetId: string, alias: string) => void,
-    playAudio?: (alias: string) => void
+    playAudio?: (alias: string) => void,
+    revealLetter?: LetterRevealer
   ) {
     this.animation = animation;
     this.resolveTarget = resolveTarget;
     this.applyImage = applyImage;
     this.playAudio = playAudio;
+    this.revealLetter = revealLetter;
   }
 
   /**
@@ -228,7 +254,33 @@ export class EffectRunner {
           target.x = from.x;
           target.y = from.y;
         }
+        if (Array.isArray(effect.path) && effect.path.length > 0) {
+          return this.tweenAlongPath(target, effect.path, to, { duration, delay, ease });
+        }
         return this.tween(target, { x: to.x, y: to.y, duration, delay, ease });
+      }
+
+      case "highlight-letter": {
+        const letter = String(effect.to ?? "").trim();
+        if (!letter || !this.revealLetter) return Promise.resolve();
+        return (delay > 0 ? this.wait(delay) : Promise.resolve()).then(() => {
+          if (this.destroyed) return;
+          const found = this.revealLetter?.(effect.target, letter, { place: effect.place, lift: effect.lift === true, color: effect.color });
+          // الحرف ليس في الكلمة، أو لا كلمة على العنصر: لا شيء يُضاء، ولا خطأ.
+          if (!found) return;
+          // التظليل أوّلاً في النصف الأوّل — يرى الصفّ **أيّ** حرفٍ أضاء
+          // قبل أن يتحرّك — ثم يرتفع الحرف في النصف الثاني.
+          const glow = this.tween(found.glow, { alpha: 1, duration: duration / 2, ease: EASE_TO_GSAP["ease-out"] });
+          const lift = found.lift;
+          if (!lift) return glow;
+          return glow.then(() => {
+            lift.target.alpha = 1;
+            return Promise.all([
+              this.tween(lift.target, { x: lift.to.x, y: lift.to.y, duration: duration / 2, ease }),
+              this.tween(lift.target.scale, { x: lift.scale, y: lift.scale, duration: duration / 2, ease })
+            ]).then(() => undefined);
+          });
+        });
       }
 
       case "scale": {
@@ -321,6 +373,51 @@ export class EffectRunner {
           resolve();
         }
       });
+    });
+  }
+
+  /**
+   * A move through waypoints (v1.0.33 §2). The tween drives ONE number —
+   * how far along the curve, 0..1 — and every frame places the target on
+   * the curve at that distance; the author's `ease` shapes that number,
+   * so "ease-in" still means "starts slow" along a curve.
+   *
+   * The curve starts where the element IS when the move begins (after
+   * any `from`), which is what lets the same path be reused as the next
+   * step of a sequence.
+   */
+  private tweenAlongPath(
+    target: EffectTarget,
+    path: ReadonlyArray<EffectPoint>,
+    to: EffectPoint,
+    timing: { duration: number; delay: number; ease: string }
+  ): Promise<void> {
+    let at: ((t: number) => EffectPoint) | null = null;
+    const progress = { t: 0 };
+    // The idle layer asks about the TARGET, not about this proxy — so the
+    // target is marked busy for as long as the proxy is moving it.
+    this.busyTargets.set(target, (this.busyTargets.get(target) ?? 0) + 1);
+    return this.tween(progress, {
+      t: 1,
+      ...timing,
+      // Sampled at the moment motion starts, not when the effect was
+      // queued: a `delay` or an earlier step may have moved the target.
+      onStart: () => {
+        at = pathSampler([{ x: target.x, y: target.y }, ...path, to]);
+      },
+      onUpdate: () => {
+        if (!at) at = pathSampler([{ x: target.x, y: target.y }, ...path, to]);
+        const p = at(progress.t);
+        target.x = p.x;
+        target.y = p.y;
+      },
+      onComplete: () => {
+        target.x = to.x;
+        target.y = to.y;
+        const left = (this.busyTargets.get(target) ?? 1) - 1;
+        if (left > 0) this.busyTargets.set(target, left);
+        else this.busyTargets.delete(target);
+      }
     });
   }
 

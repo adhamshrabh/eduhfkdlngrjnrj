@@ -597,3 +597,109 @@ describe("EffectRunner — a mouth from set-image alone", () => {
     for (const w of waits) expect(w as number).toBeCloseTo(0.15, 5);
   });
 });
+
+describe("EffectRunner — move through a path (v1.0.33 §2)", () => {
+  /** Plays a tween as frames: start, then the numbers stepped 0→1. */
+  function framedAnimation(frames = 10) {
+    const visited: Array<{ x: number; y: number }> = [];
+    const manager = {
+      play(_id: string, target: Record<string, unknown>, vars: Record<string, unknown>) {
+        (vars.onStart as (() => void) | undefined)?.();
+        for (let i = 1; i <= frames; i++) {
+          for (const [key, value] of Object.entries(vars)) {
+            if (CONTROL_KEYS.has(key) || typeof value !== "number") continue;
+            target[key] = (value as number) * (i / frames);
+          }
+          (vars.onUpdate as (() => void) | undefined)?.();
+        }
+        (vars.onComplete as (() => void) | undefined)?.();
+        return {} as never;
+      },
+      stop() {}
+    } as unknown as AnimationManager;
+    return { manager, visited };
+  }
+
+  it("passes through every waypoint and lands exactly on `to`", async () => {
+    const { manager } = framedAnimation(200);
+    const balloon = makeTarget({ x: 0, y: 0 });
+    const seen: Array<{ x: number; y: number }> = [];
+    const watched = new Proxy(balloon, {
+      set(obj, key, value) {
+        (obj as unknown as Record<string, unknown>)[key as string] = value;
+        if (key === "y") seen.push({ x: obj.x, y: obj.y });
+        return true;
+      }
+    });
+    const runner = new EffectRunner(manager, () => watched);
+    await runner.run({ type: "move", target: "b", path: [{ x: 400, y: 300 }], to: { x: 800, y: 0 }, duration: 2 });
+
+    expect(balloon.x).toBe(800);
+    expect(balloon.y).toBe(0);
+    const nearest = Math.min(...seen.map((p) => Math.hypot(p.x - 400, p.y - 300)));
+    expect(nearest).toBeLessThan(10);
+  });
+
+  it("marks the element busy while it travels, so idle motion stands down", async () => {
+    const balloon = makeTarget();
+    let busyMidway = false;
+    let runner!: EffectRunner;
+    const manager = {
+      play(_id: string, target: Record<string, unknown>, vars: Record<string, unknown>) {
+        target.t = 0.5;
+        (vars.onUpdate as () => void)?.();
+        busyMidway = runner.isAnimating(balloon);
+        (vars.onComplete as () => void)?.();
+        return {} as never;
+      },
+      stop() {}
+    } as unknown as AnimationManager;
+    runner = new EffectRunner(manager, () => balloon);
+    await runner.run({ type: "move", target: "b", path: [{ x: 10, y: 10 }], to: { x: 20, y: 0 } });
+    expect(busyMidway).toBe(true);
+    expect(runner.isAnimating(balloon)).toBe(false);
+  });
+
+  it("a move without a path is the straight move it always was", async () => {
+    const { animation, targets, runner } = setup();
+    targets.set("b", makeTarget());
+    await runner.run({ type: "move", target: "b", to: { x: 5, y: 6 } });
+    expect(animation.tweens[0]!.vars).toMatchObject({ x: 5, y: 6 });
+  });
+});
+
+describe("EffectRunner — highlight-letter (v1.0.33 §4)", () => {
+  it("fades the glow in, then lifts the letter to where it was told", async () => {
+    const animation = new FakeAnimation(true);
+    const glow = makeTarget({ alpha: 0 });
+    const lifted = makeTarget({ alpha: 0 });
+    const asked: unknown[] = [];
+    const runner = new EffectRunner(animation.asManager(), () => makeTarget(), undefined, undefined, (id, letter, options) => {
+      asked.push({ id, letter, ...options });
+      return { glow, lift: { target: lifted, to: { x: 3, y: -90 }, scale: 1.5 } };
+    });
+    await runner.run({ type: "highlight-letter", target: "balloon", to: "ب", place: "first", lift: true });
+
+    expect(asked).toEqual([{ id: "balloon", letter: "ب", place: "first", lift: true }]);
+    expect(glow.alpha).toBe(1);
+    expect(lifted).toMatchObject({ alpha: 1, x: 3, y: -90, scale: { x: 1.5, y: 1.5 } });
+  });
+
+  it("a letter that is not in the word lights nothing and does not throw", async () => {
+    const { runner, targets } = setup();
+    targets.set("b", makeTarget());
+    await expect(runner.run({ type: "highlight-letter", target: "b", to: "ب" })).resolves.toBeUndefined();
+  });
+});
+
+describe("EffectRunner — highlight-letter colour", () => {
+  it("hands the authored colour to whoever lights the letter", async () => {
+    const asked: Array<{ color?: string }> = [];
+    const runner = new EffectRunner(new FakeAnimation(true).asManager(), () => makeTarget(), undefined, undefined, (_id, _l, options) => {
+      asked.push(options);
+      return { glow: makeTarget({ alpha: 0 }) };
+    });
+    await runner.run({ type: "highlight-letter", target: "b", to: "ل", color: "#8e4ec6" });
+    expect(asked[0]!.color).toBe("#8e4ec6");
+  });
+});

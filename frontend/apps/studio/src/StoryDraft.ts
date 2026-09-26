@@ -22,7 +22,8 @@
  */
 
 import { validateStorySchema, type SchemaValidationResult } from "@core/content";
-import type { ActivityEffectHook, ActivityEffects, EffectDefinition } from "@core/effects";
+import type { ActivityEffectHook, ActivityEffects, EffectDefinition, EffectPoint } from "@core/effects";
+import { hasLetterAt, type LetterPlace } from "@core/text";
 
 /** An entry in the story's asset list — a logical alias plus its
  *  story-relative source path (Scene-Model-Specification-v1.0.md §4). */
@@ -50,6 +51,8 @@ export interface DraftElement {
   idle?: string;
   /** Which group container draws this element (v1.0.17). */
   groupId?: string;
+  /** A word written on the picture (v1.0.33 §3). */
+  word?: { text: string; y?: number; color?: string };
 }
 
 /** One dialogue line (§7). Only the fields Phase 1's UI edits are typed
@@ -123,6 +126,10 @@ export interface DraftActivityChoice {
   x?: number;
   y?: number;
   scale?: number;
+  /** A word written on the option's picture (v1.0.33 §5). */
+  label?: string;
+  /** Points it floats through on its way in (v1.0.33 §5). */
+  path?: EffectPoint[];
 }
 
 /** خطوة ترتيبٍ كما يحرّرها الاستوديو (v1.0.22 §2.1، وv1.0.23 §2). */
@@ -148,7 +155,10 @@ export interface DraftFindSpot {
   /** اسم المكان بالعربية كما يُقال: «السرير». منه تُبنى جملة الردّ. */
   label?: string;
   relation?: string;
+  /** يخبّئ مطلوباً. وقد يحمله أكثر من موضع (v1.0.31). */
   correct?: boolean;
+  /** ما يظهر عند هذا الموضع حين يُعثَر عليه. */
+  reveals?: string;
 }
 
 /** سلّةٌ يُفرَز إليها (v1.0.26 §2). */
@@ -169,9 +179,37 @@ export interface DraftSortItem {
   alias: string;
   /** معرّف السلّة الصحيحة. */
   bin: string;
+  /** «وصل» (v1.0.36): معرّف الرأس الصحيح — العناصر تعيش في `items` نفسها. */
+  anchor?: string;
+  /** «وصل»: الكلمة تحت الصورة. */
+  label?: string;
   x?: number;
   y?: number;
   scale?: number;
+}
+
+/** رأسٌ في عمود «وصل» (v1.0.36 §2). */
+export interface DraftConnectAnchor {
+  /** مولَّد لا مؤلَّف. */
+  id: string;
+  /** ما يُكتب على الرأس. الغياب = شكل `letter` في `place`. */
+  label?: string;
+  letter?: string;
+  place?: LetterPlace;
+  image?: string;
+  x?: number;
+  y?: number;
+}
+
+/** خيارٌ في تصويت الصفّ (v1.0.32 §2). */
+export interface DraftVoteOption {
+  /** مولَّد لا مؤلَّف. */
+  id: string;
+  /** صورة الخيار ومعنى بطاقته معاً. */
+  alias: string;
+  /** الاسم العربي الذي يراه الصفّ. */
+  label?: string;
+  correct?: boolean;
 }
 
 /** عنوانٌ مؤلَّف لخانةٍ في الأحجية (v1.0.25 §4). */
@@ -196,8 +234,14 @@ export interface DraftActivity {
   /** The character's reaction to a wrong pick — never a verdict on the
    *  child, so the mistake carries something to reason from. */
   wrongResponse?: { text?: string; audio?: string };
-  /** يُجاب بإطارٍ يتنقّل بأزرار الصندوق لا بزرٍّ لكل خيار (v1.0.24). */
+  /** يُجاب بإطارٍ يتنقّل بأزرار الصندوق لا بزرٍّ لكل خيار (v1.0.24
+   *  لـ`pick-correct`، وv1.0.30 لـ`sort`). */
   navigate?: boolean;
+  /** `sort`: الخاطئ يهتزّ ويعود إلى الرفّ من أوّل حكم (v1.0.35). */
+  wrongItems?: "return";
+  /** الحرف الذي يدور عليه السؤال، وموضعه في الكلمة (v1.0.33 §5). */
+  letter?: string;
+  place?: LetterPlace;
   // ── card-answer (v1.0.20) ──
   /** الأسماء المستعارة التي تُحتسب جواباً صحيحاً.
    *
@@ -230,10 +274,17 @@ export interface DraftActivity {
   bins?: DraftSortBin[];
   /** الأغراض، ولكلٍّ سلّته الصحيحة. */
   items?: DraftSortItem[];
+  // ── connect (v1.0.36) ──
+  /** عمود الرؤوس. رأسان على الأقلّ. والعناصر في `items`، ولكلٍّ `anchor`. */
+  anchors?: DraftConnectAnchor[];
   // ── find (v1.0.27) ──
   /** المواضع التي يُبحث فيها — أسماء عناصر هذا المشهد. */
   spots?: DraftFindSpot[];
-  // ── all-respond (v1.0.28) ──
+  // ── all-respond (v1.0.28، وخياراته منذ v1.0.32) ──
+  /** الخيارات المصوّرة التي يُصوَّت بينها. من ٢ إلى ٤. */
+  options?: DraftVoteOption[];
+  /** سؤال رأي لا صواب فيه. */
+  poll?: boolean;
   /** كم بطاقة ننتظر اليوم. مطلوب في «كل الأيدي»، ولا معنى له في غيره. */
   expect?: number;
   /** سقف الانتظار بعد انتهاء السؤال، في [٣، ١٨٠]. */
@@ -268,8 +319,28 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Only the well-formed points of an authored path. */
+function readPoints(raw: unknown[]): EffectPoint[] {
+  return raw
+    .filter(isPlainObject)
+    .filter((p) => typeof p.x === "number" && typeof p.y === "number")
+    .map((p) => ({ x: p.x as number, y: p.y as number }));
+}
+
 function deepClone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** Rewrites every `target` in the tree that names a renamed element. */
+function retarget(node: unknown, rename: ReadonlyMap<string, string>): void {
+  if (Array.isArray(node)) {
+    for (const item of node) retarget(item, rename);
+  } else if (isPlainObject(node)) {
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "target" && typeof value === "string" && rename.has(value)) node[key] = rename.get(value);
+      else retarget(value, rename);
+    }
+  }
 }
 
 /** A `{ text, audio }` pair, or undefined when neither is present. */
@@ -465,7 +536,14 @@ export class StoryDraft {
             }
           : undefined,
         idle: typeof e.idle === "string" ? e.idle : undefined,
-        groupId: typeof e.groupId === "string" ? e.groupId : undefined
+        groupId: typeof e.groupId === "string" ? e.groupId : undefined,
+        word: isPlainObject(e.word) && typeof e.word.text === "string"
+          ? {
+              text: e.word.text,
+              y: typeof e.word.y === "number" ? e.word.y : undefined,
+              color: typeof e.word.color === "string" ? e.word.color : undefined
+            }
+          : undefined
       })),
       lines: rawLines.filter(isPlainObject).map((l) => ({
         id: String(l.id ?? ""),
@@ -533,9 +611,13 @@ export class StoryDraft {
               correct: c.correct === true ? true : undefined,
               x: typeof c.x === "number" ? c.x : undefined,
               y: typeof c.y === "number" ? c.y : undefined,
-              scale: typeof c.scale === "number" ? c.scale : undefined
+              scale: typeof c.scale === "number" ? c.scale : undefined,
+              label: typeof c.label === "string" ? c.label : undefined,
+              path: Array.isArray(c.path) ? readPoints(c.path) : undefined
             }))
         : undefined,
+      letter: typeof node.letter === "string" ? node.letter : undefined,
+      place: node.place === "first" || node.place === "middle" || node.place === "last" ? node.place : undefined,
       answers: Array.isArray(node.answers)
         ? node.answers.filter((a): a is string => typeof a === "string" && a.length > 0)
         : undefined,
@@ -543,6 +625,18 @@ export class StoryDraft {
       image: typeof node.image === "string" ? node.image : undefined,
       expect: typeof node.expect === "number" ? node.expect : undefined,
       waitSeconds: typeof node.waitSeconds === "number" ? node.waitSeconds : undefined,
+      options: Array.isArray(node.options)
+        ? node.options
+            .filter(isPlainObject)
+            .filter((option) => typeof option.id === "string" && typeof option.alias === "string")
+            .map((option) => ({
+              id: option.id as string,
+              alias: option.alias as string,
+              label: typeof option.label === "string" ? option.label : undefined,
+              correct: option.correct === true ? true : undefined
+            }))
+        : undefined,
+      poll: node.poll === true ? true : undefined,
       spots: Array.isArray(node.spots)
         ? node.spots
             .filter(isPlainObject)
@@ -552,7 +646,25 @@ export class StoryDraft {
               alias: spot.alias as string,
               label: typeof spot.label === "string" ? spot.label : undefined,
               relation: typeof spot.relation === "string" ? spot.relation : undefined,
-              correct: spot.correct === true ? true : undefined
+              correct: spot.correct === true ? true : undefined,
+              reveals: typeof spot.reveals === "string" ? spot.reveals : undefined
+            }))
+        : undefined,
+      anchors: Array.isArray(node.anchors)
+        ? node.anchors
+            .filter(isPlainObject)
+            .filter((anchor) => typeof anchor.id === "string" && anchor.id)
+            .map((anchor) => ({
+              id: anchor.id as string,
+              label: typeof anchor.label === "string" ? anchor.label : undefined,
+              letter: typeof anchor.letter === "string" ? anchor.letter : undefined,
+              place:
+                anchor.place === "first" || anchor.place === "middle" || anchor.place === "last"
+                  ? (anchor.place as LetterPlace)
+                  : undefined,
+              image: typeof anchor.image === "string" ? anchor.image : undefined,
+              x: typeof anchor.x === "number" ? anchor.x : undefined,
+              y: typeof anchor.y === "number" ? anchor.y : undefined
             }))
         : undefined,
       bins: Array.isArray(node.bins)
@@ -576,6 +688,8 @@ export class StoryDraft {
               id: typeof item.id === "string" && item.id ? item.id : `it_${index + 1}`,
               alias: item.alias as string,
               bin: typeof item.bin === "string" ? item.bin : "",
+              anchor: typeof item.anchor === "string" ? item.anchor : undefined,
+              label: typeof item.label === "string" ? item.label : undefined,
               x: typeof item.x === "number" ? item.x : undefined,
               y: typeof item.y === "number" ? item.y : undefined,
               scale: typeof item.scale === "number" ? item.scale : undefined
@@ -599,6 +713,7 @@ export class StoryDraft {
         : undefined,
       wrongResponse: readActivityText(node.wrongResponse),
       navigate: node.navigate === true ? true : undefined,
+      wrongItems: node.wrongItems === "return" ? "return" : undefined,
       onSolved,
       // Passed through as-authored. Studio's UI edits one primitive per
       // hook, but the contract allows nested sequence/parallel — reading
@@ -693,6 +808,11 @@ export class StoryDraft {
         if (typeof el.groupId === "string" && rename.has(el.groupId)) el.groupId = rename.get(el.groupId);
       }
     }
+    // كلّ `target` في النسخة — مؤثّرات السطور والمشهد والنشاط، والأفعال،
+    // وحركة الخمول — كان يسمّي عنصراً بمعرّفه القديم. بلا إعادة توجيهه
+    // يبحث المحرّك في النسخة عن عنصرٍ غير موجود فيها فيتخطّى المؤثّر
+    // بصمت: تتوقّف تبدّلات الوضعيات والحركة في النسخة وحدها.
+    retarget(copy, rename);
 
     // ── ٣: معرّفات السطور والفروع والخيارات ────────────────────────────
     if (Array.isArray(copy.lines)) {
@@ -1015,7 +1135,11 @@ export class StoryDraft {
       // صور السلال والأغراض (v1.0.26): حذف صورة غرضٍ يجعله يُتخطّى في
       // زمن التشغيل — فينقص الفرز غرضاً بلا أن يقول ذلك شيء.
       for (const bin of activity?.bins ?? []) add(bin.image, `سلّة «${bin.label || bin.id}» في «${where}»`);
-      for (const item of activity?.items ?? []) add(item.alias, `غرض فرزٍ في «${where}»`);
+      for (const item of activity?.items ?? []) {
+        add(item.alias, activity?.type === "connect" ? `عنصر وصلٍ في «${where}»` : `غرض فرزٍ في «${where}»`);
+      }
+      // صور الرؤوس في «وصل» (v1.0.36) — اختيارية، لكن حذف واحدةٍ يُفرغ رأساً.
+      for (const anchor of activity?.anchors ?? []) add(anchor.image, `رأس «${anchor.label || anchor.letter || anchor.id}» في «${where}»`);
       // ⚠️ `steps` (v1.0.22) **ليست مراجع أصول** عمداً: خطوةٌ حرفٌ يُعرض
       // نصّاً، لا صورةٌ تُحمَّل. إدراجها هنا كان سيجعل كل حرف في كل كلمة
       // «أصلاً مفقوداً» — تحذيرٌ لا يمكن إسكاته إلّا بإضافة صورةٍ لا يحتاجها
@@ -1478,12 +1602,12 @@ export class StoryDraft {
     // يعرف `StoryDraft` أيّها تقصد المؤلّفة. مصفوفةٌ فارغة تجعل المحرّر
     // يعرض عناصر المشهد لتختار منها (v1.0.27 §3).
     if (type === "find" && !Array.isArray(activity.spots)) activity.spots = [];
-    // ⚠️ `answers` **و**`expect` معاً: الأوّل يتقاسمه مع «الجواب المباشر»،
-    // والثاني هو ما يميّزه بنيوياً — وبغيره يقرأ المحرّك النشاط نوعاً آخر
-    // (v1.0.28 §2.1). و١٢ عددٌ مبدئيّ تُعدّله المعلّمة، لا صفرٌ يرفضه
-    // المُتحقِّق فوراً.
+    // ⚠️ `options` **و**`expect` معاً: `expect` هو ما يميّزه بنيوياً عن
+    // «الجواب المباشر» (v1.0.28 §2.1). و١٢ عددٌ مبدئيّ تُعدّله المعلّمة، لا
+    // صفرٌ يرفضه المُتحقِّق فوراً. ولا `options` تُبنى فوق `answers` قديمة:
+    // المحرّر يعرض زرّ التحويل، فلا يُعاد تأليف ما لم تطلبه (v1.0.32 §5).
     if (type === "all-respond") {
-      if (!Array.isArray(activity.answers)) activity.answers = [];
+      if (!Array.isArray(activity.options) && !Array.isArray(activity.answers)) activity.options = [];
       if (typeof activity.expect !== "number") activity.expect = 12;
     }
     if (type === "sort") {
@@ -1492,6 +1616,15 @@ export class StoryDraft {
           { id: "bin_1", label: "" },
           { id: "bin_2", label: "" }
         ];
+      }
+      if (!Array.isArray(activity.items)) activity.items = [];
+    }
+    // رأسان فارغان لا مصفوفةٌ فارغة، للسبب نفسه في الفرز (v1.0.36 §2).
+    // ⚠️ و`items` تُترك كما هي إن وُجدت: أغراض فرزٍ سابق بلا `anchor` تظهر
+    // في المحرّر «بلا رأس» لتُسنَد، ولا تُمحى بتبديل النوع.
+    if (type === "connect") {
+      if (!Array.isArray(activity.anchors) || (activity.anchors as unknown[]).length < 2) {
+        activity.anchors = [{ id: "anchor_1" }, { id: "anchor_2" }];
       }
       if (!Array.isArray(activity.items)) activity.items = [];
     }
@@ -1528,17 +1661,85 @@ export class StoryDraft {
     if (patch.x !== undefined) choice.x = patch.x;
     if (patch.y !== undefined) choice.y = patch.y;
     if (patch.scale !== undefined) choice.scale = patch.scale;
-    if (patch.correct !== undefined) {
-      // Exactly one correct option: marking a new one clears the rest.
-      // Two correct answers is not a richer question, it is a question the
-      // author did not finish deciding.
-      if (patch.correct) {
-        for (const c of choices as Record<string, unknown>[]) if (isPlainObject(c)) delete c.correct;
-        choice.correct = true;
-      } else {
-        delete choice.correct;
-      }
+    if (patch.path !== undefined) {
+      // An empty path is no path: removed, so the option fades in where it
+      // stands exactly as one authored before v1.0.33 does.
+      if (patch.path.length > 0) choice.path = patch.path.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }));
+      else delete choice.path;
     }
+    if (patch.label !== undefined) {
+      const label = patch.label.trim();
+      if (label) choice.label = label;
+      else delete choice.label;
+      // A new word under a set letter answers its own question: the
+      // suggestion is written, and stays the author's to overturn.
+      this.suggestCorrect(node.activity as Record<string, unknown>, choice);
+    }
+    if (patch.correct !== undefined) {
+      // Several options may be correct since v1.0.33 §5 — «choose every
+      // word that starts with ب» is ONE question with two answers, and the
+      // activity is solved when all of them are picked. Each toggle is
+      // therefore independent; nothing else is cleared.
+      if (patch.correct) choice.correct = true;
+      else delete choice.correct;
+    }
+  }
+
+  /**
+   * The letter a pick-correct question is about, and where in the word
+   * (v1.0.33 §5). Setting it re-suggests `correct` on every option that
+   * carries a word: «بيت» becomes correct for ب-first, «كتاب» does not.
+   *
+   * A SUGGESTION, written once: the author may overturn any of them and
+   * the next edit to a different option leaves hers alone. Only changing
+   * the question (this call) or an option's own word re-suggests it.
+   */
+  setActivityLetter(sceneId: string, letter: string, place: LetterPlace | null): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity as Record<string, unknown>;
+    const trimmed = letter.trim();
+    if (trimmed) activity.letter = trimmed;
+    else delete activity.letter;
+    if (place) activity.place = place;
+    else delete activity.place;
+    if (!Array.isArray(activity.choices)) return;
+    for (const choice of activity.choices as Record<string, unknown>[]) {
+      if (isPlainObject(choice)) this.suggestCorrect(activity, choice);
+    }
+  }
+
+  private suggestCorrect(activity: Record<string, unknown>, choice: Record<string, unknown>): void {
+    if (typeof activity.letter !== "string" || typeof choice.label !== "string") return;
+    const place = typeof activity.place === "string" ? (activity.place as LetterPlace) : undefined;
+    if (hasLetterAt(choice.label, activity.letter, place)) choice.correct = true;
+    else delete choice.correct;
+  }
+
+  /**
+   * A word written on an element's picture (v1.0.33 §3). Empty text
+   * removes the field — an element without a word must be identical to
+   * one authored before it existed.
+   */
+  setElementWord(sceneId: string, elementId: string, text: string, y?: number, color?: string | null): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !Array.isArray(node.elements)) return;
+    const el = (node.elements as Record<string, unknown>[]).find((e) => e.id === elementId);
+    if (!el) return;
+    const trimmed = text.trim();
+    if (!trimmed) {
+      delete el.word;
+      return;
+    }
+    const previous = isPlainObject(el.word) ? el.word : {};
+    const word: { text: string; y?: number; color?: string } = { text: trimmed };
+    const keepY = y ?? (typeof previous.y === "number" ? previous.y : undefined);
+    if (keepY !== undefined) word.y = Math.min(1, Math.max(0, keepY));
+    // `undefined` keeps the colour it had; `null` or "" returns it to the
+    // default white — absent, like a word authored before colour existed.
+    const keepColor = color === undefined ? (typeof previous.color === "string" ? previous.color : undefined) : color || undefined;
+    if (keepColor) word.color = keepColor;
+    el.word = word;
   }
 
   removeActivityChoice(sceneId: string, choiceId: string): void {
@@ -1577,6 +1778,18 @@ export class StoryDraft {
     if (!node || !isPlainObject(node.activity)) return;
     if (on) node.activity.navigate = true;
     else delete node.activity.navigate;
+  }
+
+  /**
+   * ما يحدث للأغراض الخاطئة في «الفرز» (v1.0.35).
+   *
+   * الافتراض يحذف الحقل ولا يكتب قيمةً له — كما في `navigate`.
+   */
+  setSortWrongItems(sceneId: string, mode: "return" | null): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    if (mode) node.activity.wrongItems = mode;
+    else delete node.activity.wrongItems;
   }
 
   /**
@@ -1674,6 +1887,123 @@ export class StoryDraft {
     }
   }
 
+  /**
+   * يضيف خياراً يعرض صورة `alias` (v1.0.32).
+   *
+   * ⚠️ الاسم العربي يُملأ من الاسم المستعار **إن كان عربياً**: أصلٌ اسمه
+   * «قبّعة» لا يستحقّ أن تكتب المعلّمة «قبّعة» مرّةً ثانية. وأمّا `hat`
+   * فلا يُنسخ — اسمٌ إنجليزي أمام الصفّ هو العطل الذي جاءت الرقعة لتصلحه.
+   */
+  addVoteOption(sceneId: string, alias: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !alias) return;
+    const activity = node.activity;
+    if (!Array.isArray(activity.options)) activity.options = [];
+    const options = activity.options as Array<Record<string, unknown>>;
+    // أربعة الحدّ، وبطاقةٌ واحدة لا تختار خيارين (§6).
+    if (options.length >= 4 || options.some((option) => option.alias === alias)) return;
+    let n = options.length + 1;
+    while (options.some((option) => option.id === `op_${n}`)) n++;
+    const option: Record<string, unknown> = { id: `op_${n}`, alias };
+    if (/[\u0600-\u06FF]/.test(alias)) option.label = alias;
+    options.push(option);
+  }
+
+  /**
+   * الاسم أو «الصحيح» لخيار.
+   *
+   * ⚠️ بخلاف `pick-correct`: **أكثر من صحيح مسموح** — «أيّها يبدأ بالألف؟»
+   * قد يكون لها جوابان. ووسمُ خيارٍ صحيحاً يُخرج السؤال من «رأي»: رأيٌ له
+   * جوابٌ صحيح تناقضٌ يحذّر منه المُتحقِّق، فلا يُحفظ من هنا أصلاً.
+   */
+  updateVoteOption(sceneId: string, optionId: string, patch: { label?: string; correct?: boolean }): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !Array.isArray(node.activity.options)) return;
+    const option = (node.activity.options as Array<Record<string, unknown>>).find(
+      (o) => isPlainObject(o) && o.id === optionId
+    );
+    if (!option) return;
+    if (patch.label !== undefined) {
+      const label = patch.label.trim();
+      if (label) option.label = label;
+      else delete option.label;
+    }
+    if (patch.correct !== undefined) {
+      if (patch.correct) {
+        option.correct = true;
+        delete node.activity.poll;
+      } else {
+        delete option.correct;
+      }
+    }
+  }
+
+  removeVoteOption(sceneId: string, optionId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !Array.isArray(node.activity.options)) return;
+    node.activity.options = (node.activity.options as Array<Record<string, unknown>>).filter(
+      (o) => !(isPlainObject(o) && o.id === optionId)
+    );
+  }
+
+  /**
+   * ينقل خياراً خطوةً إلى اليمين أو اليسار.
+   *
+   * ⚠️ الترتيب ليس شكلاً: هو ما يختاره **زرّ الصندوق** — الزرّ ٢ يصوّت
+   * للخيار الثاني (v1.0.32 §4).
+   */
+  moveVoteOption(sceneId: string, optionId: string, delta: -1 | 1): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !Array.isArray(node.activity.options)) return;
+    const options = node.activity.options as Array<Record<string, unknown>>;
+    const from = options.findIndex((o) => isPlainObject(o) && o.id === optionId);
+    const to = from + delta;
+    if (from < 0 || to < 0 || to >= options.length) return;
+    [options[from], options[to]] = [options[to]!, options[from]!];
+  }
+
+  /**
+   * «رأي» أو «له جواب» (v1.0.32 §2.1).
+   *
+   * الرأي يمحو كل «صحيح»: تركُها كان سيعني حالةً يحذّر منها المُتحقِّق،
+   * ويعني أن العودة إلى «له جواب» تُظهر جواباً نسيته المعلّمة. والإطفاء
+   * يحذف الحقل ولا يكتب `false` — كما في `navigate`.
+   */
+  setVotePoll(sceneId: string, poll: boolean): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    if (!poll) {
+      delete node.activity.poll;
+      return;
+    }
+    node.activity.poll = true;
+    if (Array.isArray(node.activity.options)) {
+      for (const option of node.activity.options as Array<Record<string, unknown>>) {
+        if (isPlainObject(option)) delete option.correct;
+      }
+    }
+  }
+
+  /**
+   * يحوّل شكل v1.0.28 (`answers`) إلى خيارات (v1.0.32 §5).
+   *
+   * خيارٌ لكل معنى، ويُحذف `answers` بعدها: بقاؤهما معاً يترك حقلاً لا
+   * يقرؤه أحد، ويُغري بتعديله. والشكل القديم لم يعرف «صحيحاً» يُعرض، فما
+   * يُكتب **رأي** — والمعلّمة تسِم الصحيح إن كان للسؤال جواب.
+   */
+  convertAnswersToOptions(sceneId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return;
+    const activity = node.activity;
+    const answers = Array.isArray(activity.answers)
+      ? [...new Set((activity.answers as unknown[]).filter((a): a is string => typeof a === "string" && a.length > 0))]
+      : [];
+    activity.options = [];
+    for (const answer of answers) this.addVoteOption(sceneId, answer);
+    delete activity.answers;
+    activity.poll = true;
+  }
+
   // ---------------------------------------------------------------------
   // «ابحث وقُل أين» (v1.0.27)
   // ---------------------------------------------------------------------
@@ -1688,6 +2018,36 @@ export class StoryDraft {
     let n = spots.length + 1;
     while (spots.some((spot) => spot.id === `sp_${n}`)) n++;
     spots.push({ id: `sp_${n}`, alias, label: "" });
+  }
+
+  /**
+   * يضع عنصراً من المشهد في إحدى القائمتين: **مطلوب** أو **مشتّت**.
+   *
+   * وإن كان في الأخرى **نُقل** إليها — النسق نفسه الذي في سلال الفرز:
+   * «أضفه هنا» تعني نقله بداهةً، فلا زرّ تبديلٍ منفصل ولا عنصرٌ مكرّر.
+   *
+   * ونقلُ مطلوبٍ إلى المشتّتات يأخذ معه `reveals`: صورةٌ تظهر عند موضعٍ لم
+   * يعد يخبّئ شيئاً لا تُعرَض، فلا تبقى في المحتوى.
+   */
+  setFindSpotRole(sceneId: string, alias: string, role: "target" | "distractor"): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !alias) return;
+    if (!Array.isArray(node.activity.spots)) node.activity.spots = [];
+    const spots = node.activity.spots as Array<Record<string, unknown>>;
+
+    const existing = spots.find((spot) => isPlainObject(spot) && spot.alias === alias);
+    if (existing) {
+      if (role === "target") existing.correct = true;
+      else {
+        delete existing.correct;
+        delete existing.reveals;
+      }
+      return;
+    }
+
+    let n = spots.length + 1;
+    while (spots.some((spot) => spot.id === `sp_${n}`)) n++;
+    spots.push(role === "target" ? { id: `sp_${n}`, alias, correct: true } : { id: `sp_${n}`, alias });
   }
 
   updateFindSpot(
@@ -1708,20 +2068,42 @@ export class StoryDraft {
   }
 
   /**
-   * يختار الموضع الذي يخبّئ المطلوب.
+   * يقلب «هذا الموضع يخبّئ مطلوباً» — ذهاباً وإياباً.
    *
-   * ⚠️ واحدٌ فقط: `find` يبحث عن شيءٍ واحد (§7). وموضعان صحيحان كانا
-   * سيجعلان «أين هو؟» سؤالاً بجوابين، وهو تأليفٌ لم يُكمَل.
+   * ⚠️ كان يفرض **موضعاً صحيحاً واحداً** ويمسح ما عداه، نقلاً عن v1.0.27
+   * §7 («`find` يبحث عن شيءٍ واحد»). ورُفع القيد في v1.0.31: «اعثر على كل
+   * حروف الألف» سؤالٌ واحد بعدّة مطلوبات، لا عدّة أسئلة.
+   *
+   * ولا يُنزَع آخر مطلوب: نشاطٌ بلا شيءٍ يُبحث عنه لا يُحلّ أبداً، ويرفضه
+   * المُتحقِّق. فالمنع هنا أهون من حفظٍ يُرَدّ.
    */
-  setFindCorrectSpot(sceneId: string, spotId: string): void {
+  toggleFindCorrectSpot(sceneId: string, spotId: string): boolean {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return false;
+    const spots = Array.isArray(node.activity.spots) ? (node.activity.spots as Array<Record<string, unknown>>) : [];
+    const spot = spots.find((s) => isPlainObject(s) && s.id === spotId);
+    if (!spot) return false;
+
+    if (spot.correct === true) {
+      if (spots.filter((s) => s.correct === true).length <= 1) return false;
+      delete spot.correct;
+      // ومعه ما كان يظهر عنده — صورةٌ لموضعٍ لم يعد يخبّئ شيئاً لا تُعرَض.
+      delete spot.reveals;
+      return true;
+    }
+    spot.correct = true;
+    return true;
+  }
+
+  /** ما يظهر عند موضعٍ حين يُعثَر عليه. الفراغ يحذف الحقل. */
+  setFindSpotReveals(sceneId: string, spotId: string, alias: string): void {
     const node = this.sceneNode(sceneId);
     if (!node || !isPlainObject(node.activity)) return;
     const spots = Array.isArray(node.activity.spots) ? (node.activity.spots as Array<Record<string, unknown>>) : [];
-    for (const spot of spots) {
-      if (!isPlainObject(spot)) continue;
-      if (spot.id === spotId) spot.correct = true;
-      else delete spot.correct;
-    }
+    const spot = spots.find((s) => isPlainObject(s) && s.id === spotId);
+    if (!spot) return;
+    if (alias) spot.reveals = alias;
+    else delete spot.reveals;
   }
 
   removeFindSpot(sceneId: string, spotId: string): void {
@@ -1789,12 +2171,28 @@ export class StoryDraft {
     return true;
   }
 
-  /** غرضٌ جديد، في السلّة المسمّاة. */
+  /**
+   * يضع غرضاً في سلّة. وإن كان الغرض موجوداً في سلّةٍ أخرى **نُقل إليها**.
+   *
+   * ⚠️ النقل لا التكرار، وهو ما يُغني عن قائمةٍ منسدلة لكل غرض: «أضفه إلى
+   * هذه السلّة» يعني نقله بداهةً، فتصير الحركة الوحيدة في الواجهة هي
+   * الحركة التي تفكّر بها المؤلّفة.
+   *
+   * ولو كُرِّر لصارت الصورة نفسها على المسرح مرّتين، صحيحةً في سلّتين —
+   * وعنوانُ البطاقة (`resolveAddress` بالاسم المستعار) ملتبساً بينهما.
+   */
   addSortItem(sceneId: string, alias: string, binId: string): void {
     const node = this.sceneNode(sceneId);
     if (!node || !isPlainObject(node.activity) || !alias || !binId) return;
     if (!Array.isArray(node.activity.items)) node.activity.items = [];
     const items = node.activity.items as Array<Record<string, unknown>>;
+
+    const existing = items.find((item) => isPlainObject(item) && item.alias === alias);
+    if (existing) {
+      existing.bin = binId;
+      return;
+    }
+
     let n = items.length + 1;
     while (items.some((i) => i.id === `it_${n}`)) n++;
     items.push({ id: `it_${n}`, alias, bin: binId });
@@ -1816,6 +2214,136 @@ export class StoryDraft {
     node.activity.items = (node.activity.items as Array<Record<string, unknown>>).filter(
       (item) => item.id !== itemId
     );
+  }
+
+
+  // ---------------------------------------------------------------------
+  // «وصل» (v1.0.36)
+  // ---------------------------------------------------------------------
+
+  /**
+   * يعدّل رأساً. النصّ الفارغ يحذف الحقل، و`place: null` يحذف الموضع —
+   * رأسٌ بلا حقلٍ مطابقٌ لرأسٍ لم يُكتب فيه شيء.
+   */
+  updateConnectAnchor(
+    sceneId: string,
+    anchorId: string,
+    patch: { label?: string; letter?: string; place?: LetterPlace | null; image?: string }
+  ): void {
+    const anchor = this.connectAnchors(sceneId).find((a) => a.id === anchorId);
+    if (!anchor) return;
+    for (const key of ["label", "letter", "image"] as const) {
+      const value = patch[key];
+      if (value === undefined) continue;
+      const trimmed = value.trim();
+      if (trimmed) anchor[key] = trimmed;
+      else delete anchor[key];
+    }
+    if (patch.place !== undefined) {
+      if (patch.place) anchor.place = patch.place;
+      else delete anchor.place;
+    }
+  }
+
+  addConnectAnchor(sceneId: string): string | null {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return null;
+    if (!Array.isArray(node.activity.anchors)) node.activity.anchors = [];
+    const anchors = node.activity.anchors as Array<Record<string, unknown>>;
+    let n = anchors.length + 1;
+    while (anchors.some((a) => a.id === `anchor_${n}`)) n++;
+    const id = `anchor_${n}`;
+    // الرأس الجديد يرث حرف الرأس الأوّل: «باء أوّلاً» ثم «باء وسطاً» هو
+    // الاستعمال الذي وُجد النوع لأجله، والمؤلّفة تغيّر الموضع وحده.
+    const letter = anchors.find((a) => typeof a.letter === "string")?.letter;
+    anchors.push(letter ? { id, letter } : { id });
+    return id;
+  }
+
+  /** يحذف رأساً — **وكل عنصرٍ يُوصَل إليه**، ولا يُبقي أقلّ من رأسين. */
+  removeConnectAnchor(sceneId: string, anchorId: string): boolean {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity)) return false;
+    const anchors = this.connectAnchors(sceneId);
+    if (anchors.length <= 2) return false;
+    const kept = anchors.filter((a) => a.id !== anchorId);
+    if (kept.length === anchors.length) return false;
+    node.activity.anchors = kept;
+    if (Array.isArray(node.activity.items)) {
+      node.activity.items = (node.activity.items as Array<Record<string, unknown>>).filter(
+        (item) => item.anchor !== anchorId
+      );
+    }
+    return true;
+  }
+
+  /**
+   * يضع عنصراً تحت رأس، وينقله إن كان تحت رأسٍ آخر — كما في `addSortItem`،
+   * وللسبب نفسه: الصورة نفسها مرّتين تجعل عنوان البطاقة ملتبساً.
+   */
+  addConnectItem(sceneId: string, alias: string, anchorId: string): void {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !alias || !anchorId) return;
+    if (!Array.isArray(node.activity.items)) node.activity.items = [];
+    const items = node.activity.items as Array<Record<string, unknown>>;
+    const existing = items.find((item) => isPlainObject(item) && item.alias === alias);
+    if (existing) {
+      existing.anchor = anchorId;
+      return;
+    }
+    let n = items.length + 1;
+    while (items.some((i) => i.id === `it_${n}`)) n++;
+    items.push({ id: `it_${n}`, alias, anchor: anchorId });
+  }
+
+  updateConnectItem(sceneId: string, itemId: string, patch: { label?: string; anchor?: string }): void {
+    const item = this.connectItem(sceneId, itemId);
+    if (!item) return;
+    if (patch.label !== undefined) {
+      const label = patch.label.trim();
+      if (label) item.label = label;
+      else delete item.label;
+    }
+    if (patch.anchor) item.anchor = patch.anchor;
+  }
+
+  removeConnectItem(sceneId: string, itemId: string): void {
+    this.removeSortItem(sceneId, itemId);
+  }
+
+  /**
+   * يقترح لكل عنصرٍ بكلمة رأسَه من الحرف والموضع: «بطّة» إلى «بـ»، «حبل»
+   * إلى «ـبـ». لا يُنقل عنصرٌ تطابقه عدّة رؤوس أو لا يطابقه شيء — القرار
+   * حينها للمعلّمة. يُرجع عدد ما نُقل.
+   */
+  suggestConnectAnchors(sceneId: string): number {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !Array.isArray(node.activity.items)) return 0;
+    const anchors = this.connectAnchors(sceneId).filter((a) => typeof a.letter === "string" && a.letter);
+    let moved = 0;
+    for (const item of node.activity.items as Array<Record<string, unknown>>) {
+      if (!isPlainObject(item) || typeof item.label !== "string") continue;
+      const label = item.label;
+      const matches = anchors.filter((a) =>
+        hasLetterAt(label, a.letter as string, typeof a.place === "string" ? (a.place as LetterPlace) : undefined)
+      );
+      if (matches.length !== 1 || item.anchor === matches[0]!.id) continue;
+      item.anchor = matches[0]!.id;
+      moved++;
+    }
+    return moved;
+  }
+
+  private connectAnchors(sceneId: string): Array<Record<string, unknown>> {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !Array.isArray(node.activity.anchors)) return [];
+    return (node.activity.anchors as Array<Record<string, unknown>>).filter(isPlainObject);
+  }
+
+  private connectItem(sceneId: string, itemId: string): Record<string, unknown> | undefined {
+    const node = this.sceneNode(sceneId);
+    if (!node || !isPlainObject(node.activity) || !Array.isArray(node.activity.items)) return undefined;
+    return (node.activity.items as Array<Record<string, unknown>>).find((i) => isPlainObject(i) && i.id === itemId);
   }
 
   /**

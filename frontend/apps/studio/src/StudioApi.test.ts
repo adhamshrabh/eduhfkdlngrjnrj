@@ -385,3 +385,53 @@ describe("saveFile — a server that refuses is a FAILED save, not a warning", (
     expect(out.ok).toBe(false);
   });
 });
+
+describe("loadStory — the server's copy wins over an old one in this browser", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+  const serverStory = { id: "duck", fixed: true };
+  const browserStory = { id: "duck", fixed: false };
+  const serving = () =>
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify(serverStory) } as Response));
+
+  it("opens what the server holds, not the older copy IndexedDB kept", async () => {
+    // Measured on «بطّوطة»: a fix made on the server was reverted by the
+    // next Studio save, because the Studio opened its own older copy.
+    serving();
+    vi.spyOn(ContentStore, "getDocument").mockImplementation(async (_id, file) => (file === "story.json" ? browserStory : null) as never);
+    vi.spyOn(ContentStore, "saveDocument").mockResolvedValue(true);
+
+    await expect(StudioApi.loadStory("duck")).resolves.toEqual(serverStory);
+  });
+
+  it("keeps the browser copy when it holds a save the server never received", async () => {
+    serving();
+    vi.spyOn(ContentStore, "getDocument").mockImplementation(async (_id, file) =>
+      (file === "story.json" ? browserStory : file === "story.json#pending" ? true : null) as never
+    );
+
+    await expect(StudioApi.loadStory("duck")).resolves.toEqual(browserStory);
+  });
+
+  it("with no server at all, the browser copy is what opens", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    vi.spyOn(ContentStore, "getDocument").mockImplementation(async (_id, file) => (file === "story.json" ? browserStory : null) as never);
+
+    await expect(StudioApi.loadStory("duck")).resolves.toEqual(browserStory);
+  });
+
+  it("a save that reached the server clears the pending mark; a browser-only one sets it", async () => {
+    const marks: unknown[] = [];
+    vi.spyOn(ContentStore, "saveDocument").mockImplementation(async (_id, file, data) => {
+      if (String(file).endsWith("#pending")) marks.push(data);
+      return true;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({ ok: true, publicMirrorOk: true })));
+    await StudioApi.saveStory("duck", browserStory);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    await StudioApi.saveStory("duck", browserStory);
+
+    expect(marks).toEqual([false, true]);
+  });
+});

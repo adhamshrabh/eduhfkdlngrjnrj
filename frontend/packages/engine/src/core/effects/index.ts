@@ -5,6 +5,7 @@ export {
   DEFAULT_DURATIONS,
   ACTIVITY_EFFECT_HOOKS,
   isCompositeEffect,
+  isHexColor,
   validateEffect,
   validateActivityEffects,
   authoredSpan,
@@ -24,4 +25,6 @@ export type {
 } from "./EffectContract";
 
 export { EffectRunner } from "./EffectRunner";
-export type { EffectTarget, EffectTargetResolver } from "./EffectRunner";
+export type { EffectTarget, EffectTargetResolver, LetterRevealer, LetterRevealTargets } from "./EffectRunner";
+export { pathSampler } from "./MotionPath";
+export type { PathSampler } from "./MotionPath";

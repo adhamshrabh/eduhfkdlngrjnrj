@@ -205,6 +205,65 @@ export function checkboxField(
   return wrap;
 }
 
+/** The colours offered first — bright, distinct from each other, and
+ *  readable under the dark outline every word carries (v1.0.33). */
+export const PALETTE: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "#3fb950", label: "أخضر" },
+  { value: "#e5484d", label: "أحمر" },
+  { value: "#2f6fed", label: "أزرق" },
+  { value: "#f0883e", label: "برتقالي" },
+  { value: "#f5c518", label: "أصفر" },
+  { value: "#8e4ec6", label: "بنفسجي" },
+  { value: "#e93d82", label: "وردي" },
+  { value: "#ffffff", label: "أبيض" }
+];
+
+/**
+ * A colour: one tap on a swatch, or any colour from the native picker at
+ * the end of the row. `value` is "#rrggbb" or "" for "the default", which
+ * `defaultLabel` names — so clearing a colour is a choice on screen, not
+ * a field emptied by hand.
+ */
+export function colorField(
+  label: string,
+  value: string,
+  onChange: (value: string) => void,
+  defaultLabel = "الافتراضي"
+): HTMLDivElement {
+  const wrap = el("div", "s-field");
+  wrap.appendChild(el("label", "s-field__label", label));
+  const swatches = el("div", "s-swatches");
+
+  const reset = el("button", `s-swatch s-swatch--none${value ? "" : " s-swatch--on"}`) as HTMLButtonElement;
+  reset.type = "button";
+  reset.title = defaultLabel;
+  reset.setAttribute("aria-label", defaultLabel);
+  reset.textContent = "∅";
+  reset.onclick = () => onChange("");
+  swatches.appendChild(reset);
+
+  for (const colour of PALETTE) {
+    const swatch = el("button", `s-swatch${colour.value === value.toLowerCase() ? " s-swatch--on" : ""}`) as HTMLButtonElement;
+    swatch.type = "button";
+    swatch.title = colour.label;
+    swatch.setAttribute("aria-label", colour.label);
+    swatch.style.background = colour.value;
+    swatch.onclick = () => onChange(colour.value);
+    swatches.appendChild(swatch);
+  }
+
+  const custom = el("input", "s-swatch s-swatch--custom");
+  custom.type = "color";
+  custom.title = "لونٌ آخر";
+  custom.setAttribute("aria-label", "لونٌ آخر");
+  custom.value = value || "#ffffff";
+  custom.addEventListener("change", () => onChange(custom.value));
+  swatches.appendChild(custom);
+
+  wrap.appendChild(swatches);
+  return wrap;
+}
+
 export interface TabDef {
   id: string;
   label: string;

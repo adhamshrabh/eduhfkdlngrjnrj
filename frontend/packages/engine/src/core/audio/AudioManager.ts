@@ -22,6 +22,12 @@ interface PlayingHandle {
   stop: () => void;
 }
 
+/** Duck-typed rather than `instanceof`: HTMLAudioElement does not exist
+ *  outside a browser, and the engine's tests run in Node. */
+function isElement(source: PlayingHandle["source"]): source is HTMLAudioElement {
+  return typeof (source as HTMLAudioElement).pause === "function";
+}
+
 const DEFAULT_VOLUMES: Record<AudioChannel, number> = {
   sfx: 1,
   music: 0.7,
@@ -40,6 +46,8 @@ export class AudioManager {
   private readonly urlCache = new Map<string, string>();
 
   private readonly playing = new Map<number, PlayingHandle>();
+  /** <audio> elements suspend() paused, for resume() to restart. */
+  private readonly suspendedElements = new Set<HTMLAudioElement>();
   private nextId = 1;
 
   constructor(eventBus: EventBus) {
@@ -186,6 +194,7 @@ export class AudioManager {
   public stop(id: number): void {
     const handle = this.playing.get(id);
     if (!handle) return;
+    if (isElement(handle.source)) this.suspendedElements.delete(handle.source);
     handle.stop();
     this.playing.delete(id);
     this.eventBus.emit(EngineEvents.Audio.Stopped, { id });
@@ -193,6 +202,10 @@ export class AudioManager {
 
   /** Stop every playing sound on a channel (or every channel when omitted). */
   public stopAll(channel?: AudioChannel): void {
+    for (const [, handle] of this.playing) {
+      if (channel && handle.channel !== channel) continue;
+      if (isElement(handle.source)) this.suspendedElements.delete(handle.source);
+    }
     for (const [id, handle] of Array.from(this.playing)) {
       if (channel && handle.channel !== channel) continue;
       handle.stop();
@@ -218,13 +231,31 @@ export class AudioManager {
     return this.channels.get(channel)?.gain.value ?? DEFAULT_VOLUMES[channel];
   }
 
-  /** Suspend the AudioContext (used on tab blur). */
+  /** Suspend the AudioContext (used on tab blur and on pause).
+   *
+   *  Clips played from a URL (no decoded buffer) are plain <audio> elements
+   *  that live outside the context, so suspending it alone left the voice
+   *  talking over a frozen scene. They are paused here too, and remembered,
+   *  so resume() restarts exactly those and nothing that had already ended. */
   public suspend(): void {
     void this.ctx?.suspend();
+    for (const handle of this.playing.values()) {
+      const el = handle.source;
+      if (isElement(el) && !el.paused) {
+        el.pause();
+        this.suspendedElements.add(el);
+      }
+    }
   }
 
-  /** Resume the AudioContext (used on tab focus). */
+  /** Resume the AudioContext (used on tab focus and on resume). */
   public async resume(): Promise<void> {
+    for (const el of this.suspendedElements) {
+      void el.play().catch(() => {
+        /* stopped while suspended (src cleared) — nothing to resume */
+      });
+    }
+    this.suspendedElements.clear();
     await this.ctx?.resume();
   }
 

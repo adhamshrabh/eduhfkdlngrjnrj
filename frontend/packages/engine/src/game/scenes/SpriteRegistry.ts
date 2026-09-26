@@ -19,6 +19,8 @@ import { Container as PixiContainer, Sprite, type Container, type Texture } from
 import type { AssetManager } from "@core/assets/AssetManager";
 import type { AnimationManager } from "@core/animation/AnimationManager";
 import type { LayoutApplier, LayoutDefaults } from "./LayoutApplier";
+import type { LetterRevealTargets } from "@core/effects/EffectRunner";
+import { attachWord, wordOf, type LetterPlace } from "@core/text";
 
 const DESIGN_HEIGHT = 1080;
 const DESIGN_WIDTH = 1920;
@@ -234,6 +236,31 @@ export class SpriteRegistry {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Writes a word on an element (v1.0.33 §3). A group has no picture to
+   * write on, and is skipped.
+   */
+  setWord(id: string, text: string, y?: number, color?: string): boolean {
+    const sprite = this.getSprite(id);
+    if (!sprite) return false;
+    return attachWord(sprite, text, y, color) !== null;
+  }
+
+  /**
+   * The letter inside an element's word, ready to animate (v1.0.33 §4) —
+   * or null when the element carries no word, or the word lacks the
+   * letter. Null is not an error: the effect simply lights nothing.
+   */
+  revealLetter(id: string, letter: string, options: { place?: LetterPlace; lift?: boolean; color?: string }): LetterRevealTargets | null {
+    const display = this.displays.get(id);
+    const found = display ? wordOf(display)?.reveal(letter, options) : undefined;
+    if (!found) return null;
+    return {
+      glow: found.glow,
+      lift: found.lift ? { target: found.lift.text, to: found.lift.to, scale: found.lift.scale } : undefined
+    };
   }
 
   /** Show (or replace) a persistent character sprite. */
