@@ -21,6 +21,6 @@ static const bool    BUTTON_NEEDS_EXTERNAL_PULLUP[] = {true, false, false, false
 // ⚠️ D12 رجل تقييد (MTDI): إن كانت مرفوعة إلى 3.3V لحظة الإقلاع ضبطت جهد
 // الفلاش خطأً فلا تُقلع اللوحة. مصباح مع مقاومة إلى الأرضي آمن؛ أي رفع
 // عليها ليس كذلك.
-static const uint8_t LED_PINS[] = {13, 12, 14, 27, 26};
+static const uint8_t LED_PINS[] = {12, 26, 27, 14, 13};
 
 static const uint8_t BUTTON_COUNT = sizeof(BUTTON_PINS);
