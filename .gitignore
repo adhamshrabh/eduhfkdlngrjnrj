@@ -7,6 +7,10 @@ db.sqlite3
 /backend/media/
 /backend/staticfiles/
 /backend/.env
+# أسرار الإنتاج على الخادم (deploy/env.example) — والمستودع عامّ.
+/.env
+# سجلّ الإصدارات المنشورة على هذا الخادم (deploy/deploy.sh) — حالة خادم لا كود.
+/deploy/.releases
 
 # Node
 node_modules/

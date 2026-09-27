@@ -1,0 +1,89 @@
+# بوّابة الإصدار: لا يصل commit إلى الخادم ما لم تمرّ هذه الثلاثة.
+#
+# ١. الواجهة: الأنواع + كل الاختبارات + البناء (npm run verify).
+# ٢. الخادم على **Postgres** — لا SQLite كما على جهاز التطوير. الإنتاج
+#    Postgres، وفروق المحرّكين (الترتيب، النصوص العربية، القيود) تُمسَك هنا
+#    لا أمام الصف.
+# ٣. صورة الإنتاج نفسها: تُبنى من backend/Dockerfile ثم **تُشغَّل** ويمرّ
+#    عليها deploy/smoke.sh. هذا الفحص الوحيد لما سيعمل على الخادم حرفياً.
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run verify
+
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: edu
+          POSTGRES_USER: edu
+          POSTGRES_PASSWORD: edu
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U edu" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://edu:edu@localhost:5432/edu
+      PYTHONIOENCODING: utf-8
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      # ترحيلٌ نُسي إنشاؤه يعني جدولاً ينقص في الإنتاج وحده.
+      - run: python manage.py makemigrations --check --dry-run
+      - run: python manage.py test apps
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: بناء صورة الإنتاج
+        run: docker build -f backend/Dockerfile --build-arg RELEASE=ci-${GITHUB_SHA::7} -t rawda-backend:ci .
+      - name: تشغيلها بإعدادات الإنتاج
+        run: |
+          docker run -d --name app -p 127.0.0.1:8000:8000 \
+            -e DJANGO_SETTINGS_MODULE=config.settings.prod \
+            -e DJANGO_SECRET_KEY=ci-only \
+            -e DJANGO_ALLOWED_HOSTS=localhost \
+            -e DATABASE_URL=sqlite:///db.sqlite3 \
+            rawda-backend:ci \
+            sh -c "python manage.py migrate --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2"
+          for i in $(seq 1 30); do
+            curl -sf -H "Host: localhost" http://127.0.0.1:8000/healthz && break
+            sleep 2
+          done
+      - name: فحص ما بعد النشر
+        run: SMOKE_HOST=localhost bash deploy/smoke.sh
+      - name: سجلّ الحاوية عند الفشل
+        if: failure()
+        run: docker logs app

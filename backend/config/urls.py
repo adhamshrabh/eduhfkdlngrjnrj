@@ -4,6 +4,7 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path, re_path
 
+from apps.common.health import healthz
 from apps.common.spa import RootAssetView, StudioSpaView, WebSpaView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
@@ -12,6 +13,8 @@ admin.site.site_title = "منصّة الروضة"
 admin.site.index_title = "لوحة الإدارة"
 
 urlpatterns = [
+    # أوّلاً: قبل مسار SPA الشامل الذي كان سيبتلعه ويردّ 200 بصفحة HTML.
+    path("healthz", healthz, name="healthz"),
     path("admin/", admin.site.urls),
     path("api/auth/", include("apps.accounts.urls")),
     path("api/classrooms/", include("apps.classrooms.urls")),

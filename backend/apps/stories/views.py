@@ -35,6 +35,37 @@ SAFE_NAME = re.compile(r"[^\w.\-؀-ۿ]+")
 EXTENSION_ALIASES = {".jfif": ".jpg", ".jpe": ".jpg", ".jfi": ".jpg"}
 
 
+#: ما يستطيع المحرّك قراءته فعلاً، لكل نوع. قائمة سماح لا منع:
+#:
+#: ⚠️ ثغرة كانت مفتوحة: الرفع كان يقبل أي ملف، ويُخدَم من نطاق المنصّة نفسه
+#: بنوعٍ يُستنتج من امتداده. ملف `.html` أو `.svg` فيه سكربت كان يعمل إذن
+#: كأنه صفحة من المنصّة، فيقرأ رمز الدخول المحفوظ في المتصفّح لأي حساب يفتحه
+#: — ومنه المديرة. و`.svg` خارج القائمة لهذا السبب تحديداً، رغم أنه صورة.
+#:
+#: وهي حماية للاستوديو أيضاً: ملفٌ لا يعرف له Pixi مُحلِّلاً كان يُسقط حزمة
+#: الأصول كلّها يوماً (انظر `_safe_filename`) — الرفض هنا يقوله للمعلّمة
+#: لحظة الرفع، لا أمام الصف.
+ALLOWED_EXTENSIONS = {
+    # مرآةُ `core/content/AssetKinds.ts` في المحرّك — ناقصاً `.svg` عمداً (أعلاه).
+    StoryAsset.Kind.IMAGE: {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"},
+    # `.webm`/`.m4a`/`.ogg` هي ما يُخرجه تسجيل الصوت في الاستوديو (AudioRecorder).
+    StoryAsset.Kind.AUDIO: {".mp3", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".webm", ".opus", ".flac"},
+    StoryAsset.Kind.SPRITESHEET: {".png", ".webp", ".json"},
+}
+
+
+def _check_upload(kind: str, filename: str) -> None:
+    """يرفض نوعاً مجهولاً أو امتداداً لا يقرؤه المحرّك — برسالة تسمّي المسموح."""
+    allowed = ALLOWED_EXTENSIONS.get(kind)
+    if allowed is None:
+        raise ValidationError({"kind": f"نوع أصل غير معروف: «{kind}»."})
+    suffix = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if suffix not in allowed:
+        raise ValidationError(
+            {"file": f"الملف «{filename}» ليس من الصيغ المسموحة هنا: {'، '.join(sorted(allowed))}."}
+        )
+
+
 def _safe_filename(name: str) -> str:
     """
     يسمح بالعربية والأرقام والشرطات فقط — ويمنع أي محاولة اجتياز مسار،
@@ -259,6 +290,9 @@ class StoryAssetViewSet(viewsets.ModelViewSet):
             upload = ContentFile(content, name=filename)
         else:
             upload.name = _safe_filename(upload.name)
+
+        # بعد التطبيع لا قبله: `.jfif` يصير `.jpg` فيُقبل، كما يجب.
+        _check_upload(kind, upload.name)
 
         asset = StoryAsset.objects.create(
             story=story,

@@ -1,7 +1,18 @@
-# التشغيل الكامل بأمر واحد: docker compose up
+# التشغيل الكامل بأمر واحد: docker compose up -d
+# وللنشر المحروس (نسخة احتياطية ← بناء ← فحص ← تراجع تلقائي): deploy/deploy.sh
 #
-# ثلاث خدمات لا أكثر: قاعدة بيانات + Django + بناء الواجهة.
-# لا Node في الإنتاج — Django يخدم ملفات Vite الثابتة مباشرة.
+# ثلاث خدمات: قاعدة بيانات + Django + نسخ احتياطي. الواجهتان تُبنيان
+# **داخل** صورة Django (backend/Dockerfile) — لا Node على الخادم ولا مجلّد
+# مشترك يُكتب فوق النسخة العاملة.
+
+# سجلّات Docker بلا حدّ تنمو إلى أن تملأ القرص — وقرصٌ ممتلئ يوقف Postgres
+# والنسخ الاحتياطي معاً. خمسة ملفات × ٢٠ ميغا لكل خدمة، الأقدم يُحذف.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   db:
     image: postgres:16-alpine
@@ -15,22 +26,21 @@ services:
       test: ["CMD-SHELL", "pg_isready -U edu"]
       interval: 5s
       retries: 10
+    logging: *logging
     restart: unless-stopped
 
-  frontend-build:
-    image: node:22-alpine
-    working_dir: /app/frontend
-    volumes:
-      - ./frontend:/app/frontend
-    command: sh -c "npm install && npm run build"
-
   backend:
-    build: ./backend
+    # الوسم هو رقم الإصدار (يضبطه deploy/deploy.sh من git). التراجع = تشغيل
+    # الوسم السابق، لا إعادة بناء.
+    image: rawda-backend:${RELEASE:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        RELEASE: ${RELEASE:-local}
     depends_on:
       db:
         condition: service_healthy
-      frontend-build:
-        condition: service_completed_successfully
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.prod
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?لا بد من ضبط مفتاح سري}
@@ -38,21 +48,40 @@ services:
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost}
       DATABASE_URL: postgres://edu:${POSTGRES_PASSWORD:-edu}@db:5432/edu
     volumes:
-      # ليقرأ Django ملفات dist المبنية. ⚠️ المسار `/frontend` لا `/app/frontend`:
-      # الإعدادات تحسبه `BASE_DIR.parent / "frontend"`، و`BASE_DIR` هنا `/app`.
-      # كان مركَّباً في `/app/frontend` فلا يراه Django أبداً، وكل صفحة تعود
-      # «لم تُبنَ الواجهة بعد» مع أن البناء نجح قبلها بدقيقة.
-      - ./frontend:/frontend:ro
       - media:/app/media
     # ⚠️ محليّ عمداً، والباب هو المنهي العكسي (انظر `deploy/`). المنفذ العامّ
     # يعني عنوان http، و http يعني أن المتصفّح يحذف `navigator.serial` فلا
     # تُقرأ بطاقة واحدة. لا HTTPS = لا بطاقات.
     ports:
       - "127.0.0.1:8000:8000"
+    # الترحيل عند كل إقلاع: آمن التكرار، ويضمن أن الكود لا يسبق جداوله.
+    # (collectstatic جرى وقت بناء الصورة.)
     command: >
       sh -c "python manage.py migrate --noinput &&
-             python manage.py collectstatic --noinput &&
-             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+             exec gunicorn config.wsgi:application --bind 0.0.0.0:8000
+             --workers 3 --timeout 120 --max-requests 1000 --max-requests-jitter 100
+             --access-logfile - --error-logfile -"
+    # يطرق `/healthz` من داخل الحاوية: قاعدة البيانات + الواجهتان + كتابة
+    # الأصول. `Host` أول اسم مسموح، و`/healthz` مستثنى من إعادة التوجيه إلى
+    # https (prod.py) لأن الطلب هنا لا يمرّ بالمنهي العكسي.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, sys, urllib.request
+          host = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost").split(",")[0]
+          req = urllib.request.Request("http://127.0.0.1:8000/healthz", headers={"Host": host})
+          try:
+              sys.exit(0 if urllib.request.urlopen(req, timeout=5).status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging: *logging
     restart: unless-stopped
 
   # نسخ احتياطي يومي — منذ اليوم الأول لا منذ آخر مرحلة.
@@ -86,6 +115,7 @@ services:
       - ./backups:/backups
       # للقراءة فقط: خدمة النسخ لا تكتب في أصول القصص بحال.
       - media:/app/media:ro
+    logging: *logging
     # مُدّتا الاحتفاظ مختلفتان عن قصد: مَفرَغ قاعدة البيانات كيلوبايتات،
     # وأرشيف الأصول مئات الميغابايت وينمو. أربعة عشر يوماً منه تملأ القرص
     # في روضةٍ نشطة — وقرصٌ ممتلئ يوقف النسخ **وقاعدة البيانات** معاً.

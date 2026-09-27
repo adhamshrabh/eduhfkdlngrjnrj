@@ -36,13 +36,13 @@ npm run dev:studio     # الاستوديو → http://localhost:5174
 ### بـ Docker (إنتاج)
 
 ```bash
-export DJANGO_SECRET_KEY="قيمة-عشوائية-طويلة"
-export POSTGRES_PASSWORD="كلمة-مرور-قوية"
-export DJANGO_ALLOWED_HOSTS="srv1714868.hstgr.cloud"
-docker compose up -d
+cp deploy/env.example .env      # ثم املئي القيم — .env خارج git
+deploy/deploy.sh                # نسخة احتياطية ← بناء ← فحص ← تراجع تلقائي عند الفشل
 ```
 
-خدمة واحدة تخدم كل شيء: الواجهة والاستوديو والواجهة البرمجية ولوحة Django. وهي تستمع على `127.0.0.1:8000` لا على الشبكة — الباب منهٍ عكسي.
+صورة واحدة لكل إصدار (`rawda-backend:<الإصدار>`) فيها الخادم والواجهتان مبنيّتين، وتخدم كل شيء: الواجهة والاستوديو والواجهة البرمجية ولوحة Django. وهي تستمع على `127.0.0.1:8000` لا على الشبكة — الباب منهٍ عكسي.
+
+النشر والتراجع والسجلّات والاستعادة وما يُفعل عند العطل: **[`docs/Operations-Runbook.md`](./docs/Operations-Runbook.md)**. ولا يُنشر commit لم ينجح عليه CI (`.github/workflows/ci.yml`).
 
 ### HTTPS ليس خياراً هنا
 

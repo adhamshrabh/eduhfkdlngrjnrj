@@ -1,0 +1,19 @@
+# سياق بناء الصورة هو جذر المستودع (انظر backend/Dockerfile). ما يلي لا يدخله:
+# أثقال محلّية تُبطئ البناء، وأسرار وبيانات لا مكان لها في صورة.
+.git
+**/node_modules
+**/dist
+**/.vite
+**/*.tsbuildinfo
+backend/.venv
+backend/venv
+# `.env` يقرؤه `load_dotenv` داخل الحاوية فيخلط إعدادات التطوير بالإنتاج.
+backend/.env
+backend/db.sqlite3
+backend/media
+backend/staticfiles
+backups
+_transfer
+firmware
+**/__pycache__
+**/*.py[cod]

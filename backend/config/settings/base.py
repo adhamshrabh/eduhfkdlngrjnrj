@@ -89,6 +89,11 @@ def _database_from_url(url: str) -> dict:
 
 
 DATABASES = {"default": _database_from_url(os.environ.get("DATABASE_URL", "postgres://edu:edu@localhost:5432/edu"))}
+# اتصالٌ يُعاد استعماله بين الطلبات بدل فتح اتصالٍ جديد لكل صورة يطلبها
+# المشغّل، مع فحصه قبل الاستعمال — فإعادة تشغيل Postgres لا تترك الخادم
+# يحمل اتصالاتٍ ميّتة تُسقط أول طلبٍ بعدها بخطأ 500.
+DATABASES["default"]["CONN_MAX_AGE"] = 60
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -141,6 +146,29 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.accounts.exceptions.envelope_exception_handler",
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
+    # لا حدّ عامّ: المشغّل يطلب عشرات الأصول دفعةً واحدة من شاشة الصف.
+    # الحدّ على الدخول وحده (`LoginView.throttle_scope`) — تخمين كلمات المرور.
+    # ⚠️ العدّاد في ذاكرة كل عامل gunicorn (LocMem)، فالحدّ الفعلي ×عدد العمّال.
+    # يكفي لصدّ التخمين الآلي؛ وحدٌّ دقيق يحتاج Redis، وهو مؤجَّل صراحةً.
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min"},
+}
+
+# ------------------------------------------------------------------ السجلّات
+# ⚠️ بلا هذا لا يُطبَع خطأ 500 واحد في الإنتاج: Django مع DEBUG=False يرسل
+# أخطاء الطلبات إلى `mail_admins` وحده، ولا بريد مضبوط — فتسقط القصّة أمام
+# الصف ولا أثر لها في `docker compose logs`. كل شيء إلى stdout، وDocker
+# يحفظه ويدوّره (انظر `logging:` في docker-compose.yml).
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"plain": {"format": "{asctime} {levelname} {name}: {message}", "style": "{"}},
+    "handlers": {"stdout": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "root": {"handlers": ["stdout"], "level": "INFO"},
+    "loggers": {
+        # 404 للأصول يُسجَّل WARNING — مفيد: صورة مفقودة في قصّة منشورة.
+        "django.request": {"handlers": ["stdout"], "level": "WARNING", "propagate": False},
+        "django.db.backends": {"level": "WARNING"},
+    },
 }
 
 from datetime import timedelta  # noqa: E402

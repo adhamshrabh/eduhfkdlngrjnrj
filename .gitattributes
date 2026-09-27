@@ -1,0 +1,2 @@
+# سكربتات تُشغَّل على لينكس: نهايات CRLF من ويندوز تكسرها ("bad interpreter: /usr/bin/env: bash").
+*.sh text eol=lf
