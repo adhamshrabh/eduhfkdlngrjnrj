@@ -100,6 +100,24 @@ def _visible_stories(request):
     return qs.filter(Q(is_published=True) | Q(owner=user))
 
 
+def find_asset(story: Story, path: str) -> StoryAsset | None:
+    """
+    الأصل الذي يعنيه مرجعٌ في القصّة — **كما يحلّه المحرّك بالضبط**.
+
+    بالمسار المحفوظ أولاً، ثم بالاسم المستعار، ثم باسم الملف: محتوى قديم قد
+    يشير إلى الملف بأي من الثلاثة. دالّة واحدة لأن `check_stories` يسأل
+    السؤال نفسه — «هل ستظهر هذه الصورة؟» — ولو أجاب بمنطقٍ آخر لطمأن على
+    قصّةٍ يعرضها المحرّك فارغة.
+    """
+    normalized = path.strip("/")
+    return (
+        story.assets.filter(content_path=normalized).first()
+        or story.assets.filter(content_path__endswith=normalized).first()
+        or story.assets.filter(alias=normalized.rsplit("/", 1)[-1].rsplit(".", 1)[0]).first()
+        or story.assets.filter(original_name=normalized.rsplit("/", 1)[-1]).first()
+    )
+
+
 @require_GET
 def stories_index(request):
     """
@@ -144,14 +162,7 @@ def story_asset(request, slug: str, path: str):
     الصف بسبب اختلاف شكلي في المرجع.
     """
     story = get_object_or_404(_visible_stories(request), slug=slug)
-    normalized = path.strip("/")
-
-    asset = (
-        story.assets.filter(content_path=normalized).first()
-        or story.assets.filter(content_path__endswith=normalized).first()
-        or story.assets.filter(alias=normalized.rsplit("/", 1)[-1].rsplit(".", 1)[0]).first()
-        or story.assets.filter(original_name=normalized.rsplit("/", 1)[-1]).first()
-    )
+    asset = find_asset(story, path)
     if asset is None or not asset.file:
         raise Http404("الأصل غير موجود.")
 

@@ -30,6 +30,8 @@ INSTALLED_APPS = [
     "django_filters",
     "drf_spectacular",
     # تطبيقات المنصّة
+    # `common` بلا جداول (نماذجه مجرّدة)؛ مسجّل لأوامره: export_content / import_content.
+    "apps.common",
     "apps.accounts",
     "apps.classrooms",
     "apps.stories",
